@@ -138,12 +138,12 @@ async function interactWithTechHub(post, type, content, credentials) {
   };
   
   if (type === 'comment') {
-    const url = `https://techhub.fpt.net/api/v1/articles/${post.techhub_uuid}/comments/`;
+    const url = `https://techhub.fpt.net/api/v1/comments/`;
     return fetch(url, {
       method: 'POST',
       headers,
       credentials: 'include',
-      body: JSON.stringify({ content })
+      body: JSON.stringify({ article: post.techhub_id, body: content })
     });
   } else if (type === 'like') {
     const url = `https://techhub.fpt.net/api/v1/reactions/toggle/`;
