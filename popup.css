@@ -318,6 +318,31 @@ body {
   border-color: rgba(0, 123, 255, 0.3);
 }
 
+/* Settings Section */
+.setting-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #252b4a;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #2d3354;
+  margin-top: 14px;
+}
+
+.setting-item label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #e4e7eb;
+}
+
+.setting-item input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #667eea;
+}
+
 /* Posts Grid Section */
 .posts-grid-section {
   margin-top: 14px;

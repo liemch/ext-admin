@@ -39,6 +39,9 @@ const elements = {
 
   // Error elements
   errorMessage: document.getElementById("errorMessage"),
+
+  // Settings elements
+  autoInteractToggle: document.getElementById("autoInteractToggle"),
 };
 
 // State
@@ -511,6 +514,17 @@ function setupEventListeners() {
   if (elements.reloadPostsBtn) {
     elements.reloadPostsBtn.addEventListener("click", () => {
       loadPosts(currentPage);
+    });
+  }
+
+  // Auto Interact Toggle
+  if (elements.autoInteractToggle) {
+    chrome.storage.local.get(['autoInteractEnabled'], (result) => {
+      elements.autoInteractToggle.checked = !!result.autoInteractEnabled;
+    });
+
+    elements.autoInteractToggle.addEventListener("change", (e) => {
+      chrome.storage.local.set({ autoInteractEnabled: e.target.checked });
     });
   }
 }
