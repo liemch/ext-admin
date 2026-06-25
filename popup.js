@@ -16,12 +16,8 @@ const elements = {
   // Posts grid elements
   postsGrid: document.getElementById("postsGrid"),
   postsTotal: document.getElementById("postsTotal"),
-  postsPagination: document.getElementById("postsPagination"),
   postsLoading: document.getElementById("postsLoading"),
   postsError: document.getElementById("postsError"),
-  prevPageBtn: document.getElementById("prevPageBtn"),
-  nextPageBtn: document.getElementById("nextPageBtn"),
-  pageInfo: document.getElementById("pageInfo"),
   reloadPostsBtn: document.getElementById("reloadPostsBtn"),
 
   // Profile elements
@@ -45,9 +41,6 @@ const elements = {
 // State
 let currentUserProfile = null;
 let currentCredentials = null;
-let currentPage = 1;
-let totalPages = 1;
-const POSTS_PER_PAGE = 5;
 
 // Khởi tạo khi popup được mở
 document.addEventListener("DOMContentLoaded", init);
@@ -299,8 +292,8 @@ async function syncPosts() {
   }
 }
 
-// Load danh sách bài viết với phân trang
-async function loadPosts(page = 1) {
+// Load danh sách bài viết
+async function loadPosts() {
   if (!currentUserProfile || !currentUserProfile.username) {
     return;
   }
@@ -311,37 +304,26 @@ async function loadPosts(page = 1) {
     // Hiển thị loading
     elements.postsGrid.classList.add("hidden");
     elements.postsError.classList.add("hidden");
-    elements.postsPagination.classList.add("hidden");
     elements.postsLoading.classList.remove("hidden");
 
     // Lấy dữ liệu từ Supabase
-    const result = await supabase.getPostsByUsernameWithPagination(username, page, POSTS_PER_PAGE);
+    const posts = await supabase.getPostsByUsername(username);
 
     // Ẩn loading
     elements.postsLoading.classList.add("hidden");
 
-    if (!result.posts || result.posts.length === 0) {
+    if (!posts || posts.length === 0) {
       // Không có bài viết
       elements.postsError.classList.remove("hidden");
       elements.postsTotal.textContent = "0 bài";
       return;
     }
 
-    // Cập nhật state
-    currentPage = result.page;
-    totalPages = result.totalPages;
-
     // Hiển thị tổng số bài viết
-    elements.postsTotal.textContent = `${result.total} bài`;
+    elements.postsTotal.textContent = `${posts.length} bài`;
 
     // Render posts grid
-    renderPostsGrid(result.posts);
-
-    // Hiển thị pagination nếu có nhiều hơn 1 trang
-    if (totalPages > 1) {
-      updatePagination();
-      elements.postsPagination.classList.remove("hidden");
-    }
+    renderPostsGrid(posts);
 
     elements.postsGrid.classList.remove("hidden");
   } catch (error) {
@@ -399,27 +381,6 @@ function renderPostsGrid(posts) {
 function openPostInTechHub(url) {
   if (url) {
     chrome.tabs.create({ url });
-  }
-}
-
-// Cập nhật pagination
-function updatePagination() {
-  elements.pageInfo.textContent = `Trang ${currentPage} / ${totalPages}`;
-  elements.prevPageBtn.disabled = currentPage === 1;
-  elements.nextPageBtn.disabled = currentPage === totalPages;
-}
-
-// Previous page
-function goToPrevPage() {
-  if (currentPage > 1) {
-    loadPosts(currentPage - 1);
-  }
-}
-
-// Next page
-function goToNextPage() {
-  if (currentPage < totalPages) {
-    loadPosts(currentPage + 1);
   }
 }
 
@@ -492,18 +453,10 @@ function setupEventListeners() {
     elements.syncPostsBtn.addEventListener("click", syncPosts);
   }
 
-  // Pagination buttons
-  if (elements.prevPageBtn) {
-    elements.prevPageBtn.addEventListener("click", goToPrevPage);
-  }
-  if (elements.nextPageBtn) {
-    elements.nextPageBtn.addEventListener("click", goToNextPage);
-  }
-
   // Reload posts button
   if (elements.reloadPostsBtn) {
     elements.reloadPostsBtn.addEventListener("click", () => {
-      loadPosts(currentPage);
+      loadPosts();
     });
   }
 
