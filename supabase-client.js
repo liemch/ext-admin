@@ -519,6 +519,10 @@ class SupabaseClient {
         if (onProgress) {
            onProgress(`Đang đồng bộ bài ${i + 1}/${total}...`);
         }
+
+        const customUrl = article.community && article.community.slug
+          ? `https://techhub.fpt.net/c/${article.community.slug}/${article.uuid}/${article.slug}`
+          : `https://techhub.fpt.net/p/${username}/${article.uuid}/${article.slug}`;
         
         const existingPost = await this.findPostByTechhubId(article.id);
 
@@ -540,7 +544,7 @@ class SupabaseClient {
             techhubId: article.id,
             techhubUuid: article.uuid,
             username: username,
-            url: article.url,
+            url: customUrl,
             votesScore: article.votes_score,
             commentsCount: article.comments_count,
             feedScore: article.feed_score,
