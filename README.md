@@ -63,6 +63,26 @@ CREATE TABLE posts (
 -- Tạo index cho posts
 CREATE INDEX idx_posts_username ON posts(username);
 CREATE INDEX idx_posts_techhub_id ON posts(techhub_id);
+
+-- Tạo bảng comment_templates
+CREATE TABLE comment_templates (
+    id SERIAL PRIMARY KEY,
+    content TEXT NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Tạo bảng interactions
+CREATE TABLE interactions (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(100) NOT NULL,
+    techhub_id BIGINT NOT NULL,
+    interaction_type VARCHAR(20) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Tạo index cho interactions
+CREATE INDEX idx_interactions_lookup ON interactions(username, techhub_id, interaction_type);
 ```
 
 ### 3. Cấu hình RLS (Row Level Security) trong Supabase
