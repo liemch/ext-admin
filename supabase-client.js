@@ -584,8 +584,11 @@ class SupabaseClient {
       if (!postsRes.ok) throw new Error(`Failed to fetch posts: ${postsRes.status}`);
       const posts = await postsRes.json();
 
+      if (posts.length === 0) return [];
+
       // Get user interactions
-      const interactionsUrl = `${this.restUrl}/interactions?username=eq.${encodeURIComponent(username)}`;
+      const postIds = posts.map(p => p.techhub_id).join(',');
+      const interactionsUrl = `${this.restUrl}/interactions?username=eq.${encodeURIComponent(username)}&techhub_id=in.(${postIds})`;
       const intRes = await fetch(interactionsUrl, { headers: this.getHeaders() });
       if (!intRes.ok) throw new Error(`Failed to fetch interactions: ${intRes.status}`);
       const interactions = await intRes.json();

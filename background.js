@@ -184,6 +184,11 @@ async function runCrossInteraction() {
     }
 
     const post = posts[0];
+    if (!post.techhub_uuid) {
+      console.log(`[Background] Post ${post.techhub_id} is missing techhub_uuid. Skipping.`);
+      return;
+    }
+
     const template = templates[Math.floor(Math.random() * templates.length)];
     
     console.log(`[Background] Interacting with post ${post.techhub_id} by ${post.username}`);
