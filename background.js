@@ -116,6 +116,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 console.log("TechHub Profile Sync - Background script loaded");
 
+// Bật tính năng Side Panel khi bấm vào icon Extension
+chrome.sidePanel
+  .setPanelBehavior({ openPanelOnActionClick: true })
+  .catch((error) => console.error(error));
+
 // Bắt đầu setup Alarm cho Cross Interaction
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.get("crossInteractAlarm", (alarm) => {
