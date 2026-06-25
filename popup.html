@@ -29,28 +29,18 @@
             <div class="profile-info">
               <h2 id="displayName">-</h2>
               <p id="userEmail" class="email">-</p>
-              <span id="userDepartment" class="department-badge">-</span>
+              <div class="badges-row" style="display: flex; gap: 8px; margin-top: 5px;">
+                <span id="userDepartment" class="department-badge">-</span>
+                <span class="oxygen-badge" style="background: rgba(255, 255, 255, 0.1); padding: 2px 8px; border-radius: 12px; font-size: 12px; color: #a0aec0; display: flex; align-items: center; gap: 4px;">
+                  🌬️ <span id="oxygenCount">0</span>
+                </span>
+              </div>
             </div>
 
             <button id="syncPostsBtn" class="btn btn-sync-posts">
               <span class="btn-icon">📝</span>
               <span class="btn-text">Đồng bộ</span>
             </button>
-          </div>
-
-          <div class="profile-stats">
-            <div class="stat-item">
-              <span class="stat-value" id="articlesCount">0</span>
-              <span class="stat-label">Bài viết</span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-value" id="followersCount">0</span>
-              <span class="stat-label">Followers</span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-value" id="oxygenCount">0</span>
-              <span class="stat-label">Oxygen</span>
-            </div>
           </div>
 
           <div id="syncPostsMessage" class="sync-message hidden"></div>

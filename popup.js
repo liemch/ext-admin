@@ -29,8 +29,6 @@ const elements = {
   displayName: document.getElementById("displayName"),
   userEmail: document.getElementById("userEmail"),
   userDepartment: document.getElementById("userDepartment"),
-  articlesCount: document.getElementById("articlesCount"),
-  followersCount: document.getElementById("followersCount"),
   oxygenCount: document.getElementById("oxygenCount"),
 
   // Credentials elements
@@ -138,8 +136,6 @@ function displayUserProfile(profile) {
 
   // Stats
   const profileData = profile.profile || {};
-  elements.articlesCount.textContent = Math.max(0, profileData.articles_count || 0);
-  elements.followersCount.textContent = profileData.followers_count || 0;
   elements.oxygenCount.textContent = profileData.oxygen || 0;
 }
 
@@ -290,14 +286,6 @@ async function syncPosts() {
 
     console.log("Sync posts result:", result);
     showSyncPostsMessage("success", `✓ ${result.message}`);
-
-    // Cập nhật số bài viết hiển thị
-    if (currentUserProfile.profile) {
-      const totalPosts = result.created + result.updated;
-      if (totalPosts > 0) {
-        elements.articlesCount.textContent = totalPosts;
-      }
-    }
 
     // Reload danh sách bài viết sau khi đồng bộ
     await loadPosts();
