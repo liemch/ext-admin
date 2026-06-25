@@ -551,6 +551,72 @@ class SupabaseClient {
       throw error;
     }
   }
+
+  // ==================== INTERACTION METHODS ====================
+
+  /**
+   * Lấy danh sách template comment
+   * @returns {Promise<Array>}
+   */
+  async getCommentTemplates() {
+    try {
+      const url = `${this.restUrl}/comment_templates?is_active=eq.true`;
+      const response = await fetch(url, { method: "GET", headers: this.getHeaders() });
+      if (!response.ok) throw new Error("Failed to fetch templates");
+      return await response.json();
+    } catch (error) {
+      console.error("[Supabase] Error:", error);
+      return [];
+    }
+  }
+
+  /**
+   * Lấy danh sách bài viết chưa tương tác
+   * @param {string} username 
+   * @param {number} limit 
+   * @returns {Promise<Array>}
+   */
+  async getUninteractedPosts(username, limit = 5) {
+    try {
+      // Get recent posts not by this user
+      const postsUrl = `${this.restUrl}/posts?username=neq.${encodeURIComponent(username)}&order=created_at.desc&limit=50`;
+      const postsRes = await fetch(postsUrl, { headers: this.getHeaders() });
+      const posts = await postsRes.json();
+
+      // Get user interactions
+      const interactionsUrl = `${this.restUrl}/interactions?username=eq.${encodeURIComponent(username)}`;
+      const intRes = await fetch(interactionsUrl, { headers: this.getHeaders() });
+      const interactions = await intRes.json();
+
+      // Filter
+      const interactedIds = new Set(interactions.map(i => i.techhub_id));
+      const uninteracted = posts.filter(p => !interactedIds.has(p.techhub_id));
+      
+      return uninteracted.slice(0, limit);
+    } catch (error) {
+      console.error("[Supabase] Error:", error);
+      return [];
+    }
+  }
+
+  /**
+   * Ghi nhận tương tác của user với bài viết
+   * @param {string} username 
+   * @param {number} techhubId 
+   * @param {string} type 
+   */
+  async recordInteraction(username, techhubId, type) {
+    try {
+      const payload = { username, techhub_id: techhubId, interaction_type: type };
+      await fetch(`${this.restUrl}/interactions`, {
+        method: "POST",
+        headers: this.getHeaders(),
+        body: JSON.stringify(payload)
+      });
+    } catch (error) {
+      console.error("[Supabase] Error recording interaction:", error);
+    }
+  }
 }
 
 // Tạo instance của Supabase client
