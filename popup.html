@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TechHub Profile Sync</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="container">
+      <!-- Header -->
+      <div class="header">
+        <h1>TechHub Sync</h1>
+        <div class="header-right">
+          <div class="header-dots">
+            <span id="connectionStatus" class="header-status-dot status-checking" title="Kết nối TechHub"></span>
+            <span id="userSyncDot" class="status-dot status-ok" title="Trạng thái user"></span>
+            <span id="dbConnectionDot" class="status-dot status-ok" title="Trạng thái database"></span>
+          </div>
+          <span class="version">v1.0</span>
+        </div>
+      </div>
+
+      <!-- User Profile Section -->
+      <div id="profileSection" class="profile-section hidden">
+        <div class="profile-main">
+          <div class="profile-header">
+            <img id="userAvatar" src="" alt="Avatar" class="avatar" />
+            <div class="profile-info">
+              <h2 id="displayName">-</h2>
+              <p id="userEmail" class="email">-</p>
+              <span id="userDepartment" class="department-badge">-</span>
+            </div>
+
+            <button id="syncPostsBtn" class="btn btn-sync-posts">
+              <span class="btn-icon">📝</span>
+              <span class="btn-text">Đồng bộ</span>
+            </button>
+          </div>
+
+          <div class="profile-stats">
+            <div class="stat-item">
+              <span class="stat-value" id="articlesCount">0</span>
+              <span class="stat-label">Bài viết</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value" id="followersCount">0</span>
+              <span class="stat-label">Followers</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value" id="oxygenCount">0</span>
+              <span class="stat-label">Oxygen</span>
+            </div>
+          </div>
+
+          <div id="syncPostsMessage" class="sync-message hidden"></div>
+
+          <!-- Posts Grid Section -->
+          <div class="posts-grid-section">
+            <div class="posts-grid-header">
+              <h3>Bài viết của bạn</h3>
+              <div class="posts-header-right">
+                <span id="postsTotal" class="posts-total">0 bài</span>
+                <button id="reloadPostsBtn" class="icon-btn" title="Tải lại danh sách">
+                  <span class="reload-icon">🔄</span>
+                </button>
+              </div>
+            </div>
+
+            <div id="postsGrid" class="posts-grid">
+              <!-- Posts will be loaded here -->
+            </div>
+
+            <!-- Pagination -->
+            <div id="postsPagination" class="posts-pagination hidden">
+              <button id="prevPageBtn" class="pagination-btn" disabled>
+                <span>←</span>
+              </button>
+              <span id="pageInfo" class="page-info">Trang 1 / 1</span>
+              <button id="nextPageBtn" class="pagination-btn" disabled>
+                <span>→</span>
+              </button>
+            </div>
+
+            <div id="postsLoading" class="posts-loading hidden">
+              <div class="loading-spinner"></div>
+              <span>Đang tải...</span>
+            </div>
+
+            <div id="postsError" class="posts-error hidden">
+              <span>⚠️ Chưa có bài viết nào</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Error Section -->
+      <div id="errorSection" class="error-section hidden">
+        <div class="error-icon">⚠️</div>
+        <p id="errorMessage">-</p>
+        <button id="retryBtn" class="btn btn-secondary">Thử lại</button>
+      </div>
+
+      <!-- Footer -->
+      <div class="footer">
+        <p>Vui lòng mở <a href="https://techhub.fpt.net" target="_blank">TechHub</a> và đăng nhập trước khi sử dụng</p>
+      </div>
+    </div>
+
+    <script src="config.js"></script>
+    <script src="supabase-client.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
