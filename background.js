@@ -117,7 +117,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 console.log("TechHub Profile Sync - Background script loaded");
 
 // Bắt đầu setup Alarm cho Cross Interaction
-chrome.alarms.create("crossInteractAlarm", { periodInMinutes: 30 });
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.alarms.get("crossInteractAlarm", (alarm) => {
+    if (!alarm) {
+      chrome.alarms.create("crossInteractAlarm", { periodInMinutes: 30 });
+    }
+  });
+});
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "crossInteractAlarm") {
@@ -128,7 +134,6 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 async function interactWithTechHub(techhubUuid, type, content, credentials) {
   const headers = {
     'Content-Type': 'application/json',
-    'Cookie': credentials.cookie,
     'X-CSRFToken': credentials.csrfToken
   };
   
@@ -137,6 +142,7 @@ async function interactWithTechHub(techhubUuid, type, content, credentials) {
     return fetch(url, {
       method: 'POST',
       headers,
+      credentials: 'include',
       body: JSON.stringify({ content })
     });
   } else if (type === 'like') {
@@ -144,6 +150,7 @@ async function interactWithTechHub(techhubUuid, type, content, credentials) {
     return fetch(url, {
       method: 'POST',
       headers,
+      credentials: 'include',
       body: JSON.stringify({})
     });
   }
