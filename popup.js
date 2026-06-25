@@ -284,7 +284,9 @@ async function syncPosts() {
     showSyncPostsMessage("info", "Đang lấy dữ liệu từ TechHub...");
 
     // Gọi API đồng bộ
-    const result = await supabase.syncPosts(username);
+    const result = await supabase.syncPosts(username, (progressMsg) => {
+      showSyncPostsMessage("info", progressMsg);
+    });
 
     console.log("Sync posts result:", result);
     showSyncPostsMessage("success", `✓ ${result.message}`);

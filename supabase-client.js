@@ -488,14 +488,14 @@ class SupabaseClient {
    * @param {string} username
    * @returns {Promise<{created: number, updated: number, message: string}>}
    */
-  async syncPosts(username) {
+  async syncPosts(username, onProgress) {
     console.log("[Supabase] ========== SYNC POSTS ==========");
     console.log("[Supabase] Username:", username);
 
     try {
       // Lấy bài viết từ TechHub
       const techHubData = await this.fetchTechHubArticles(username);
-      const techHubArticles = techHubData.results;
+      let techHubArticles = techHubData.results;
 
       if (!techHubArticles || techHubArticles.length === 0) {
         return {
@@ -504,12 +504,22 @@ class SupabaseClient {
           message: "Không tìm thấy bài viết nào trên TechHub",
         };
       }
+      
+      // Chỉ lấy 10 bài viết mới nhất
+      techHubArticles = techHubArticles.slice(0, 10);
 
       let created = 0;
       let updated = 0;
+      let total = techHubArticles.length;
 
       // Đồng bộ từng bài viết
-      for (const article of techHubArticles) {
+      for (let i = 0; i < total; i++) {
+        const article = techHubArticles[i];
+        
+        if (onProgress) {
+           onProgress(`Đang đồng bộ bài ${i + 1}/${total}...`);
+        }
+        
         const existingPost = await this.findPostByTechhubId(article.id);
 
         if (existingPost) {
@@ -518,6 +528,7 @@ class SupabaseClient {
             votesScore: article.votes_score,
             commentsCount: article.comments_count,
             feedScore: article.feed_score,
+            status: article.status
           });
           updated++;
           console.log(`[Supabase] Updated post: ${article.title}`);
@@ -578,8 +589,8 @@ class SupabaseClient {
    */
   async getUninteractedPosts(username, limit = 5) {
     try {
-      // Get recent posts not by this user
-      const postsUrl = `${this.restUrl}/posts?username=neq.${encodeURIComponent(username)}&order=created_at.desc&limit=50`;
+      // Get recent posts not by this user and status is open
+      const postsUrl = `${this.restUrl}/posts?username=neq.${encodeURIComponent(username)}&status=eq.open&order=created_at.desc&limit=50`;
       const postsRes = await fetch(postsUrl, { headers: this.getHeaders() });
       if (!postsRes.ok) throw new Error(`Failed to fetch posts: ${postsRes.status}`);
       const posts = await postsRes.json();
