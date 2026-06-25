@@ -331,29 +331,43 @@ body {
   border-color: rgba(0, 123, 255, 0.3);
 }
 
-/* Settings Section */
-.setting-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: #252b4a;
-  padding: 12px 14px;
-  border-radius: 10px;
-  border: 1px solid #2d3354;
+/* Interact Section */
+.interact-section {
+  padding: 0;
   margin-top: 14px;
 }
 
-.setting-item label {
-  font-size: 13px;
-  font-weight: 500;
-  color: #e4e7eb;
+.interact-log {
+  margin-top: 10px;
+  background: #252b4a;
+  border-radius: 8px;
+  padding: 10px;
+  max-height: 120px;
+  overflow-y: auto;
+  font-size: 11px;
+  color: #9ca3af;
+  border: 1px solid #2d3354;
+  line-height: 1.4;
 }
 
-.setting-item input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-  accent-color: #667eea;
+.interact-log p {
+  margin-bottom: 4px;
+}
+
+.interact-log p:last-child {
+  margin-bottom: 0;
+}
+
+.interact-log p.success {
+  color: #28a745;
+}
+
+.interact-log p.error {
+  color: #dc3545;
+}
+
+.interact-log p.info {
+  color: #007bff;
 }
 
 /* Posts Grid Section */

@@ -112,6 +112,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
     return true;
   }
+
+  if (request.action === "runInteractions") {
+    runCrossInteraction(true);
+    sendResponse({ success: true });
+    return false;
+  }
 });
 
 console.log("TechHub Profile Sync - Background script loaded");
@@ -165,12 +171,23 @@ async function interactWithTechHub(post, type, content, credentials) {
   }
 }
 
-async function runCrossInteraction() {
+function broadcastProgress(msg, type = "info") {
+  chrome.runtime.sendMessage({
+    action: "interactProgress",
+    message: msg,
+    type: type
+  }).catch(() => {});
+}
+
+async function runCrossInteraction(isManual = false) {
   console.log("[Background] Running cross interaction...");
-  const result = await chrome.storage.local.get(['autoInteractEnabled', 'techhubCredentials', 'userProfile']);
+  broadcastProgress("Bắt đầu tiến trình tương tác...", "info");
   
-  if (!result.autoInteractEnabled || !result.techhubCredentials || !result.userProfile) {
-    console.log("[Background] Auto-interact disabled or missing credentials/profile");
+  const result = await chrome.storage.local.get(['techhubCredentials', 'userProfile']);
+  
+  if (!result.techhubCredentials || !result.userProfile) {
+    console.log("[Background] Missing credentials/profile");
+    broadcastProgress("Lỗi: Thiếu thông tin profile hoặc credentials.", "error");
     return;
   }
 
@@ -182,56 +199,67 @@ async function runCrossInteraction() {
     const templates = await supabase.getCommentTemplates();
     if (!templates || templates.length === 0) {
       console.log("[Background] No comment templates found");
+      broadcastProgress("Lỗi: Không tìm thấy mẫu bình luận.", "error");
       return;
     }
 
     // 2. Get uninteracted posts
-    const posts = await supabase.getUninteractedPosts(username, 1);
+    const limit = isManual ? 5 : 1;
+    const posts = await supabase.getUninteractedPosts(username, limit);
     if (!posts || posts.length === 0) {
       console.log("[Background] No uninteracted posts found");
+      broadcastProgress("Không có bài viết mới nào cần tương tác.", "info");
       return;
     }
 
-    const post = posts[0];
-    if (!post.techhub_uuid) {
-      console.log(`[Background] Post ${post.techhub_id} is missing techhub_uuid. Skipping.`);
-      return;
-    }
+    broadcastProgress(`Tìm thấy ${posts.length} bài viết cần tương tác.`, "info");
 
-    const template = templates[Math.floor(Math.random() * templates.length)];
-    
-    console.log(`[Background] Interacting with post ${post.techhub_id} by ${post.username}`);
-    
-    // 3. Comment on post
-    const commentRes = await interactWithTechHub(post, 'comment', template.content, creds);
-    if (commentRes && commentRes.ok) {
-      console.log("[Background] Comment successful");
-      await supabase.recordInteraction(username, post.techhub_id, 'comment');
-    } else {
-      console.error("[Background] Comment failed", await commentRes.text());
-    }
-    
-    // 4. Like post
-    let likeRes = await interactWithTechHub(post, 'like', null, creds);
-    if (likeRes && likeRes.ok) {
-      const likeData = await likeRes.json();
-      if (likeData.result === "destroy") {
-        console.log("[Background] Toggled to unlike. Calling again to re-like...");
-        likeRes = await interactWithTechHub(post, 'like', null, creds);
-        if (!likeRes || !likeRes.ok) {
-           console.error("[Background] Second like attempt failed");
-        }
+    for (const post of posts) {
+      if (!post.techhub_uuid) {
+        console.log(`[Background] Post ${post.techhub_id} is missing techhub_uuid. Skipping.`);
+        continue;
+      }
+
+      broadcastProgress(`Đang xử lý: ${post.title}`, "info");
+      
+      const template = templates[Math.floor(Math.random() * templates.length)];
+      
+      // 3. Comment on post
+      const commentRes = await interactWithTechHub(post, 'comment', template.content, creds);
+      if (commentRes && commentRes.ok) {
+        console.log("[Background] Comment successful");
+        await supabase.recordInteraction(username, post.techhub_id, 'comment');
+        broadcastProgress(`- Đã bình luận: ${post.title}`, "success");
+      } else {
+        console.error("[Background] Comment failed", await commentRes.text());
+        broadcastProgress(`- Lỗi bình luận: ${post.title}`, "error");
       }
       
+      // 4. Like post
+      let likeRes = await interactWithTechHub(post, 'like', null, creds);
       if (likeRes && likeRes.ok) {
-        console.log("[Background] Like successful");
-        await supabase.recordInteraction(username, post.techhub_id, 'like');
+        const likeData = await likeRes.json();
+        if (likeData.result === "destroy") {
+          console.log("[Background] Toggled to unlike. Calling again to re-like...");
+          likeRes = await interactWithTechHub(post, 'like', null, creds);
+        }
+        
+        if (likeRes && likeRes.ok) {
+          console.log("[Background] Like successful");
+          await supabase.recordInteraction(username, post.techhub_id, 'like');
+          broadcastProgress(`- Đã thích: ${post.title}`, "success");
+        } else {
+          broadcastProgress(`- Lỗi thích bài: ${post.title}`, "error");
+        }
+      } else {
+        broadcastProgress(`- Lỗi thích bài: ${post.title}`, "error");
       }
-    } else {
-      console.error("[Background] Like failed", likeRes ? await likeRes.text() : "No response");
     }
+    
+    broadcastProgress("Hoàn tất tương tác chéo.", "success");
     
   } catch (err) {
     console.error("[Background] Error in cross interaction:", err);
+    broadcastProgress("Lỗi hệ thống: " + err.message, "error");
   }
 }

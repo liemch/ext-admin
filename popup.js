@@ -35,7 +35,8 @@ const elements = {
   errorMessage: document.getElementById("errorMessage"),
 
   // Settings elements
-  autoInteractToggle: document.getElementById("autoInteractToggle"),
+  runInteractBtn: document.getElementById("runInteractBtn"),
+  interactLog: document.getElementById("interactLog"),
 };
 
 // State
@@ -460,14 +461,35 @@ function setupEventListeners() {
     });
   }
 
-  // Auto Interact Toggle
-  if (elements.autoInteractToggle) {
-    chrome.storage.local.get(['autoInteractEnabled'], (result) => {
-      elements.autoInteractToggle.checked = !!result.autoInteractEnabled;
-    });
-
-    elements.autoInteractToggle.addEventListener("change", (e) => {
-      chrome.storage.local.set({ autoInteractEnabled: e.target.checked });
+  // Interact Button
+  if (elements.runInteractBtn) {
+    elements.runInteractBtn.addEventListener("click", () => {
+      elements.interactLog.innerHTML = "";
+      elements.interactLog.classList.remove("hidden");
+      elements.runInteractBtn.disabled = true;
+      elements.runInteractBtn.querySelector(".btn-text").textContent = "Đang chạy...";
+      chrome.runtime.sendMessage({ action: "runInteractions" });
     });
   }
+
+  // Listen for progress messages from background script
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "interactProgress") {
+      if (elements.interactLog) {
+        elements.interactLog.classList.remove("hidden");
+        const p = document.createElement("p");
+        p.className = request.type;
+        p.textContent = request.message;
+        elements.interactLog.appendChild(p);
+        elements.interactLog.scrollTop = elements.interactLog.scrollHeight;
+        
+        if (request.message.includes("Hoàn tất") || request.message.includes("Lỗi") || request.message.includes("Không có bài viết")) {
+          if (elements.runInteractBtn) {
+            elements.runInteractBtn.disabled = false;
+            elements.runInteractBtn.querySelector(".btn-text").textContent = "Tương tác bài mới";
+          }
+        }
+      }
+    }
+  });
 }
