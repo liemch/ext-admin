@@ -131,14 +131,14 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
-async function interactWithTechHub(techhubUuid, type, content, credentials) {
+async function interactWithTechHub(post, type, content, credentials) {
   const headers = {
     'Content-Type': 'application/json',
     'X-CSRFToken': credentials.csrfToken
   };
   
   if (type === 'comment') {
-    const url = `https://techhub.fpt.net/api/v1/articles/${techhubUuid}/comments/`;
+    const url = `https://techhub.fpt.net/api/v1/articles/${post.techhub_uuid}/comments/`;
     return fetch(url, {
       method: 'POST',
       headers,
@@ -146,12 +146,16 @@ async function interactWithTechHub(techhubUuid, type, content, credentials) {
       body: JSON.stringify({ content })
     });
   } else if (type === 'like') {
-    const url = `https://techhub.fpt.net/api/v1/articles/${techhubUuid}/upvote/`;
+    const url = `https://techhub.fpt.net/api/v1/reactions/toggle/`;
     return fetch(url, {
       method: 'POST',
       headers,
       credentials: 'include',
-      body: JSON.stringify({})
+      body: JSON.stringify({
+        reactable_type: "Article",
+        reactable_id: post.techhub_id,
+        category: "upvote"
+      })
     });
   }
 }
@@ -194,7 +198,7 @@ async function runCrossInteraction() {
     console.log(`[Background] Interacting with post ${post.techhub_id} by ${post.username}`);
     
     // 3. Comment on post
-    const commentRes = await interactWithTechHub(post.techhub_uuid, 'comment', template.content, creds);
+    const commentRes = await interactWithTechHub(post, 'comment', template.content, creds);
     if (commentRes && commentRes.ok) {
       console.log("[Background] Comment successful");
       await supabase.recordInteraction(username, post.techhub_id, 'comment');
@@ -203,12 +207,23 @@ async function runCrossInteraction() {
     }
     
     // 4. Like post
-    const likeRes = await interactWithTechHub(post.techhub_uuid, 'like', null, creds);
+    let likeRes = await interactWithTechHub(post, 'like', null, creds);
     if (likeRes && likeRes.ok) {
-      console.log("[Background] Like successful");
-      await supabase.recordInteraction(username, post.techhub_id, 'like');
+      const likeData = await likeRes.json();
+      if (likeData.result === "destroy") {
+        console.log("[Background] Toggled to unlike. Calling again to re-like...");
+        likeRes = await interactWithTechHub(post, 'like', null, creds);
+        if (!likeRes || !likeRes.ok) {
+           console.error("[Background] Second like attempt failed");
+        }
+      }
+      
+      if (likeRes && likeRes.ok) {
+        console.log("[Background] Like successful");
+        await supabase.recordInteraction(username, post.techhub_id, 'like');
+      }
     } else {
-      console.error("[Background] Like failed", await likeRes.text());
+      console.error("[Background] Like failed", likeRes ? await likeRes.text() : "No response");
     }
     
   } catch (err) {
