@@ -581,11 +581,13 @@ class SupabaseClient {
       // Get recent posts not by this user
       const postsUrl = `${this.restUrl}/posts?username=neq.${encodeURIComponent(username)}&order=created_at.desc&limit=50`;
       const postsRes = await fetch(postsUrl, { headers: this.getHeaders() });
+      if (!postsRes.ok) throw new Error(`Failed to fetch posts: ${postsRes.status}`);
       const posts = await postsRes.json();
 
       // Get user interactions
       const interactionsUrl = `${this.restUrl}/interactions?username=eq.${encodeURIComponent(username)}`;
       const intRes = await fetch(interactionsUrl, { headers: this.getHeaders() });
+      if (!intRes.ok) throw new Error(`Failed to fetch interactions: ${intRes.status}`);
       const interactions = await intRes.json();
 
       // Filter
@@ -608,11 +610,12 @@ class SupabaseClient {
   async recordInteraction(username, techhubId, type) {
     try {
       const payload = { username, techhub_id: techhubId, interaction_type: type };
-      await fetch(`${this.restUrl}/interactions`, {
+      const response = await fetch(`${this.restUrl}/interactions`, {
         method: "POST",
         headers: this.getHeaders(),
         body: JSON.stringify(payload)
       });
+      if (!response.ok) throw new Error(`Failed to record interaction: ${response.status}`);
     } catch (error) {
       console.error("[Supabase] Error recording interaction:", error);
     }
