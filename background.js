@@ -330,8 +330,27 @@ async function runCrossInteraction(isManual = false) {
         await supabase.recordInteraction(username, post.techhub_id, 'comment');
         broadcastProgress(`- Đã bình luận: ${post.title}`, "success");
       } else {
-        console.error("[Background] Comment failed", await commentRes.text());
+        const status = commentRes ? commentRes.status : 'Unknown';
+        console.error(`[Background] Comment failed with status ${status}`);
         broadcastProgress(`- Lỗi bình luận: ${post.title}`, "error");
+        
+        if (status === 401 || status === 403) {
+          broadcastProgress("Token hết hạn. Đang tự động nạp lại (mở tab ẩn trong 3s)...", "warn");
+          
+          chrome.tabs.create({ url: "https://techhub.fpt.net/", active: false }, (tab) => {
+            setTimeout(() => {
+              chrome.tabs.remove(tab.id);
+            }, 3000);
+          });
+          
+          chrome.notifications.create({
+            type: "basic",
+            iconUrl: "icons/coin.png",
+            title: "TechHub - Đang lấy lại Token",
+            message: "Phát hiện Token hết hạn. Đang tự động mở tab ẩn để lấy lại Token!"
+          });
+          break; // Stop loop if unauthorized
+        }
       }
       
       // 4. Like post
