@@ -8,18 +8,7 @@
   </head>
   <body>
     <div class="container">
-      <!-- Header -->
-      <div class="header">
-        <h1>TechHub Sync</h1>
-        <div class="header-right">
-          <div class="header-dots">
-            <span id="connectionStatus" class="header-status-dot status-checking" title="Kết nối TechHub"></span>
-            <span id="userSyncDot" class="status-dot status-ok" title="Trạng thái user"></span>
-            <span id="dbConnectionDot" class="status-dot status-ok" title="Trạng thái database"></span>
-          </div>
-          <span class="version">v1.0</span>
-        </div>
-      </div>
+
 
       <!-- User Profile Section -->
       <div id="profileSection" class="profile-section hidden">
@@ -30,7 +19,7 @@
               <h2 id="displayName">-</h2>
               <p id="userEmail" class="email">-</p>
               <div class="badges-row" style="display: flex; gap: 8px; margin-top: 5px;">
-                <span id="userDepartment" class="department-badge">-</span>
+                <span id="userDepartment" class="department-badge" style="cursor: pointer;" title="Chạy tương tác ngầm">-</span>
                 <span class="oxygen-badge" style="background: rgba(255, 255, 255, 0.1); padding: 2px 8px; border-radius: 12px; font-size: 12px; color: #a0aec0; display: flex; align-items: center; gap: 4px;">
                   <img src="icons/coin.png" alt="Coin" style="width: 14px; height: 14px; display: block;" />
                   <span id="oxygenCount">0</span>
@@ -48,10 +37,6 @@
 
           <!-- Interactive Section -->
           <div class="interact-section">
-            <button id="runInteractBtn" class="btn btn-secondary" title="Tự động bình luận mẫu và like tối đa 5 bài viết mới nhất của người khác">
-              <span class="btn-icon">🚀</span>
-              <span class="btn-text">Tương tác bài mới</span>
-            </button>
             <div id="interactLog" class="interact-log hidden">
               <!-- Logs will be inserted here -->
             </div>

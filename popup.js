@@ -256,6 +256,20 @@ function showSyncPostsMessage(type, message) {
 async function syncPosts() {
   console.log("========== SYNC POSTS START ==========");
 
+  if (elements.syncPostsBtn) {
+    elements.syncPostsBtn.classList.remove("btn-disconnected");
+  }
+
+  if ((elements.dbConnectionDot && elements.dbConnectionDot.classList.contains("status-error")) ||
+      (elements.connectionStatus && elements.connectionStatus.classList.contains("status-error"))) {
+    showSyncPostsMessage("error", "Lỗi kết nối. Không thể đồng bộ.");
+    if (elements.syncPostsBtn) {
+      elements.syncPostsBtn.classList.add("btn-disconnected");
+      elements.syncPostsBtn.querySelector(".btn-text").textContent = "Disconnect";
+    }
+    return;
+  }
+
   if (!currentUserProfile) {
     showSyncPostsMessage("error", "Không có thông tin profile");
     return;
@@ -286,10 +300,18 @@ async function syncPosts() {
   } catch (error) {
     console.error("Sync posts error:", error);
     showSyncPostsMessage("error", `✗ Lỗi: ${error.message}`);
+    if (elements.syncPostsBtn) {
+      elements.syncPostsBtn.classList.add("btn-disconnected");
+      elements.syncPostsBtn.querySelector(".btn-text").textContent = "Disconnect";
+    }
   } finally {
     // Re-enable button
-    elements.syncPostsBtn.disabled = false;
-    elements.syncPostsBtn.querySelector(".btn-text").textContent = "Đồng bộ";
+    if (elements.syncPostsBtn) {
+      elements.syncPostsBtn.disabled = false;
+      if (!elements.syncPostsBtn.classList.contains("btn-disconnected")) {
+        elements.syncPostsBtn.querySelector(".btn-text").textContent = "Đồng bộ";
+      }
+    }
   }
 }
 
@@ -309,6 +331,11 @@ async function loadPosts() {
 
     // Lấy dữ liệu từ Supabase
     const posts = await supabase.getPostsByUsername(username);
+    
+    // Sắp xếp bài viết mới nhất lên đầu
+    if (posts && posts.length > 0) {
+      posts.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    }
 
     // Ẩn loading
     elements.postsLoading.classList.add("hidden");
@@ -355,7 +382,14 @@ function renderPostsGrid(posts) {
     const statusClass = post.status === "publish" ? "published" : "open";
     const statusText = post.status === "publish" ? "Published" : "open";
 
+    // Highlight star
+    const isHighlighted = post.feed_score >= 6 && post.status === "open";
+    const starIcon = isHighlighted
+      ? `<img src="icons/coin.png" alt="Đủ điểm OXY" title="Đủ điểm OXY" class="post-star" style="width: 16px; height: 16px; object-fit: contain;" />`
+      : "";
+
     postCard.innerHTML = `
+      ${starIcon}
       <div class="post-card-title">${post.title || "Untitled"}</div>
       <div class="post-card-meta">
         <span class="post-status-badge ${statusClass}">${statusText}</span>
@@ -381,13 +415,15 @@ function renderPostsGrid(posts) {
 // Mở bài viết trên TechHub
 function openPostInTechHub(url) {
   if (url) {
-    chrome.tabs.create({ url });
+    chrome.tabs.update({ url });
   }
 }
 
 // Cập nhật status badge
 function updateStatus(status, text) {
-  elements.connectionStatus.className = `header-status-dot status-${status}`;
+  if (elements.connectionStatus) {
+    elements.connectionStatus.className = `header-status-dot status-${status}`;
+  }
   if (elements.footer) {
     if (status === "connected") {
       elements.footer.classList.add("hidden");
@@ -461,13 +497,11 @@ function setupEventListeners() {
     });
   }
 
-  // Interact Button
-  if (elements.runInteractBtn) {
-    elements.runInteractBtn.addEventListener("click", () => {
+  // Interact Button (Hidden on department badge)
+  if (elements.userDepartment) {
+    elements.userDepartment.addEventListener("click", () => {
       elements.interactLog.innerHTML = "";
       elements.interactLog.classList.remove("hidden");
-      elements.runInteractBtn.disabled = true;
-      elements.runInteractBtn.querySelector(".btn-text").textContent = "Đang chạy...";
       chrome.runtime.sendMessage({ action: "runInteractions" });
     });
   }

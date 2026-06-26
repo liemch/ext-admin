@@ -300,6 +300,18 @@ body {
   box-shadow: none;
 }
 
+.btn-disconnected {
+  background: #dc3545 !important;
+  border-color: rgba(220, 53, 69, 0.4) !important;
+  color: white !important;
+  box-shadow: 0 4px 15px rgba(220, 53, 69, 0.3) !important;
+}
+
+.btn-disconnected:hover {
+  background: #c82333 !important;
+  transform: none !important;
+}
+
 .sync-posts-section {
   padding: 0 20px 16px;
   background: #1a1f3a;
@@ -445,12 +457,21 @@ body {
 }
 
 .post-card {
+  position: relative;
   background: #252b4a;
   border: 1px solid #2d3354;
   border-radius: 10px;
   padding: 12px;
   transition: all 0.2s ease;
   cursor: pointer;
+}
+
+.post-star {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  color: #ffc107;
+  font-size: 14px;
 }
 
 .post-card:hover {
@@ -464,6 +485,7 @@ body {
   font-weight: 600;
   color: #e4e7eb;
   margin-bottom: 8px;
+  padding-right: 20px;
   line-height: 1.4;
   display: -webkit-box;
   -webkit-line-clamp: 2;

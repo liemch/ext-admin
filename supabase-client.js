@@ -612,7 +612,31 @@ class SupabaseClient {
       const interactedIds = new Set(interactions.map(i => i.techhub_id));
       const uninteracted = posts.filter(p => !interactedIds.has(p.techhub_id));
       
-      return uninteracted.slice(0, limit);
+      const selectedPosts = [];
+      const seenUsers = new Set();
+      
+      // Ưu tiên mỗi tác giả 1 bài
+      for (const p of uninteracted) {
+        if (selectedPosts.length >= limit) break;
+        if (!seenUsers.has(p.username)) {
+          selectedPosts.push(p);
+          seenUsers.add(p.username);
+        }
+      }
+      
+      // Nếu chưa đủ limit bài thì lấy thêm các bài còn lại
+      if (selectedPosts.length < limit) {
+        const selectedIds = new Set(selectedPosts.map(p => p.techhub_id));
+        for (const p of uninteracted) {
+          if (selectedPosts.length >= limit) break;
+          if (!selectedIds.has(p.techhub_id)) {
+            selectedPosts.push(p);
+            selectedIds.add(p.techhub_id);
+          }
+        }
+      }
+      
+      return selectedPosts;
     } catch (error) {
       console.error("[Supabase] Error:", error);
       return [];

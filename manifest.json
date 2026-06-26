@@ -3,14 +3,16 @@
   "name": "TechHub Profile Sync",
   "version": "1.0.0",
   "description": "Chrome Extension để đồng bộ thông tin profile từ TechHub với Supabase",
-  "permissions": ["storage", "webRequest", "activeTab", "tabs", "scripting", "alarms", "sidePanel"],
-  "host_permissions": ["https://techhub.fpt.net/*"],
+  "permissions": ["storage", "webRequest", "activeTab", "tabs", "scripting", "alarms", "sidePanel", "declarativeNetRequest", "notifications"],
+  "host_permissions": ["https://techhub.fpt.net/*", "<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
     "default_icon": {
-      "16": "icons/icon.svg"
+      "16": "icons/coin.png",
+      "48": "icons/coin.png",
+      "128": "icons/coin.png"
     },
     "default_title": "Mở TechHub Profile Sync"
   },
@@ -18,6 +20,8 @@
     "default_path": "popup.html"
   },
   "icons": {
-    "16": "icons/icon.svg"
+    "16": "icons/coin.png",
+    "48": "icons/coin.png",
+    "128": "icons/coin.png"
   }
 }

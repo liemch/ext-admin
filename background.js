@@ -97,6 +97,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           });
           console.log("[Background] Script results:", results);
           if (results && results[0] && results[0].result) {
+            chrome.storage.local.set({ userProfile: results[0].result });
             sendResponse({ success: true, userProfile: results[0].result });
           } else {
             sendResponse({ success: false, error: "Không tìm thấy userProfile trong localStorage" });
@@ -129,10 +130,8 @@ chrome.sidePanel
 
 // Bắt đầu setup Alarm cho Cross Interaction
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.get("crossInteractAlarm", (alarm) => {
-    if (!alarm) {
-      chrome.alarms.create("crossInteractAlarm", { periodInMinutes: 30 });
-    }
+  chrome.alarms.clear("crossInteractAlarm", () => {
+    chrome.alarms.create("crossInteractAlarm", { periodInMinutes: 15 });
   });
 });
 
@@ -214,7 +213,16 @@ async function runCrossInteraction(isManual = false) {
 
     broadcastProgress(`Tìm thấy ${posts.length} bài viết cần tương tác.`, "info");
 
-    for (const post of posts) {
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    for (let i = 0; i < posts.length; i++) {
+      const post = posts[i];
+      
+      if (i > 0) {
+        broadcastProgress("Đang chờ 5s trước khi tương tác bài tiếp theo...", "info");
+        await delay(5000);
+      }
+
       if (!post.techhub_uuid) {
         console.log(`[Background] Post ${post.techhub_id} is missing techhub_uuid. Skipping.`);
         continue;
@@ -258,8 +266,64 @@ async function runCrossInteraction(isManual = false) {
     
     broadcastProgress("Hoàn tất tương tác chéo.", "success");
     
+    // Show notification when done on the active web page
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs && tabs.length > 0) {
+        chrome.scripting.executeScript({
+          target: { tabId: tabs[0].id },
+          func: (count) => {
+            const toast = document.createElement("div");
+            toast.textContent = `TechHub Sync: Đã tự động tương tác ${count} bài viết!`;
+            toast.style.position = "fixed";
+            toast.style.bottom = "20px";
+            toast.style.right = "20px";
+            toast.style.backgroundColor = "#4caf50";
+            toast.style.color = "white";
+            toast.style.padding = "10px 16px";
+            toast.style.borderRadius = "6px";
+            toast.style.boxShadow = "0 2px 8px rgba(0,0,0,0.15)";
+            toast.style.zIndex = "2147483647"; // Max z-index to stay on top
+            toast.style.fontFamily = "sans-serif";
+            toast.style.fontSize = "12px";
+            toast.style.fontWeight = "500";
+            toast.style.transition = "opacity 0.5s ease-in-out";
+            
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+              toast.style.opacity = "0";
+              setTimeout(() => toast.remove(), 500);
+            }, 5000);
+          },
+          args: [posts.length]
+        }).catch(err => console.log("[Background] Cannot inject toast:", err));
+      }
+    });
+    
   } catch (err) {
     console.error("[Background] Error in cross interaction:", err);
     broadcastProgress("Lỗi hệ thống: " + err.message, "error");
   }
 }
+
+// Bỏ qua lỗi CSRF bằng cách ghi đè Origin và Referer cho các API của TechHub
+chrome.declarativeNetRequest.updateDynamicRules({
+  removeRuleIds: [1],
+  addRules: [
+    {
+      id: 1,
+      priority: 1,
+      action: {
+        type: "modifyHeaders",
+        requestHeaders: [
+          { header: "Origin", operation: "set", value: "https://techhub.fpt.net" },
+          { header: "Referer", operation: "set", value: "https://techhub.fpt.net/" }
+        ]
+      },
+      condition: {
+        urlFilter: "||techhub.fpt.net/api/*",
+        resourceTypes: ["xmlhttprequest"]
+      }
+    }
+  ]
+});
