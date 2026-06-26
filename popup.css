@@ -714,15 +714,16 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  flex: 1;
+  overflow: hidden;
 }
 
 .admin-grid-container {
   background: #1b1e32;
   border-radius: 12px;
   border: 1px solid #2d3354;
-  overflow: hidden;
-  max-height: 400px;
   overflow-y: auto;
+  flex: 1;
 }
 
 .admin-table {

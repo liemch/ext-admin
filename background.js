@@ -3,11 +3,8 @@ importScripts('config.js', 'supabase-client.js');
 // Background Service Worker - Lắng nghe và bắt headers từ TechHub API
 
 // Biến lưu trữ Cookie và CSRF Token
-let capturedCredentials = {
-  cookie: null,
-  csrfToken: null,
-  capturedAt: null,
-};
+let capturedCredentials = {};
+let lastMemoryInteractionTime = 0;
 
 // Lắng nghe sự kiện webRequest để bắt headers
 chrome.webRequest.onBeforeSendHeaders.addListener(
@@ -55,6 +52,19 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
         },
         () => {
           console.log("Credentials saved to storage");
+          
+          // Kiểm tra xem đã qua 15 phút kể từ lần tương tác trước chưa
+          const now = Date.now();
+          chrome.storage.local.get(['lastAutoInteractionTime'], (res) => {
+            const lastTime = res.lastAutoInteractionTime || lastMemoryInteractionTime || 0;
+            if (now - lastTime > 15 * 60 * 1000) {
+              console.log("[Background] Detected new credentials and > 15 minutes since last interaction. Running immediately!");
+              lastMemoryInteractionTime = now;
+              chrome.storage.local.set({ lastAutoInteractionTime: now }, () => {
+                runCrossInteraction(false);
+              });
+            }
+          });
         }
       );
     } else {
@@ -136,15 +146,26 @@ chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch((error) => console.error(error));
 
+function setupAlarms() {
+  chrome.alarms.get("crossInteractAlarm", (alarm) => {
+    if (!alarm) {
+      console.log("[Background] Creating crossInteractAlarm (15m)");
+      chrome.alarms.create("crossInteractAlarm", { periodInMinutes: 15 });
+    }
+  });
+  chrome.alarms.get("keepAliveAlarm", (alarm) => {
+    if (!alarm) {
+      console.log("[Background] Creating keepAliveAlarm (15m)");
+      chrome.alarms.create("keepAliveAlarm", { periodInMinutes: 15 });
+    }
+  });
+}
+
 // Bắt đầu setup Alarm cho Cross Interaction và Keep Alive
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.clear("crossInteractAlarm", () => {
-    chrome.alarms.create("crossInteractAlarm", { periodInMinutes: 15 });
-  });
-  chrome.alarms.clear("keepAliveAlarm", () => {
-    chrome.alarms.create("keepAliveAlarm", { periodInMinutes: 15 });
-  });
-});
+chrome.runtime.onInstalled.addListener(setupAlarms);
+chrome.runtime.onStartup.addListener(setupAlarms);
+// Chạy setup 1 lần khi Service Worker được load để đảm bảo alarm luôn tồn tại
+setupAlarms();
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "crossInteractAlarm") {
@@ -208,8 +229,30 @@ function broadcastProgress(msg, type = "info") {
   }).catch(() => {});
 }
 
+async function refreshCSRFToken() {
+  try {
+    if (chrome.cookies) {
+      const cookies = await chrome.cookies.getAll({ url: "https://techhub.fpt.net" });
+      const csrfCookie = cookies.find(c => c.name.toLowerCase().includes('csrf'));
+      if (csrfCookie && csrfCookie.value) {
+        return csrfCookie.value;
+      }
+    }
+    console.log("[Background] CSRF token not found in cookies");
+  } catch (err) {
+    console.error("[Background] Failed to refresh CSRF token via cookies:", err);
+  }
+  return null;
+}
+
 async function runCrossInteraction(isManual = false) {
   console.log("[Background] Running cross interaction...");
+  
+  // Cập nhật lại thời gian lastAutoInteractionTime
+  const now = Date.now();
+  lastMemoryInteractionTime = now;
+  chrome.storage.local.set({ lastAutoInteractionTime: now });
+  
   broadcastProgress("Bắt đầu tiến trình tương tác...", "info");
   
   const result = await chrome.storage.local.get(['techhubCredentials', 'userProfile']);
@@ -217,11 +260,29 @@ async function runCrossInteraction(isManual = false) {
   if (!result.techhubCredentials || !result.userProfile) {
     console.log("[Background] Missing credentials/profile");
     broadcastProgress("Lỗi: Thiếu thông tin profile hoặc credentials.", "error");
+    if (!isManual) {
+      chrome.notifications.create({
+        type: "basic",
+        iconUrl: "icons/coin.png",
+        title: "Lỗi TechHub Sync",
+        message: "Thiếu thông tin. Vui lòng mở tab TechHub để đồng bộ lại."
+      });
+    }
     return;
   }
 
   const { techhubCredentials: creds, userProfile } = result;
   const username = userProfile.username;
+
+  // Refresh CSRF Token before interacting
+  const freshCsrf = await refreshCSRFToken();
+  if (freshCsrf) {
+    console.log("[Background] Obtained fresh CSRF token",freshCsrf);
+    creds.csrfToken = freshCsrf;
+    chrome.storage.local.set({ techhubCredentials: creds });
+  } else {
+    console.log("[Background] Could not refresh CSRF token, using old one");
+  }
 
   try {
     // 1. Get comment templates
@@ -233,7 +294,7 @@ async function runCrossInteraction(isManual = false) {
     }
 
     // 2. Get uninteracted posts
-    const limit = isManual ? 5 : 1;
+    const limit = 5; // Cập nhật: Lấy tối đa 5 bài cho cả tương tác tự động và thủ công
     const posts = await supabase.getUninteractedPosts(username, limit);
     if (!posts || posts.length === 0) {
       console.log("[Background] No uninteracted posts found");
@@ -296,43 +357,27 @@ async function runCrossInteraction(isManual = false) {
     
     broadcastProgress("Hoàn tất tương tác chéo.", "success");
     
-    // Show notification when done on the active web page
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs && tabs.length > 0) {
-        chrome.scripting.executeScript({
-          target: { tabId: tabs[0].id },
-          func: (count) => {
-            const toast = document.createElement("div");
-            toast.textContent = `TechHub Sync: Đã tự động tương tác ${count} bài viết!`;
-            toast.style.position = "fixed";
-            toast.style.bottom = "20px";
-            toast.style.right = "20px";
-            toast.style.backgroundColor = "#4caf50";
-            toast.style.color = "white";
-            toast.style.padding = "10px 16px";
-            toast.style.borderRadius = "6px";
-            toast.style.boxShadow = "0 2px 8px rgba(0,0,0,0.15)";
-            toast.style.zIndex = "2147483647"; // Max z-index to stay on top
-            toast.style.fontFamily = "sans-serif";
-            toast.style.fontSize = "12px";
-            toast.style.fontWeight = "500";
-            toast.style.transition = "opacity 0.5s ease-in-out";
-            
-            document.body.appendChild(toast);
-            
-            setTimeout(() => {
-              toast.style.opacity = "0";
-              setTimeout(() => toast.remove(), 500);
-            }, 5000);
-          },
-          args: [posts.length]
-        }).catch(err => console.log("[Background] Cannot inject toast:", err));
-      }
-    });
+    // Show system notification when done
+    if (!isManual) {
+      chrome.notifications.create({
+        type: "basic",
+        iconUrl: "icons/coin.png",
+        title: "TechHub Profile Sync",
+        message: `Đã tự động tương tác ${posts.length} bài viết!`
+      });
+    }
     
   } catch (err) {
     console.error("[Background] Error in cross interaction:", err);
     broadcastProgress("Lỗi hệ thống: " + err.message, "error");
+    if (!isManual) {
+      chrome.notifications.create({
+        type: "basic",
+        iconUrl: "icons/coin.png",
+        title: "Lỗi TechHub Sync",
+        message: `Có lỗi xảy ra: ${err.message}`
+      });
+    }
   }
 }
 

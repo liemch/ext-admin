@@ -461,6 +461,33 @@ class SupabaseClient {
   }
 
   /**
+   * Lấy thống kê số lượt tương tác trong ngày hôm nay của tất cả người dùng
+   * @returns {Promise<Object>}
+   */
+  async getTodayInteractionsStats() {
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const todayStr = today.toISOString();
+      
+      const url = `${this.restUrl}/interactions?created_at=gte.${todayStr}&interaction_type=eq.comment&select=username`;
+      const response = await fetch(url, { headers: this.getHeaders() });
+      if (!response.ok) throw new Error(`Failed to fetch interactions stats: ${response.status}`);
+      const interactions = await response.json();
+      
+      const stats = {};
+      interactions.forEach(i => {
+        if (!stats[i.username]) stats[i.username] = 0;
+        stats[i.username]++;
+      });
+      return stats;
+    } catch (error) {
+      console.error("[Supabase] Error fetching today interactions stats:", error);
+      return {};
+    }
+  }
+
+  /**
    * Lấy danh sách tất cả người dùng
    * @returns {Promise<Array>}
    */
@@ -668,6 +695,23 @@ class SupabaseClient {
         console.warn("[Supabase] Failed to fetch locked users, skipping lock filter.");
       }
 
+      // Get users with >= 2 open posts and feed_score >= 6
+      const skipUrl = `${this.restUrl}/posts?status=eq.open&feed_score=gte.6&select=username`;
+      const skipRes = await fetch(skipUrl, { headers: this.getHeaders() });
+      const skipUsernames = new Set();
+      if (skipRes.ok) {
+        const topPosts = await skipRes.json();
+        const userCounts = {};
+        for (const p of topPosts) {
+          userCounts[p.username] = (userCounts[p.username] || 0) + 1;
+          if (userCounts[p.username] >= 2) {
+            skipUsernames.add(p.username);
+          }
+        }
+      } else {
+        console.warn("[Supabase] Failed to fetch top posts, skipping >=2 filter.");
+      }
+
       // Get user interactions
       const postIds = posts.map(p => p.techhub_id).join(',');
       const interactionsUrl = `${this.restUrl}/interactions?username=eq.${encodeURIComponent(username)}&techhub_id=in.(${postIds})`;
@@ -677,7 +721,7 @@ class SupabaseClient {
 
       // Filter
       const interactedIds = new Set(interactions.map(i => i.techhub_id));
-      const uninteracted = posts.filter(p => !interactedIds.has(p.techhub_id) && !lockedUsernames.has(p.username));
+      const uninteracted = posts.filter(p => !interactedIds.has(p.techhub_id) && !lockedUsernames.has(p.username) && !skipUsernames.has(p.username));
       
       const selectedPosts = [];
       const seenUsers = new Set();

@@ -72,6 +72,38 @@ async function init() {
 
   // Setup event listeners
   setupEventListeners();
+
+  // Bắt đầu đếm ngược
+  startCountdown();
+}
+
+let countdownInterval;
+
+function startCountdown() {
+  chrome.alarms.get("crossInteractAlarm", (alarm) => {
+    if (!alarm) {
+      if (elements.userDepartment) elements.userDepartment.title = "Tự động tương tác: Tắt";
+      return;
+    }
+    
+    if (countdownInterval) clearInterval(countdownInterval);
+    
+    countdownInterval = setInterval(() => {
+      const now = Date.now();
+      const timeLeft = alarm.scheduledTime - now;
+      
+      if (timeLeft <= 0) {
+        if (elements.userDepartment) elements.userDepartment.title = "Đang chạy tương tác...";
+        setTimeout(startCountdown, 5000);
+      } else {
+        const minutes = Math.floor(timeLeft / 60000);
+        const seconds = Math.floor((timeLeft % 60000) / 1000);
+        if (elements.userDepartment) {
+          elements.userDepartment.title = `Tự động tương tác sau: ${minutes}:${seconds.toString().padStart(2, '0')} (Bấm để chạy thủ công)`;
+        }
+      }
+    }, 1000);
+  });
 }
 
 // Tải dữ liệu từ TechHub và storage
@@ -545,6 +577,10 @@ function setupEventListeners() {
             elements.runInteractBtn.disabled = false;
             elements.runInteractBtn.querySelector(".btn-text").textContent = "Tương tác bài mới";
           }
+          
+          setTimeout(() => {
+            elements.interactLog.classList.add("hidden");
+          }, 5000);
         }
       }
     }
@@ -572,12 +608,20 @@ async function loadAdminUsers() {
   try {
     const users = await supabase.getAllUsers();
     const postsStats = await supabase.getAllPostsStats();
+    const todayInteractions = await supabase.getTodayInteractionsStats();
     elements.adminLoading.classList.add("hidden");
     
     if (!users || users.length === 0) {
-      elements.adminUsersList.innerHTML = "<tr><td colspan='5' style='text-align: center; padding: 20px;'>Không có người dùng nào</td></tr>";
+      elements.adminUsersList.innerHTML = "<tr><td colspan='6' style='text-align: center; padding: 20px;'>Không có người dùng nào</td></tr>";
       return;
     }
+    
+    // Sắp xếp người dùng theo số lượng bài viết (cao nhất lên trên)
+    users.sort((a, b) => {
+      const postsA = postsStats[a.username] ? postsStats[a.username].total : 0;
+      const postsB = postsStats[b.username] ? postsStats[b.username].total : 0;
+      return postsB - postsA;
+    });
     
     users.forEach(user => {
       const tr = document.createElement("tr");
@@ -608,6 +652,18 @@ async function loadAdminUsers() {
       } else {
         tdWaiting.style.color = "#4b5563";
         tdWaiting.textContent = "0";
+      }
+      
+      const tdInteractions = document.createElement("td");
+      tdInteractions.style.textAlign = "center";
+      tdInteractions.style.fontWeight = "600";
+      const interactionCount = todayInteractions[user.username] || 0;
+      if (interactionCount > 0) {
+        tdInteractions.style.color = "#48bb78"; // Green if active today
+        tdInteractions.textContent = interactionCount;
+      } else {
+        tdInteractions.style.color = "#a0aec0";
+        tdInteractions.textContent = "0";
       }
       
       const tdAdmin = document.createElement("td");
@@ -649,12 +705,13 @@ async function loadAdminUsers() {
       tr.appendChild(tdName);
       tr.appendChild(tdPosts);
       tr.appendChild(tdWaiting);
+      tr.appendChild(tdInteractions);
       tr.appendChild(tdAdmin);
       tr.appendChild(tdLocked);
       elements.adminUsersList.appendChild(tr);
     });
   } catch (err) {
     elements.adminLoading.classList.add("hidden");
-    elements.adminUsersList.innerHTML = `<tr><td colspan='5' style='text-align: center; color: #f56565;'>Lỗi tải dữ liệu: ${err.message}</td></tr>`;
+    elements.adminUsersList.innerHTML = `<tr><td colspan='6' style='text-align: center; color: #f56565;'>Lỗi tải dữ liệu: ${err.message}</td></tr>`;
   }
 }
