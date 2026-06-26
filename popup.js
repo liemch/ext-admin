@@ -7,7 +7,7 @@ const elements = {
   credentialsSection: document.getElementById("credentialsSection"),
   errorSection: document.getElementById("errorSection"),
   retryBtn: document.getElementById("retryBtn"),
-  footer: document.querySelector(".footer"),
+  requireLoginAlert: document.getElementById("requireLoginAlert"),
 
   // Sync posts elements
   syncPostsBtn: document.getElementById("syncPostsBtn"),
@@ -37,6 +37,14 @@ const elements = {
   // Settings elements
   runInteractBtn: document.getElementById("runInteractBtn"),
   interactLog: document.getElementById("interactLog"),
+
+  // Admin elements
+  adminBtn: document.getElementById("adminBtn"),
+  adminSection: document.getElementById("adminSection"),
+  closeAdminBtn: document.getElementById("closeAdminBtn"),
+  adminUsersList: document.getElementById("adminUsersList"),
+  adminLoading: document.getElementById("adminLoading"),
+  postsGridSection: document.querySelector(".posts-grid-section"),
 };
 
 // State
@@ -75,7 +83,7 @@ async function loadData() {
     const profileResponse = await sendMessage({ action: "getUserProfile" });
 
     if (!profileResponse.success || !profileResponse.userProfile) {
-      showError("Không tìm thấy thông tin profile. Vui lòng mở TechHub và đăng nhập.");
+      showError(profileResponse.error || "Không tìm thấy thông tin profile. Vui lòng mở TechHub và đăng nhập trước khi sử dụng.");
       return;
     }
 
@@ -216,9 +224,16 @@ async function syncToSupabase() {
 
     // Sync user
     console.log("Syncing user to Supabase...");
-    const result = await supabase.syncUser(currentUserProfile, currentCredentials);
+    const result = await supabase.syncUser(currentUserProfile);
 
     console.log("Sync result:", result);
+
+    // Kiểm tra quyền Admin
+    if (result.user && result.user.is_admin) {
+      if (elements.adminBtn) elements.adminBtn.classList.remove("hidden");
+    } else {
+      if (elements.adminBtn) elements.adminBtn.classList.add("hidden");
+    }
 
     // Hiển thị kết quả
     if (result.action === "created") {
@@ -480,10 +495,12 @@ function sendMessage(message) {
 // Setup event listeners
 function setupEventListeners() {
   // Retry button
-  elements.retryBtn.addEventListener("click", () => {
-    elements.errorSection.classList.add("hidden");
-    loadData();
-  });
+  if (elements.retryBtn) {
+    elements.retryBtn.addEventListener("click", () => {
+      elements.errorSection.classList.add("hidden");
+      loadData();
+    });
+  }
 
   // Sync posts button
   if (elements.syncPostsBtn) {
@@ -492,9 +509,15 @@ function setupEventListeners() {
 
   // Reload posts button
   if (elements.reloadPostsBtn) {
-    elements.reloadPostsBtn.addEventListener("click", () => {
-      loadPosts();
-    });
+    elements.reloadPostsBtn.addEventListener("click", loadPosts);
+  }
+
+  // Admin buttons
+  if (elements.adminBtn) {
+    elements.adminBtn.addEventListener("click", openAdminSection);
+  }
+  if (elements.closeAdminBtn) {
+    elements.closeAdminBtn.addEventListener("click", closeAdminSection);
   }
 
   // Interact Button (Hidden on department badge)
@@ -526,4 +549,112 @@ function setupEventListeners() {
       }
     }
   });
+}
+
+// Admin logic
+function openAdminSection() {
+  if (elements.postsGridSection) elements.postsGridSection.classList.add("hidden");
+  if (elements.adminSection) elements.adminSection.classList.remove("hidden");
+  loadAdminUsers();
+}
+
+function closeAdminSection() {
+  if (elements.postsGridSection) elements.postsGridSection.classList.remove("hidden");
+  if (elements.adminSection) elements.adminSection.classList.add("hidden");
+}
+
+async function loadAdminUsers() {
+  if (!elements.adminUsersList || !elements.adminLoading) return;
+  
+  elements.adminUsersList.innerHTML = "";
+  elements.adminLoading.classList.remove("hidden");
+  
+  try {
+    const users = await supabase.getAllUsers();
+    const postsStats = await supabase.getAllPostsStats();
+    elements.adminLoading.classList.add("hidden");
+    
+    if (!users || users.length === 0) {
+      elements.adminUsersList.innerHTML = "<tr><td colspan='5' style='text-align: center; padding: 20px;'>Không có người dùng nào</td></tr>";
+      return;
+    }
+    
+    users.forEach(user => {
+      const tr = document.createElement("tr");
+      
+      const tdName = document.createElement("td");
+      tdName.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <img src="${user.avatar || 'icons/icon48.png'}" style="width: 24px; height: 24px; border-radius: 50%;">
+          <div style="display: flex; flex-direction: column;">
+            <span style="font-weight: 500;">${user.full_name || user.username}</span>
+            <span style="font-size: 10px; color: #a0aec0;">@${user.username}</span>
+          </div>
+        </div>
+      `;
+
+      const stats = postsStats[user.username] || { total: 0, waiting: 0 };
+      
+      const tdPosts = document.createElement("td");
+      tdPosts.style.textAlign = "center";
+      tdPosts.style.fontWeight = "600";
+      tdPosts.style.color = "#667eea";
+      tdPosts.textContent = stats.total;
+
+      const tdWaiting = document.createElement("td");
+      tdWaiting.style.textAlign = "center";
+      if (stats.waiting > 0) {
+        tdWaiting.innerHTML = `<span style="color: #ffc107; font-weight: 600;">${stats.waiting}</span> <span style="font-size: 10px;">⭐</span>`;
+      } else {
+        tdWaiting.style.color = "#4b5563";
+        tdWaiting.textContent = "0";
+      }
+      
+      const tdAdmin = document.createElement("td");
+      tdAdmin.className = "checkbox-wrapper";
+      const chkAdmin = document.createElement("input");
+      chkAdmin.type = "checkbox";
+      chkAdmin.checked = !!user.is_admin;
+      chkAdmin.addEventListener("change", async (e) => {
+        const isChecked = e.target.checked;
+        e.target.disabled = true;
+        try {
+          await supabase.updateUserStatus(user.username, { is_admin: isChecked });
+        } catch (err) {
+          e.target.checked = !isChecked; // revert
+          alert("Lỗi khi cập nhật quyền Admin");
+        }
+        e.target.disabled = false;
+      });
+      tdAdmin.appendChild(chkAdmin);
+      
+      const tdLocked = document.createElement("td");
+      tdLocked.className = "checkbox-wrapper";
+      const chkLocked = document.createElement("input");
+      chkLocked.type = "checkbox";
+      chkLocked.checked = !!user.is_locked;
+      chkLocked.addEventListener("change", async (e) => {
+        const isChecked = e.target.checked;
+        e.target.disabled = true;
+        try {
+          await supabase.updateUserStatus(user.username, { is_locked: isChecked });
+        } catch (err) {
+          e.target.checked = !isChecked; // revert
+          alert("Lỗi khi cập nhật trạng thái Khóa");
+        }
+        e.target.disabled = false;
+      });
+      tdLocked.appendChild(chkLocked);
+      
+      tr.appendChild(tdName);
+      tr.appendChild(tdPosts);
+      tr.appendChild(tdWaiting);
+      tr.appendChild(tdAdmin);
+      tr.appendChild(tdLocked);
+      elements.adminUsersList.appendChild(tr);
+    });
+  } catch (err) {
+    elements.adminLoading.classList.add("hidden");
+    elements.adminUsersList.innerHTML = `<tr><td colspan='5' style='text-align: center; color: #f56565;'>Lỗi tải dữ liệu: ${err.message}</td></tr>`;
+  }
 }

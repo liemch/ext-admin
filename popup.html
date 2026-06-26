@@ -8,7 +8,19 @@
   </head>
   <body>
     <div class="container">
+      
+      <!-- Require Login Alert -->
+      <div id="requireLoginAlert" class="require-login-alert hidden">
+        <span style="font-size: 16px;">⚠️</span> 
+        <span>Vui lòng <a href="https://techhub.fpt.net" target="_blank" style="color: #667eea; font-weight: bold; text-decoration: underline;">mở TechHub</a> và đăng nhập trước khi sử dụng!</span>
+      </div>
 
+      <!-- Error Section -->
+      <div id="errorSection" class="error-section hidden">
+        <div class="error-icon">⚠️</div>
+        <p id="errorMessage" class="error-text">-</p>
+        <button id="retryBtn" class="btn btn-secondary error-retry-btn" title="Thử tải lại cấu hình và kết nối">Thử lại</button>
+      </div>
 
       <!-- User Profile Section -->
       <div id="profileSection" class="profile-section hidden">
@@ -27,10 +39,15 @@
               </div>
             </div>
 
-            <button id="syncPostsBtn" class="btn btn-sync-posts" title="Đồng bộ 10 bài viết mới nhất của bạn từ TechHub về cơ sở dữ liệu">
-              <span class="btn-icon">📝</span>
-              <span class="btn-text">Đồng bộ</span>
-            </button>
+            <div class="header-actions">
+              <button id="adminBtn" class="icon-btn hidden" title="Quản trị người dùng" style="background: rgba(255, 255, 255, 0.1); margin-right: 8px;">
+                <span class="btn-icon">⚙️</span>
+              </button>
+              <button id="syncPostsBtn" class="btn btn-sync-posts" title="Đồng bộ 10 bài viết mới nhất của bạn từ TechHub về cơ sở dữ liệu">
+                <span class="btn-icon">📝</span>
+                <span class="btn-text">Đồng bộ</span>
+              </button>
+            </div>
           </div>
 
           <div id="syncPostsMessage" class="sync-message hidden"></div>
@@ -67,20 +84,42 @@
               <span>⚠️ Chưa có bài viết nào</span>
             </div>
           </div>
+          
+          <!-- Admin Section -->
+          <div id="adminSection" class="admin-section hidden">
+            <div class="posts-grid-header">
+              <h3>Quản trị người dùng</h3>
+              <div class="posts-header-right">
+                <button id="closeAdminBtn" class="icon-btn" title="Đóng trang quản trị">
+                  <span class="reload-icon">❌</span>
+                </button>
+              </div>
+            </div>
+            
+            <div class="admin-grid-container">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th>Người dùng</th>
+                    <th style="width: 45px; text-align: center;" title="Tổng số bài viết">Bài viết</th>
+                    <th style="width: 45px; text-align: center;" title="Số bài đang chờ publish">⭐</th>
+                    <th style="width: 50px; text-align: center;">Admin</th>
+                    <th style="width: 50px; text-align: center;">Khóa</th>
+                  </tr>
+                </thead>
+                <tbody id="adminUsersList">
+                  <!-- Users will be loaded here -->
+                </tbody>
+              </table>
+              <div id="adminLoading" class="posts-loading hidden">
+                <div class="loading-spinner"></div>
+                <span>Đang tải...</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- Error Section -->
-      <div id="errorSection" class="error-section hidden">
-        <div class="error-icon">⚠️</div>
-        <p id="errorMessage">-</p>
-        <button id="retryBtn" class="btn btn-secondary" title="Thử tải lại cấu hình và kết nối">Thử lại</button>
-      </div>
-
-      <!-- Footer -->
-      <div class="footer">
-        <p>Vui lòng mở <a href="https://techhub.fpt.net" target="_blank">TechHub</a> và đăng nhập trước khi sử dụng</p>
-      </div>
     </div>
 
     <script src="config.js"></script>

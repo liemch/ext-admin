@@ -41,10 +41,10 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
       console.log("Cookie:", cookie);
       console.log("X-CSRFToken:", csrf);
 
-      // Lưu credentials vào storage
+      // Lưu credentials vào storage, giữ lại giá trị cũ nếu request hiện tại không có
       capturedCredentials = {
-        cookie: cookie,
-        csrfToken: csrf,
+        cookie: cookie || capturedCredentials.cookie,
+        csrfToken: csrf || capturedCredentials.csrfToken,
         capturedAt: new Date().toISOString(),
       };
 
@@ -81,34 +81,42 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === "getUserProfile") {
-    // Lấy userProfile từ localStorage của tab TechHub
-    console.log("[Background] Getting user profile...");
-    chrome.tabs.query({ url: "https://techhub.fpt.net/*" }, async (tabs) => {
-      console.log("[Background] Tabs found:", tabs.length);
-      if (tabs.length > 0) {
-        try {
-          console.log("[Background] Executing script on tab:", tabs[0].id);
-          const results = await chrome.scripting.executeScript({
-            target: { tabId: tabs[0].id },
-            func: () => {
-              const userProfile = localStorage.getItem("userProfile");
-              return userProfile ? JSON.parse(userProfile) : null;
-            },
-          });
-          console.log("[Background] Script results:", results);
-          if (results && results[0] && results[0].result) {
-            chrome.storage.local.set({ userProfile: results[0].result });
-            sendResponse({ success: true, userProfile: results[0].result });
-          } else {
-            sendResponse({ success: false, error: "Không tìm thấy userProfile trong localStorage" });
-          }
-        } catch (error) {
-          console.error("[Background] Error executing script:", error);
-          sendResponse({ success: false, error: "Lỗi khi đọc userProfile: " + error.message });
-        }
+    chrome.storage.local.get("userProfile", (result) => {
+      if (result.userProfile) {
+        console.log("[Background] Found user profile in storage");
+        sendResponse({ success: true, userProfile: result.userProfile });
       } else {
-        console.log("[Background] No TechHub tabs found");
-        sendResponse({ success: false, error: "Không tìm thấy tab TechHub. Vui lòng mở https://techhub.fpt.net" });
+        // Lấy userProfile từ localStorage của tab TechHub
+        console.log("[Background] Profile not in storage, querying tabs...");
+        chrome.tabs.query({}, async (tabs) => {
+          const techhubTabs = tabs.filter(t => t.url && t.url.includes("techhub.fpt.net"));
+          console.log("[Background] TechHub tabs found:", techhubTabs.length);
+          if (techhubTabs.length > 0) {
+            try {
+              console.log("[Background] Executing script on tab:", techhubTabs[0].id);
+              const results = await chrome.scripting.executeScript({
+                target: { tabId: techhubTabs[0].id },
+                func: () => {
+                  const userProfile = localStorage.getItem("userProfile");
+                  return userProfile ? JSON.parse(userProfile) : null;
+                },
+              });
+              console.log("[Background] Script results:", results);
+              if (results && results[0] && results[0].result) {
+                chrome.storage.local.set({ userProfile: results[0].result });
+                sendResponse({ success: true, userProfile: results[0].result });
+              } else {
+                sendResponse({ success: false, error: "Không tìm thấy userProfile trong localStorage của TechHub. Vui lòng đăng nhập lại." });
+              }
+            } catch (error) {
+              console.error("[Background] Error executing script:", error);
+              sendResponse({ success: false, error: "Lỗi khi đọc userProfile: " + error.message });
+            }
+          } else {
+            console.log("[Background] No TechHub tabs found");
+            sendResponse({ success: false, error: "Vui lòng mở TechHub và đăng nhập trước khi sử dụng." });
+          }
+        });
       }
     });
     return true;
@@ -128,18 +136,40 @@ chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch((error) => console.error(error));
 
-// Bắt đầu setup Alarm cho Cross Interaction
+// Bắt đầu setup Alarm cho Cross Interaction và Keep Alive
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.clear("crossInteractAlarm", () => {
     chrome.alarms.create("crossInteractAlarm", { periodInMinutes: 15 });
+  });
+  chrome.alarms.clear("keepAliveAlarm", () => {
+    chrome.alarms.create("keepAliveAlarm", { periodInMinutes: 15 });
   });
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "crossInteractAlarm") {
     runCrossInteraction();
+  } else if (alarm.name === "keepAliveAlarm") {
+    pingTechHubToKeepAlive();
   }
 });
+
+async function pingTechHubToKeepAlive() {
+  console.log("[Background] Pinging TechHub to keep session alive...");
+  try {
+    const res = await fetch("https://techhub.fpt.net/api/v1/accounts/profile", {
+      method: "GET",
+      credentials: "include" 
+    });
+    if (res.ok) {
+      console.log("[Background] Keep-alive ping successful!");
+    } else {
+      console.log("[Background] Keep-alive ping failed with status:", res.status);
+    }
+  } catch (error) {
+    console.error("[Background] Keep-alive ping error:", error);
+  }
+}
 
 async function interactWithTechHub(post, type, content, credentials) {
   const headers = {

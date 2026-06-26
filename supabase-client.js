@@ -8,10 +8,10 @@
  * @property {string|null} email
  * @property {string|null} avatar
  * @property {number} posts_count
- * @property {string|null} cookie
- * @property {string|null} x_csrf_token
  * @property {string|null} last_update
  * @property {string} created_at
+ * @property {boolean} is_locked
+ * @property {boolean} is_admin
  */
 
 /**
@@ -101,8 +101,6 @@ class SupabaseClient {
         username: userData.username,
         email: userData.email,
         avatar: userData.avatar,
-        cookie: userData.cookie,
-        x_csrf_token: userData.csrfToken,
         last_update: new Date().toISOString(),
         created_at: new Date().toISOString(),
       };
@@ -131,21 +129,15 @@ class SupabaseClient {
   }
 
   /**
-   * Cập nhật Cookie và X-CSRFToken cho user
+   * Cập nhật thời gian hoạt động cuối của user
    * @param {string} username
-   * @param {string} cookie
-   * @param {string} csrfToken
    * @returns {Promise<Object>}
    */
-  async updateUserCredentials(username, cookie, csrfToken) {
-    console.log("[Supabase] Updating credentials for:", username);
-    console.log("[Supabase] Cookie length:", cookie ? cookie.length : 0);
-    console.log("[Supabase] CSRF Token:", csrfToken ? csrfToken.substring(0, 20) + "..." : "NULL");
+  async updateUserActivity(username) {
+    console.log("[Supabase] Updating activity for:", username);
     try {
       const url = `${this.restUrl}/${SUPABASE_CONFIG.tableName}?username=eq.${encodeURIComponent(username)}`;
       const payload = {
-        cookie: cookie,
-        x_csrf_token: csrfToken,
         last_update: new Date().toISOString(),
       };
       console.log("[Supabase] Update URL:", url);
@@ -175,25 +167,20 @@ class SupabaseClient {
   /**
    * Kiểm tra và tạo/cập nhật user
    * @param {Object} userProfile - Thông tin profile từ TechHub
-   * @param {Object} credentials - Cookie và CSRF Token
    * @returns {Promise<{action: string, user: Object}>}
    */
-  async syncUser(userProfile, credentials) {
+  async syncUser(userProfile) {
     console.log("[Supabase] ========== SYNC USER ==========");
     console.log("[Supabase] UserProfile:", userProfile);
-    console.log("[Supabase] Credentials:", {
-      cookie: credentials.cookie ? credentials.cookie.substring(0, 50) + "..." : "NULL",
-      csrfToken: credentials.csrfToken || "NULL",
-    });
     try {
       console.log("[Supabase] Finding existing user...");
       const existingUser = await this.findUserByUsername(userProfile.username);
       console.log("[Supabase] Existing user:", existingUser);
 
       if (existingUser) {
-        console.log("[Supabase] User exists, updating credentials...");
-        // User đã tồn tại - Cập nhật credentials
-        const updatedUser = await this.updateUserCredentials(userProfile.username, credentials.cookie, credentials.csrfToken);
+        console.log("[Supabase] User exists, updating activity...");
+        // User đã tồn tại - Cập nhật activity
+        const updatedUser = await this.updateUserActivity(userProfile.username);
         console.log("[Supabase] Updated user:", updatedUser);
         return {
           action: "updated",
@@ -208,8 +195,6 @@ class SupabaseClient {
           username: userProfile.username,
           email: userProfile.email,
           avatar: userProfile.avatar,
-          cookie: credentials.cookie,
-          csrfToken: credentials.csrfToken,
         });
         console.log("[Supabase] Created user:", newUser);
         return {
@@ -450,6 +435,77 @@ class SupabaseClient {
   }
 
   /**
+   * Lấy thống kê số lượng bài viết và số bài đang chờ publish của tất cả người dùng
+   * @returns {Promise<Object>}
+   */
+  async getAllPostsStats() {
+    try {
+      const url = `${this.restUrl}/posts?select=username,status,feed_score`;
+      const response = await fetch(url, { headers: this.getHeaders() });
+      if (!response.ok) throw new Error(`Failed to fetch posts stats: ${response.status}`);
+      const posts = await response.json();
+      
+      const stats = {};
+      posts.forEach(p => {
+        if (!stats[p.username]) stats[p.username] = { total: 0, waiting: 0 };
+        stats[p.username].total++;
+        if (p.status === 'open' && p.feed_score >= 6) {
+          stats[p.username].waiting++;
+        }
+      });
+      return stats;
+    } catch (error) {
+      console.error("[Supabase] Error fetching all posts stats:", error);
+      return {};
+    }
+  }
+
+  /**
+   * Lấy danh sách tất cả người dùng
+   * @returns {Promise<Array>}
+   */
+  async getAllUsers() {
+    try {
+      const url = `${this.restUrl}/${SUPABASE_CONFIG.tableName}?order=created_at.desc`;
+      const response = await fetch(url, { headers: this.getHeaders() });
+      if (!response.ok) throw new Error(`Failed to fetch users: ${response.status}`);
+      return await response.json();
+    } catch (error) {
+      console.error("[Supabase] Error fetching all users:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Cập nhật trạng thái người dùng (Admin, Locked)
+   * @param {string} username 
+   * @param {Object} updates 
+   * @returns {Promise<Object>}
+   */
+  async updateUserStatus(username, updates) {
+    try {
+      const url = `${this.restUrl}/${SUPABASE_CONFIG.tableName}?username=eq.${encodeURIComponent(username)}`;
+      const payload = {};
+      if (updates.hasOwnProperty('is_locked')) payload.is_locked = updates.is_locked;
+      if (updates.hasOwnProperty('is_admin')) payload.is_admin = updates.is_admin;
+      payload.last_update = new Date().toISOString();
+
+      const response = await fetch(url, {
+        method: "PATCH",
+        headers: this.getHeaders(),
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) throw new Error(`Failed to update user status: ${response.status}`);
+      const data = await response.json();
+      return data.length > 0 ? data[0] : null;
+    } catch (error) {
+      console.error("[Supabase] Error updating user status:", error);
+      throw error;
+    }
+  }
+
+  /**
    * Lấy danh sách bài viết từ TechHub API
    * @param {string} username
    * @param {number} page
@@ -601,6 +657,17 @@ class SupabaseClient {
 
       if (posts.length === 0) return [];
 
+      // Get locked users
+      const lockedUrl = `${this.restUrl}/${SUPABASE_CONFIG.tableName}?is_locked=eq.true&select=username`;
+      const lockedRes = await fetch(lockedUrl, { headers: this.getHeaders() });
+      let lockedUsernames = new Set();
+      if (lockedRes.ok) {
+        const lockedUsers = await lockedRes.json();
+        lockedUsernames = new Set(lockedUsers.map(u => u.username));
+      } else {
+        console.warn("[Supabase] Failed to fetch locked users, skipping lock filter.");
+      }
+
       // Get user interactions
       const postIds = posts.map(p => p.techhub_id).join(',');
       const interactionsUrl = `${this.restUrl}/interactions?username=eq.${encodeURIComponent(username)}&techhub_id=in.(${postIds})`;
@@ -610,7 +677,7 @@ class SupabaseClient {
 
       // Filter
       const interactedIds = new Set(interactions.map(i => i.techhub_id));
-      const uninteracted = posts.filter(p => !interactedIds.has(p.techhub_id));
+      const uninteracted = posts.filter(p => !interactedIds.has(p.techhub_id) && !lockedUsernames.has(p.username));
       
       const selectedPosts = [];
       const seenUsers = new Set();
