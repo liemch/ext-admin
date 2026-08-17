@@ -1,175 +1,112 @@
-# TechHub Profile Sync - Chrome Extension
+# My Angel
 
-Chrome Extension để đồng bộ thông tin profile từ TechHub (techhub.fpt.net) với Supabase.
+Chrome Extension (MV3) hỗ trợ quản lý bài viết trên [TechHub](https://techhub.fpt.net): quét bài, AI trả lời comment, AI tự thảo luận, auto comment và hẹn xóa bài.
 
 ## Tính năng
 
-- 🔐 Tự động capture Cookie và X-CSRFToken từ requests đến TechHub API
-- 👤 Hiển thị thông tin profile người dùng từ localStorage
-- 🔄 Đồng bộ thông tin với Supabase database
-- ✨ Tự động tạo mới hoặc cập nhật user khi mở popup
+- Capture phiên TechHub (cookie / CSRF) trong background
+- Quét bài của user (bỏ bài đã `published_at`) → lưu Supabase
+- Hiển thị điểm bài: `1 cmt = 0.2` · `1 vote = 0.1` · `1 medal = 6`
+- **AI trả lời comment**: đọc nội dung bài + chuỗi hội thoại → NVIDIA gen → lưu `reply_drafts` → reply
+- **AI tự thảo luận**: gen comment gốc trên chính bài viết, đếm mục tiêu từng bài,
+  chạy ngẫu nhiên mỗi 1–5 phút → lưu `discussion_drafts`
+- **Auto comment** 1 bài (random 2–5 giây, đủ số lượng thì dừng), chạy ngay hoặc hẹn giờ bắt đầu
+- **Hẹn xóa bài** qua `DELETE /api/v1/articles/{uuid}/`
+- UI dashboard: sidebar tính năng, bảng bài viết có tìm kiếm, tự co gọn trong side panel;
+  mở full tab bằng nút "Mở dạng tab"
 
-## Cài đặt
+## Cài đặt nhanh
 
-### 1. Cấu hình Supabase
+### 1. Cấu hình
 
-Mở file `config.js` và thay thế các giá trị:
+Copy `config.example.js` → `config.js` (nếu chưa có) và điền:
 
 ```javascript
 const SUPABASE_CONFIG = {
-  url: "YOUR_SUPABASE_URL", // Ví dụ: 'https://xxxxx.supabase.co'
-  anonKey: "YOUR_SUPABASE_ANON_KEY", // Anon/Public key
+  url: "https://xxxxx.supabase.co",
+  anonKey: "your-supabase-anon-key",
   tableName: "users",
+};
+
+const NVIDIA_CONFIG = {
+  apiKey: "nvapi-...",
+  baseUrl: "https://integrate.api.nvidia.com/v1",
+  model: "nvidia/nemotron-3.5-lightning-30b-a3b",
+  maxTokens: 256,
+  temperature: 1,
+  topP: 0.95,
+  enableThinking: false,
 };
 ```
 
-### 2. Tạo bảng trong Supabase
+API key NVIDIA: https://build.nvidia.com/settings/api-keys
 
-Chạy SQL sau trong Supabase SQL Editor:
+### 2. Setup Supabase
 
-```sql
--- Tạo bảng users
-CREATE TABLE users (
-    id SERIAL PRIMARY KEY,
-    full_name VARCHAR(150),
-    username VARCHAR(100) UNIQUE,
-    email VARCHAR(255),
-    avatar TEXT,
-    cookie TEXT,
-    x_csrf_token VARCHAR(255),
-    last_update TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
+Trong SQL Editor, chạy lần lượt:
 
--- Tạo index cho username để tìm kiếm nhanh hơn
-CREATE INDEX idx_users_username ON users(username);
+1. `supabase/migrations/001_init_schema.sql`
+2. `supabase/migrations/002_seed_settings_and_templates.sql` (sửa `YOUR_TECHHUB_USERNAME`)
+3. `supabase/migrations/003_auto_reply.sql` (chỉ khi upgrade DB cũ)
+4. `supabase/migrations/004_ai_reply_drafts.sql`
+5. `supabase/migrations/005_ai_discussion.sql`
 
--- Tạo bảng posts
-CREATE TABLE posts (
-    id SERIAL PRIMARY KEY,
-    title TEXT,
-    status VARCHAR(50),
-    techhub_id BIGINT UNIQUE,
-    techhub_uuid VARCHAR(100),
-    username VARCHAR(100),
-    url TEXT,
-    votes_score FLOAT DEFAULT 0,
-    comments_count INTEGER DEFAULT 0,
-    feed_score FLOAT DEFAULT 0,
-    published_at TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
+Chi tiết bảng / kiểm tra: xem [`supabase/README.md`](supabase/README.md).
 
--- Tạo index cho posts
-CREATE INDEX idx_posts_username ON posts(username);
-CREATE INDEX idx_posts_techhub_id ON posts(techhub_id);
+### 3. Load extension
 
--- Tạo bảng comment_templates
-CREATE TABLE comment_templates (
-    id SERIAL PRIMARY KEY,
-    content TEXT NOT NULL,
-    is_active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
+1. Mở `chrome://extensions/`
+2. Bật **Developer mode**
+3. **Load unpacked** → chọn thư mục project này
+4. Đăng nhập https://techhub.fpt.net rồi mở **My Angel** (side panel hoặc tab)
 
--- Tạo bảng interactions
-CREATE TABLE interactions (
-    id SERIAL PRIMARY KEY,
-    username VARCHAR(100) NOT NULL,
-    techhub_id BIGINT NOT NULL,
-    interaction_type VARCHAR(20) NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
+User trong DB cần `is_admin = true` mới vào được panel admin.
 
--- Tạo index cho interactions
-CREATE INDEX idx_interactions_lookup ON interactions(username, techhub_id, interaction_type);
-```
+## Cách dùng
 
-### 3. Cấu hình RLS (Row Level Security) trong Supabase
+| Menu | Việc làm |
+|------|----------|
+| **Bài của tôi** | Quét bài, chọn bài, xem điểm |
+| **AI trả lời** | Bật tự trả lời / chạy 1 lần (NVIDIA hoặc template), phạm vi tất cả bài hoặc chỉ bài đã chọn |
+| **AI thảo luận** | Bật / chạy 1 lần gen comment độc lập, có phạm vi như trên |
+| **Auto comment** | Chọn bài → nhập số cmt → Bắt đầu |
+| **Hẹn xóa bài** | Nhập `techhub_id` + thời gian, hoặc Xóa ngay |
 
-Nếu bật RLS, cần tạo policy cho phép insert/update:
+Nút mở rộng (góc header) mở UI dạng tab full.
 
-```sql
--- Disable RLS for testing (hoặc tạo policy phù hợp)
-ALTER TABLE users DISABLE ROW LEVEL SECURITY;
-ALTER TABLE posts DISABLE ROW LEVEL SECURITY;
-
--- Hoặc tạo policy cho phép tất cả operations
-CREATE POLICY "Allow all operations" ON users FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all operations" ON posts FOR ALL USING (true) WITH CHECK (true);
-```
-
-### 4. Thêm Icons
-
-Tạo các file icon với kích thước tương ứng trong thư mục `icons/`:
-
-- `icon16.png` (16x16 pixels)
-- `icon48.png` (48x48 pixels)
-- `icon128.png` (128x128 pixels)
-
-Bạn có thể tạo icon đơn giản hoặc sử dụng logo TechHub.
-
-### 5. Cài đặt Extension
-
-1. Mở Chrome và truy cập `chrome://extensions/`
-2. Bật **Developer mode** (góc phải trên)
-3. Click **Load unpacked**
-4. Chọn thư mục `techhub-extension`
-
-## Cách sử dụng
-
-1. **Đăng nhập TechHub**: Mở https://techhub.fpt.net và đăng nhập tài khoản
-2. **Trigger capture**: Truy cập trang profile hoặc thực hiện các thao tác gọi API profile
-3. **Mở Popup**: Click vào icon extension để mở popup
-4. **Đồng bộ**: Extension sẽ tự động đồng bộ hoặc click nút "Đồng bộ với Supabase"
-
-## Cấu trúc thư mục
+## Cấu trúc
 
 ```
-techhub-extension/
-├── manifest.json         # Cấu hình extension
-├── background.js         # Service worker - capture headers
-├── popup.html           # Giao diện popup
-├── popup.css            # Styles cho popup
-├── popup.js             # Logic xử lý popup
-├── config.js            # Cấu hình Supabase
-├── supabase-client.js   # Client tương tác với Supabase
-├── icons/               # Thư mục chứa icons
-│   ├── icon16.png
-│   ├── icon48.png
-│   └── icon128.png
-└── README.md            # Hướng dẫn này
+ext-admin/
+├── manifest.json
+├── background.js          # Service worker (jobs, TechHub API)
+├── popup.html / .css / .js
+├── config.js              # Secrets (không commit public)
+├── config.example.js
+├── supabase-client.js
+├── nvidia-client.js
+├── icons/angel.png
+├── privacy_policy.html
+├── supabase/
+│   ├── README.md
+│   └── migrations/
+└── README.md
 ```
 
-## Luồng hoạt động
+## Luồng chính
 
-1. **Background Script** lắng nghe requests đến `https://techhub.fpt.net/api/v1/accounts/profile`
-2. Khi có request, extract Cookie và X-CSRFToken từ headers
-3. Lưu credentials vào `chrome.storage.local`
-4. Khi mở **Popup**:
-   - Đọc `userProfile` từ localStorage của tab TechHub
-   - Đọc credentials từ storage
-   - Kiểm tra user trong Supabase:
-     - Nếu chưa có → Tạo mới
-     - Nếu đã có → Cập nhật Cookie và CSRF Token
+1. Background bắt session TechHub → lưu `chrome.storage.local`
+2. Quét bài → `posts` (chưa publish)
+3. Auto-reply: fetch nội dung bài + comments → AI/template → reply (`ancestry`) → `interactions` + `reply_drafts`
+4. AI thảo luận: gen comment độc lập → `discussion_drafts` + `interactions`
+5. Auto-comment / hẹn xóa chạy qua alarm + storage state
 
 ## Troubleshooting
 
-### Extension không capture được headers
-
-- Đảm bảo đã mở tab TechHub và đăng nhập
-- Thử refresh trang TechHub và truy cập profile
-
-### Lỗi kết nối Supabase
-
-- Kiểm tra `SUPABASE_URL` và `SUPABASE_ANON_KEY` trong config.js
-- Đảm bảo đã tạo bảng `users` trong Supabase
-- Kiểm tra RLS policy nếu đã bật
-
-### Không thấy thông tin profile
-
-- Đảm bảo đã đăng nhập TechHub
-- Kiểm tra `userProfile` trong localStorage của techhub.fpt.net
+- **Không có quyền admin** → set `is_admin = true` cho username trong bảng `users`
+- **AI lỗi / key** → kiểm tra `NVIDIA_CONFIG.apiKey` trong `config.js`
+- **Không lấy comment / reply** → mở TechHub đã đăng nhập, reload extension
+- **Thiếu bảng draft** → chạy migration `004` và `005`
 
 ## License
 

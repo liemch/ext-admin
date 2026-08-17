@@ -3,73 +3,421 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TechHub Push Admin</title>
+    <title>My Angel</title>
+    <link rel="icon" href="icons/angel.png" />
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <div class="container">
-      <header class="header">
-        <h1>TechHub Push Admin</h1>
-        <span id="adminUserLabel" class="user-label">-</span>
-      </header>
-
-      <div id="errorSection" class="error-section hidden">
-        <p id="errorMessage" class="error-text">-</p>
-        <button id="retryBtn" class="btn btn-secondary" type="button">Thử lại</button>
-      </div>
-
-      <div id="deniedSection" class="denied-section hidden">
-        <p>Tài khoản hiện tại không có quyền admin.</p>
-      </div>
-
-      <div id="adminSection" class="admin-section hidden">
-        <div class="admin-panel-box">
-          <div class="admin-panel-title">Ngưỡng / Push global</div>
-          <div class="admin-form-row">
-            <label for="settingMaxComments">max_comments</label>
-            <input id="settingMaxComments" type="number" min="1" max="200" />
+    <div class="app">
+      <aside class="sidebar">
+        <div class="sidebar-brand">
+          <img class="brand-logo" src="icons/angel.png" alt="My Angel" />
+          <div class="brand-text">
+            <strong>My Angel</strong>
+            <span>TechHub Assistant</span>
           </div>
-          <div class="admin-form-row">
-            <label for="settingPushUltra">push_ultra</label>
-            <input id="settingPushUltra" type="checkbox" />
-          </div>
-          <div class="admin-form-row">
-            <label for="settingExceed1">exceed_max_1_users</label>
-            <input id="settingExceed1" type="text" placeholder="user1,user2" />
-          </div>
-          <div class="admin-form-row">
-            <label for="settingExceed3">exceed_max_3_users</label>
-            <input id="settingExceed3" type="text" placeholder="user1,user2" />
-          </div>
-          <div class="admin-form-actions">
-            <button id="saveSettingsBtn" class="btn btn-primary" type="button">Lưu settings</button>
-            <button id="reloadSettingsBtn" class="btn btn-secondary" type="button">Tải lại</button>
-          </div>
-          <div id="settingsMessage" class="admin-msg hidden"></div>
-
-          <div class="admin-panel-divider"></div>
-
-          <div class="admin-panel-title">Push 1 bài (is_ultra)</div>
-          <div class="admin-form-row">
-            <label for="pushTechhubId">techhub_id</label>
-            <input id="pushTechhubId" type="number" min="1" placeholder="vd: 4081" />
-          </div>
-          <div id="pushPostPreview" class="admin-msg muted hidden"></div>
-          <div class="admin-form-actions">
-            <button id="lookupPostBtn" class="btn btn-secondary" type="button">Xem bài</button>
-            <button id="enableUltraBtn" class="btn btn-primary" type="button">Bật Ultra</button>
-            <button id="disableUltraBtn" class="btn btn-secondary" type="button">Tắt Ultra</button>
-            <button id="deleteInteractionsBtn" class="btn btn-danger" type="button">
-              Xóa interactions
-            </button>
-          </div>
-          <div id="pushPostMessage" class="admin-msg hidden"></div>
-          <p class="admin-hint">
-            Xóa interactions sẽ mở lại lượt tương tác cho các user cũ; không xóa
-            comment/like đã có trên TechHub.
-          </p>
         </div>
-      </div>
+
+        <nav id="sideMenu" class="nav" aria-label="Menu tính năng">
+          <span class="nav-group">Quản lý</span>
+          <button
+            class="nav-item active"
+            type="button"
+            data-panel="posts"
+            data-title="Bài viết"
+            data-subtitle="Danh sách bài đã đồng bộ từ TechHub"
+          >
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true">
+              <path
+                d="M5 3h11l3 3v15H5V3zm2 6h10v2H7V9zm0 4h10v2H7v-2zm0 4h7v2H7v-2z"
+                fill="currentColor"
+              />
+            </svg>
+            <span class="nav-label">Bài viết</span>
+          </button>
+
+          <span class="nav-group">Tự động hóa</span>
+          <button
+            class="nav-item"
+            type="button"
+            data-panel="reply"
+            data-title="AI trả lời comment"
+            data-subtitle="Đọc bài + chuỗi hội thoại rồi trả lời bằng NVIDIA AI"
+          >
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true">
+              <path
+                d="M10 9V5l-7 7 7 7v-4.1c5 0 7.5 1.6 9 5.1.5-5-1.5-10-9-11z"
+                fill="currentColor"
+              />
+            </svg>
+            <span class="nav-label">AI trả lời</span>
+            <span id="replyDot" class="nav-dot hidden"></span>
+          </button>
+          <button
+            class="nav-item"
+            type="button"
+            data-panel="discussion"
+            data-title="AI tự thảo luận"
+            data-subtitle="Tự đăng comment gốc trên bài của bạn theo mục tiêu"
+          >
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true">
+              <path
+                d="M20 2H4a2 2 0 00-2 2v12a2 2 0 002 2h4l4 4 4-4h4a2 2 0 002-2V4a2 2 0 00-2-2zM7 9h10v2H7V9zm0-3h10v2H7V6z"
+                fill="currentColor"
+              />
+            </svg>
+            <span class="nav-label">AI thảo luận</span>
+            <span id="discussionDot" class="nav-dot hidden"></span>
+          </button>
+          <button
+            class="nav-item"
+            type="button"
+            data-panel="comment"
+            data-title="Auto comment"
+            data-subtitle="Comment liên tục vào 1 bài, chạy ngay hoặc hẹn giờ"
+          >
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true">
+              <path
+                d="M12 2a10 10 0 100 20 10 10 0 000-20zm1 5v5.6l4.2 2.5-.9 1.5L11 13.5V7h2z"
+                fill="currentColor"
+              />
+            </svg>
+            <span class="nav-label">Auto comment</span>
+            <span id="commentDot" class="nav-dot hidden"></span>
+          </button>
+
+          <span class="nav-group">Nguy hiểm</span>
+          <button
+            class="nav-item"
+            type="button"
+            data-panel="delete"
+            data-title="Hẹn xóa bài"
+            data-subtitle="Xóa bài trên TechHub ngay hoặc theo giờ đã hẹn"
+          >
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true">
+              <path d="M6 7h12l-1 14H7L6 7zm3-4h6l1 2H8l1-2z" fill="currentColor" />
+            </svg>
+            <span class="nav-label">Hẹn xóa bài</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="user-chip">
+            <span class="user-avatar" id="userAvatar">?</span>
+            <span class="user-name" id="userName">Đang tải…</span>
+          </div>
+          <button
+            id="openInTabBtn"
+            class="ghost-btn"
+            type="button"
+            title="Mở dạng tab toàn màn hình"
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+              <path
+                d="M14 3h7v7h-2V6.41l-8.29 8.3-1.42-1.42 8.3-8.29H14V3zM5 5h5V3H3v18h18v-7h-2v5H5V5z"
+                fill="currentColor"
+              />
+            </svg>
+            <span>Mở dạng tab</span>
+          </button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="topbar-text">
+            <h1 id="pageTitle">Bài viết</h1>
+            <p id="pageSubtitle">Danh sách bài đã đồng bộ từ TechHub</p>
+          </div>
+          <div class="topbar-badges">
+            <span id="jobBadge" class="pill pill-muted">Chưa có job chạy</span>
+          </div>
+        </header>
+
+        <div class="content">
+          <div id="errorSection" class="notice notice-error hidden">
+            <p id="errorMessage">-</p>
+            <button id="retryBtn" class="btn btn-secondary" type="button">Thử lại</button>
+          </div>
+
+          <div id="deniedSection" class="notice hidden">
+            <p>Tài khoản hiện tại không có quyền admin.</p>
+          </div>
+
+          <div id="adminSection" class="hidden">
+            <section class="panel" data-panel="posts">
+              <div class="stat-grid">
+                <div class="stat-card">
+                  <span class="stat-label">Tổng bài</span>
+                  <strong class="stat-value" id="statPosts">0</strong>
+                  <span class="stat-hint">chưa publish</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">Tổng điểm</span>
+                  <strong class="stat-value accent" id="statScore">0.0</strong>
+                  <span class="stat-hint">1 cmt = 0.2 · 1 vote = 0.1 · 1 medal = 6</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">Bài đang chọn</span>
+                  <strong class="stat-value" id="statSelected">—</strong>
+                  <span class="stat-hint" id="statSelectedTitle">Chưa chọn bài nào</span>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Danh sách bài</h2>
+                    <p>Click tiêu đề để mở TechHub · nút Chọn để dùng cho các job khác</p>
+                  </div>
+                  <div class="card-actions">
+                    <label class="search" for="postsSearch">
+                      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                        <path
+                          d="M10 4a6 6 0 014.47 10l4.27 4.26-1.42 1.42-4.26-4.27A6 6 0 1110 4zm0 2a4 4 0 100 8 4 4 0 000-8z"
+                          fill="currentColor"
+                        />
+                      </svg>
+                      <input
+                        id="postsSearch"
+                        type="search"
+                        placeholder="Tìm tiêu đề hoặc ID…"
+                        autocomplete="off"
+                      />
+                    </label>
+                    <button id="syncMyPostsBtn" class="btn btn-primary" type="button">
+                      Quét bài
+                    </button>
+                  </div>
+                </div>
+                <div id="myPostsList" class="table-wrap"></div>
+                <div id="postsMessage" class="msg hidden"></div>
+              </div>
+            </section>
+
+            <section class="panel hidden" data-panel="reply">
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Cấu hình trả lời</h2>
+                    <p>Chạy nền mỗi 5 phút khi bật</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="runAutoReplyBtn" class="btn btn-secondary" type="button">
+                      Trả lời 1 lần
+                    </button>
+                  </div>
+                </div>
+
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="autoReplyEnabled">Tự trả lời comment</label>
+                      <span>Bật job nền quét comment mới</span>
+                    </div>
+                    <input id="autoReplyEnabled" class="switch" type="checkbox" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="enableAiReply">Dùng NVIDIA AI</label>
+                      <span>Tắt sẽ dùng template trong Supabase</span>
+                    </div>
+                    <input id="enableAiReply" class="switch" type="checkbox" checked />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="replyScope">Phạm vi</label>
+                      <span>Chọn bài ở tab Bài viết nếu giới hạn 1 bài</span>
+                    </div>
+                    <select id="replyScope">
+                      <option value="all">Tất cả bài</option>
+                      <option value="selected">Chỉ bài đã chọn</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="replySelfReplyLimit">Lượt của tôi / chuỗi</label>
+                      <span>Từ 2 lượt sẽ reply tiếp vào comment của chính bạn</span>
+                    </div>
+                    <select id="replySelfReplyLimit">
+                      <option value="1" selected>1 lượt</option>
+                      <option value="2">2 lượt</option>
+                      <option value="3">3 lượt</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div id="replyScopeLabel" class="msg muted">Phạm vi: tất cả bài</div>
+                <div id="autoReplyMessage" class="msg hidden"></div>
+                <p class="hint">
+                  Đọc nội dung bài + cả chuỗi hội thoại → NVIDIA gen câu trả lời → lưu
+                  <code>reply_drafts</code> → reply đúng comment. AI lỗi thì fallback template.
+                </p>
+              </div>
+            </section>
+
+            <section class="panel hidden" data-panel="discussion">
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Cấu hình thảo luận</h2>
+                    <p>Mỗi lượt cách nhau ngẫu nhiên 1–5 phút</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="runAutoDiscussionBtn" class="btn btn-secondary" type="button">
+                      Thảo luận 1 lần
+                    </button>
+                  </div>
+                </div>
+
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="autoDiscussionEnabled">Tự thảo luận</label>
+                      <span>Đăng comment gốc, không reply ai</span>
+                    </div>
+                    <input id="autoDiscussionEnabled" class="switch" type="checkbox" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="discussionScope">Phạm vi</label>
+                      <span>Tất cả bài hoặc chỉ bài đang chọn</span>
+                    </div>
+                    <select id="discussionScope">
+                      <option value="all">Tất cả bài</option>
+                      <option value="selected">Chỉ bài đã chọn</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="discussionTargetCount">Số lần / bài</label>
+                      <span>Đủ mục tiêu sẽ tự dừng</span>
+                    </div>
+                    <input
+                      id="discussionTargetCount"
+                      type="number"
+                      min="1"
+                      max="100"
+                      value="5"
+                    />
+                  </div>
+                </div>
+
+                <div id="discussionScopeLabel" class="msg muted">Phạm vi: tất cả bài</div>
+                <div id="autoDiscussionMessage" class="msg hidden"></div>
+                <p class="hint">
+                  NVIDIA đọc nội dung bài và các comment gốc trước đó của bạn để viết comment
+                  mới, không lặp ý và không tự cảm ơn.
+                </p>
+              </div>
+            </section>
+
+            <section class="panel hidden" data-panel="comment">
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Auto comment 1 bài</h2>
+                    <p>Mỗi comment cách nhau ngẫu nhiên 2–5 giây</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="startAutoCommentBtn" class="btn btn-primary" type="button">
+                      Bắt đầu ngay
+                    </button>
+                    <button id="stopAutoCommentBtn" class="btn btn-danger" type="button">
+                      Dừng
+                    </button>
+                  </div>
+                </div>
+
+                <div id="selectedPostLabel" class="msg muted">Chưa chọn bài</div>
+
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="autoCommentTargetCount">Số lượng comment</label>
+                      <span>Đạt đủ số này sẽ tự dừng</span>
+                    </div>
+                    <input
+                      id="autoCommentTargetCount"
+                      type="number"
+                      min="1"
+                      max="500"
+                      value="10"
+                    />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="autoCommentStartAt">Giờ bắt đầu</label>
+                      <span>Để hẹn giờ chạy tự động sau này</span>
+                    </div>
+                    <input id="autoCommentStartAt" type="datetime-local" />
+                  </div>
+                </div>
+
+                <div class="card-actions">
+                  <button id="scheduleAutoCommentBtn" class="btn btn-secondary" type="button">
+                    Hẹn giờ chạy
+                  </button>
+                  <button
+                    id="cancelAutoCommentScheduleBtn"
+                    class="btn btn-ghost"
+                    type="button"
+                  >
+                    Hủy lịch
+                  </button>
+                </div>
+
+                <div id="autoCommentScheduleInfo" class="msg muted">Chưa có lịch hẹn.</div>
+                <div id="autoCommentMessage" class="msg hidden"></div>
+                <p class="hint">
+                  Chọn bài ở tab Bài viết. Lịch hẹn vẫn chạy sau khi đóng side panel; nếu máy
+                  tắt qua giờ hẹn, job sẽ chạy ngay khi Chrome mở lại.
+                </p>
+              </div>
+            </section>
+
+            <section class="panel hidden" data-panel="delete">
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Xóa bài TechHub</h2>
+                    <p>Gọi DELETE /api/v1/articles/{uuid}/</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="scheduleDeleteBtn" class="btn btn-danger" type="button">
+                      Hẹn xóa
+                    </button>
+                    <button id="deleteNowBtn" class="btn btn-secondary" type="button">
+                      Xóa ngay
+                    </button>
+                  </div>
+                </div>
+
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="deleteTechhubId">techhub_id</label>
+                      <span>Chọn bài ở tab Bài viết để tự điền</span>
+                    </div>
+                    <input id="deleteTechhubId" type="number" min="1" placeholder="vd: 4097" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="deleteAtInput">Thời gian xóa</label>
+                      <span>Theo giờ máy của bạn</span>
+                    </div>
+                    <input id="deleteAtInput" type="datetime-local" />
+                  </div>
+                </div>
+
+                <div id="scheduledDeletesList" class="schedule-list"></div>
+                <div id="deleteScheduleMessage" class="msg hidden"></div>
+                <p class="hint">Cần quét bài trước để có uuid. Xóa bài không hoàn tác được.</p>
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
     </div>
 
     <script src="config.js"></script>

@@ -25,10 +25,44 @@
  * @property {string|null} url
  * @property {number} votes_score
  * @property {number} comments_count
+ * @property {number} medals_count
  * @property {number} feed_score
  * @property {string} created_at
  * @property {string} published_at
  */
+
+/**
+ * Đếm medal trên bài TechHub (API có thể trả mảng hoặc số).
+ * @param {Object} article
+ * @returns {number}
+ */
+function extractMedalsCount(article) {
+  if (!article || typeof article !== "object") return 0;
+  const candidates = [
+    article.medals_count,
+    article.medal_count,
+    article.medalsCount,
+    article.medalCount,
+    article.received_medals_count,
+  ];
+  for (const value of candidates) {
+    const num = Number(value);
+    if (Number.isFinite(num) && num >= 0) return Math.floor(num);
+  }
+
+  const arrays = [
+    article.medals,
+    article.received_medals,
+    article.awards,
+    article.badges,
+  ];
+  for (const list of arrays) {
+    if (Array.isArray(list)) return list.length;
+  }
+
+  if (article.medal || article.has_medal || article.hasMedal) return 1;
+  return 0;
+}
 
 /**
  * @typedef {Object} PostDetailModel
@@ -369,6 +403,7 @@ class SupabaseClient {
         url: postData.url,
         votes_score: postData.votesScore || 0,
         comments_count: postData.commentsCount || 0,
+        medals_count: postData.medalsCount || 0,
         feed_score: postData.feedScore || 0,
         created_at: postData.createdAt || new Date().toISOString(),
         published_at: postData.publishedAt || null,
@@ -408,6 +443,7 @@ class SupabaseClient {
       const payload = {
         votes_score: updateData.votesScore,
         comments_count: updateData.commentsCount,
+        medals_count: updateData.medalsCount ?? 0,
         feed_score: updateData.feedScore,
         published_at: updateData.publishedAt,
         status: updateData.status,
@@ -611,6 +647,25 @@ class SupabaseClient {
   }
 
   /**
+   * Xóa post khỏi Supabase theo techhub_id (sau khi xóa trên TechHub)
+   */
+  async deletePostByTechhubId(techhubId) {
+    const url = `${this.restUrl}/posts?techhub_id=eq.${techhubId}`;
+    const response = await fetch(url, {
+      method: "DELETE",
+      headers: {
+        ...this.getHeaders(),
+        Prefer: "return=representation",
+      },
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Failed to delete post from DB: ${response.status} ${errText}`);
+    }
+    return await response.json();
+  }
+
+  /**
    * Cập nhật flag bài viết (vd: is_ultra)
    * @param {number|string} techhubId
    * @param {Object} updates
@@ -703,6 +758,7 @@ class SupabaseClient {
         headers: {
           "Content-Type": "application/json",
         },
+        credentials: "include",
       });
 
       if (!response.ok) {
@@ -730,51 +786,64 @@ class SupabaseClient {
     console.log("[Supabase] Username:", username);
 
     try {
-      // Lấy bài viết từ TechHub
-      const techHubData = await this.fetchTechHubArticles(username);
-      let techHubArticles = techHubData.results;
+      // Quét toàn bộ trang bài viết của user
+      const allArticles = [];
+      let page = 1;
+      let hasNext = true;
+      const MAX_PAGES = 50;
 
-      if (!techHubArticles || techHubArticles.length === 0) {
+      while (hasNext && page <= MAX_PAGES) {
+        if (onProgress) onProgress(`Đang tải trang ${page}...`);
+        const data = await this.fetchTechHubArticles(username, page);
+        const results = data?.results || [];
+        allArticles.push(...results);
+        hasNext = !!data?.next && results.length > 0;
+        page++;
+      }
+
+      if (allArticles.length === 0) {
         return {
           created: 0,
           updated: 0,
+          skipped: 0,
           message: "Không tìm thấy bài viết nào trên TechHub",
         };
       }
-      
-      // Chỉ lấy 10 bài viết mới nhất
-      techHubArticles = techHubArticles.slice(0, 10);
+
+      // Loại bài đã publish (published_at khác null)
+      const pending = allArticles.filter((a) => !a.published_at);
+      const skipped = allArticles.length - pending.length;
 
       let created = 0;
       let updated = 0;
-      let total = techHubArticles.length;
+      const total = pending.length;
 
-      // Đồng bộ từng bài viết
       for (let i = 0; i < total; i++) {
-        const article = techHubArticles[i];
-        
+        const article = pending[i];
+
         if (onProgress) {
-           onProgress(`Đang đồng bộ bài ${i + 1}/${total}...`);
+          onProgress(`Đang đồng bộ bài ${i + 1}/${total}...`);
         }
 
         const customUrl = article.community && article.community.slug
           ? `https://techhub.fpt.net/c/${article.community.slug}/${article.uuid}/${article.slug}`
           : `https://techhub.fpt.net/p/${username}/${article.uuid}/${article.slug}`;
-        
+
         const existingPost = await this.findPostByTechhubId(article.id);
 
+        const medalsCount = extractMedalsCount(article);
         if (existingPost) {
-          // Cập nhật bài viết
           await this.updatePost(article.id, {
             votesScore: article.votes_score,
             commentsCount: article.comments_count,
+            medalsCount,
             feedScore: article.feed_score,
+            publishedAt: article.published_at || null,
             status: article.status
           });
           updated++;
           console.log(`[Supabase] Updated post: ${article.title}`);
         } else {
-          // Tạo mới bài viết/ini
           await this.createPost({
             title: article.title,
             status: article.status,
@@ -784,6 +853,7 @@ class SupabaseClient {
             url: customUrl,
             votesScore: article.votes_score,
             commentsCount: article.comments_count,
+            medalsCount,
             feedScore: article.feed_score,
             createdAt: article.created_at,
             publishedAt: article.published_at,
@@ -796,7 +866,8 @@ class SupabaseClient {
       return {
         created,
         updated,
-        message: `Đã đồng bộ: ${created} bài mới, ${updated} bài cập nhật`,
+        skipped,
+        message: `Đã quét ${allArticles.length} bài · ${created} mới · ${updated} cập nhật · bỏ ${skipped} bài đã publish`,
       };
     } catch (error) {
       console.error("[Supabase] Error syncing posts:", error);
@@ -808,18 +879,109 @@ class SupabaseClient {
 
   /**
    * Lấy danh sách template comment
+   * @param {{ kind?: 'comment'|'reply' }} [options]
    * @returns {Promise<Array>}
    */
-  async getCommentTemplates() {
+  async getCommentTemplates(options = {}) {
     try {
-      const url = `${this.restUrl}/comment_templates?is_active=eq.true`;
-      const response = await fetch(url, { method: "GET", headers: this.getHeaders() });
+      const kind = options.kind || "comment";
+      let url = `${this.restUrl}/comment_templates?is_active=eq.true&kind=eq.${encodeURIComponent(kind)}`;
+      let response = await fetch(url, { method: "GET", headers: this.getHeaders() });
       if (!response.ok) throw new Error("Failed to fetch templates");
-      return await response.json();
+      let rows = await response.json();
+
+      // Fallback nếu DB chưa có cột kind (schema cũ)
+      if ((!rows || rows.length === 0) && kind === "comment") {
+        url = `${this.restUrl}/comment_templates?is_active=eq.true`;
+        response = await fetch(url, { method: "GET", headers: this.getHeaders() });
+        if (response.ok) rows = await response.json();
+      }
+      return rows || [];
     } catch (error) {
       console.error("[Supabase] Error:", error);
       return [];
     }
+  }
+
+  /**
+   * Lấy posts theo username với filter tùy chọn
+   * @param {string} username
+   * @param {{ status?: string, limit?: number }} [options]
+   */
+  async getOwnPosts(username, options = {}) {
+    const limit = options.limit || 100;
+    let url = `${this.restUrl}/posts?username=eq.${encodeURIComponent(username)}&order=created_at.desc&limit=${limit}`;
+    if (options.status) {
+      url += `&status=eq.${encodeURIComponent(options.status)}`;
+    }
+    if (options.includePublished !== true) {
+      url += `&published_at=is.null`;
+    }
+    const response = await fetch(url, { headers: this.getHeaders() });
+    if (!response.ok) throw new Error(`Failed to fetch own posts: ${response.status}`);
+    return await response.json();
+  }
+
+  /**
+   * Lấy parent_comment_id đã reply của user (dedup)
+   * @param {string} username
+   * @param {number[]} parentCommentIds
+   */
+  async getRepliedParentCommentIds(username, parentCommentIds) {
+    if (!parentCommentIds || parentCommentIds.length === 0) return new Set();
+    const ids = parentCommentIds.filter((id) => Number.isFinite(Number(id))).join(",");
+    if (!ids) return new Set();
+    const url =
+      `${this.restUrl}/interactions?username=eq.${encodeURIComponent(username)}` +
+      `&interaction_type=eq.reply&parent_comment_id=in.(${ids})&select=parent_comment_id`;
+    const response = await fetch(url, { headers: this.getHeaders() });
+    if (!response.ok) throw new Error(`Failed to fetch replied comments: ${response.status}`);
+    const rows = await response.json();
+    return new Set(rows.map((r) => Number(r.parent_comment_id)));
+  }
+
+  async getDiscussedSourceCommentIds(username, commentIds) {
+    if (!commentIds || commentIds.length === 0) return new Set();
+    const ids = commentIds.filter((id) => Number.isFinite(Number(id))).join(",");
+    if (!ids) return new Set();
+    const url =
+      `${this.restUrl}/interactions?username=eq.${encodeURIComponent(username)}` +
+      `&interaction_type=eq.discussion&parent_comment_id=in.(${ids})&select=parent_comment_id`;
+    const response = await fetch(url, { headers: this.getHeaders() });
+    if (!response.ok) throw new Error(`Failed to fetch discussed comments: ${response.status}`);
+    const rows = await response.json();
+    return new Set(rows.map((r) => Number(r.parent_comment_id)));
+  }
+
+  /**
+   * Đếm số interaction theo từng bài để job có thể tiếp tục tới đúng mục tiêu.
+   */
+  async getInteractionCountsByPost(username, interactionType, techhubIds) {
+    if (!techhubIds || techhubIds.length === 0) return new Map();
+    const counts = new Map();
+    const ids = techhubIds
+      .map(Number)
+      .filter((id) => Number.isFinite(id));
+    await Promise.all(
+      ids.map(async (id) => {
+        const url =
+          `${this.restUrl}/interactions?username=eq.${encodeURIComponent(username)}` +
+          `&interaction_type=eq.${encodeURIComponent(interactionType)}` +
+          `&techhub_id=eq.${id}&select=id`;
+        const headers = {
+          ...this.getHeaders(),
+          Prefer: "count=exact",
+          Range: "0-0",
+        };
+        const response = await fetch(url, { headers });
+        if (!response.ok) {
+          throw new Error(`Failed to fetch interaction count: ${response.status}`);
+        }
+        const total = Number((response.headers.get("content-range") || "").split("/")[1]);
+        counts.set(id, Number.isFinite(total) ? total : 0);
+      })
+    );
+    return counts;
   }
 
   /**
@@ -913,10 +1075,14 @@ class SupabaseClient {
    * @param {string} username 
    * @param {number} techhubId 
    * @param {string} type 
+   * @param {number|null} [parentCommentId]
    */
-  async recordInteraction(username, techhubId, type) {
+  async recordInteraction(username, techhubId, type, parentCommentId = null) {
     try {
       const payload = { username, techhub_id: techhubId, interaction_type: type };
+      if (parentCommentId != null) {
+        payload.parent_comment_id = parentCommentId;
+      }
       const response = await fetch(`${this.restUrl}/interactions`, {
         method: "POST",
         headers: this.getHeaders(),
@@ -925,6 +1091,88 @@ class SupabaseClient {
       if (!response.ok) throw new Error(`Failed to record interaction: ${response.status}`);
     } catch (error) {
       console.error("[Supabase] Error recording interaction:", error);
+    }
+  }
+
+  /**
+   * Lưu draft reply do AI gen — mỗi lần gen: xóa draft cũ cùng parent_comment rồi tạo mới
+   * (vì chuỗi hội thoại có thể đổi: A → B → A ...)
+   */
+  async saveReplyDraft(draft) {
+    try {
+      const username = draft.username;
+      const parentCommentId = draft.parentCommentId;
+      if (username && parentCommentId != null) {
+        const delUrl =
+          `${this.restUrl}/reply_drafts?username=eq.${encodeURIComponent(username)}` +
+          `&parent_comment_id=eq.${encodeURIComponent(parentCommentId)}`;
+        await fetch(delUrl, { method: "DELETE", headers: this.getHeaders() });
+      }
+
+      const payload = {
+        username,
+        techhub_id: draft.techhubId,
+        parent_comment_id: parentCommentId,
+        comment_author: draft.commentAuthor || null,
+        comment_body: draft.commentBody || null,
+        reply_body: draft.replyBody,
+        source: draft.source || "nvidia",
+        model: draft.model || null,
+        status: draft.status || "used",
+      };
+      const response = await fetch(`${this.restUrl}/reply_drafts`, {
+        method: "POST",
+        headers: this.getHeaders(),
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Failed to save reply draft: ${response.status} ${errText}`);
+      }
+      const data = await response.json();
+      return Array.isArray(data) ? data[0] : data;
+    } catch (error) {
+      console.error("[Supabase] Error saving reply draft:", error);
+      return null;
+    }
+  }
+
+  /**
+   * Lưu draft thảo luận. Comment gốc không có source_comment_id nên giữ từng bản gen.
+   */
+  async saveDiscussionDraft(draft) {
+    try {
+      const username = draft.username;
+      const sourceCommentId = draft.sourceCommentId;
+      if (username && sourceCommentId != null) {
+        const delUrl =
+          `${this.restUrl}/discussion_drafts?username=eq.${encodeURIComponent(username)}` +
+          `&source_comment_id=eq.${encodeURIComponent(sourceCommentId)}`;
+        await fetch(delUrl, { method: "DELETE", headers: this.getHeaders() });
+      }
+
+      const response = await fetch(`${this.restUrl}/discussion_drafts`, {
+        method: "POST",
+        headers: this.getHeaders(),
+        body: JSON.stringify({
+          username,
+          techhub_id: draft.techhubId,
+          source_comment_id: sourceCommentId ?? null,
+          source_comment_body: draft.sourceCommentBody || null,
+          discussion_body: draft.discussionBody,
+          model: draft.model || null,
+          status: draft.status || "used",
+        }),
+      });
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Failed to save discussion draft: ${response.status} ${errText}`);
+      }
+      const data = await response.json();
+      return Array.isArray(data) ? data[0] : data;
+    } catch (error) {
+      console.error("[Supabase] Error saving discussion draft:", error);
+      return null;
     }
   }
 }

@@ -1,27 +1,31 @@
 {
   "manifest_version": 3,
-  "name": "TechHub Push Admin",
+  "name": "My Angel",
   "version": "1.1.1",
-  "description": "Admin tool để push bài (is_ultra) và chỉnh ngưỡng comment trên Supabase",
+  "description": "Trợ lý TechHub: quét bài, AI trả lời comment, AI tự thảo luận, auto comment và hẹn xóa bài",
   "permissions": ["storage", "webRequest", "activeTab", "tabs", "scripting", "alarms", "sidePanel", "declarativeNetRequest", "notifications", "cookies"],
-  "host_permissions": ["https://techhub.fpt.net/*", "https://*.supabase.co/*"],
+  "host_permissions": [
+    "https://techhub.fpt.net/*",
+    "https://*.supabase.co/*",
+    "https://integrate.api.nvidia.com/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
     "default_icon": {
-      "16": "icons/coin.png",
-      "48": "icons/coin.png",
-      "128": "icons/coin.png"
+      "16": "icons/angel.png",
+      "48": "icons/angel.png",
+      "128": "icons/angel.png"
     },
-    "default_title": "Mở TechHub Push Admin"
+    "default_title": "Mở My Angel"
   },
   "side_panel": {
     "default_path": "popup.html"
   },
   "icons": {
-    "16": "icons/coin.png",
-    "48": "icons/coin.png",
-    "128": "icons/coin.png"
+    "16": "icons/angel.png",
+    "48": "icons/angel.png",
+    "128": "icons/angel.png"
   }
 }
