@@ -533,6 +533,160 @@ class SupabaseClient {
   }
 
   /**
+   * Lấy settings theo danh sách key
+   * @param {string[]} [keys]
+   * @returns {Promise<Object>} map key -> row
+   */
+  async getSettings(keys = null) {
+    try {
+      let url = `${this.restUrl}/settings?select=id,key,value,description,updated_at&order=key`;
+      if (keys && keys.length > 0) {
+        url += `&key=in.(${keys.map((k) => encodeURIComponent(k)).join(",")})`;
+      }
+      const response = await fetch(url, { headers: this.getHeaders() });
+      if (!response.ok) throw new Error(`Failed to fetch settings: ${response.status}`);
+      const rows = await response.json();
+      const map = {};
+      rows.forEach((row) => {
+        map[row.key] = row;
+      });
+      return map;
+    } catch (error) {
+      console.error("[Supabase] Error fetching settings:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Cập nhật 1 setting. Mặc định giữ nguyên updated_at để không để lại vết thời gian.
+   * @param {string} key
+   * @param {any} value
+   * @param {{preserveUpdatedAt?: boolean}} [options]
+   */
+  async updateSetting(key, value, options = {}) {
+    const preserveUpdatedAt = options.preserveUpdatedAt !== false;
+    try {
+      const currentMap = await this.getSettings([key]);
+      const current = currentMap[key];
+      if (!current) throw new Error(`Setting not found: ${key}`);
+
+      const payload = { value };
+      if (preserveUpdatedAt && current.updated_at) {
+        payload.updated_at = current.updated_at;
+      }
+
+      const url = `${this.restUrl}/settings?key=eq.${encodeURIComponent(key)}`;
+      const response = await fetch(url, {
+        method: "PATCH",
+        headers: this.getHeaders(),
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Failed to update setting ${key}: ${response.status} ${errText}`);
+      }
+      const data = await response.json();
+      return data.length > 0 ? data[0] : null;
+    } catch (error) {
+      console.error("[Supabase] Error updating setting:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Lấy 1 post theo techhub_id
+   * @param {number|string} techhubId
+   */
+  async getPostByTechhubId(techhubId) {
+    try {
+      const url = `${this.restUrl}/posts?techhub_id=eq.${techhubId}&limit=1`;
+      const response = await fetch(url, { headers: this.getHeaders() });
+      if (!response.ok) throw new Error(`Failed to fetch post: ${response.status}`);
+      const data = await response.json();
+      return data.length > 0 ? data[0] : null;
+    } catch (error) {
+      console.error("[Supabase] Error fetching post:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Cập nhật flag bài viết (vd: is_ultra)
+   * @param {number|string} techhubId
+   * @param {Object} updates
+   */
+  async updatePostFlags(techhubId, updates) {
+    try {
+      const payload = {};
+      if (updates.hasOwnProperty("is_ultra")) payload.is_ultra = !!updates.is_ultra;
+      if (updates.hasOwnProperty("is_blacklisted")) payload.is_blacklisted = !!updates.is_blacklisted;
+      if (Object.keys(payload).length === 0) throw new Error("No post flags to update");
+
+      const url = `${this.restUrl}/posts?techhub_id=eq.${techhubId}`;
+      const response = await fetch(url, {
+        method: "PATCH",
+        headers: {
+          ...this.getHeaders(),
+          Prefer: "return=representation",
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Failed to update post: ${response.status} ${errText}`);
+      }
+      const data = await response.json();
+      return data.length > 0 ? data[0] : null;
+    } catch (error) {
+      console.error("[Supabase] Error updating post flags:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Lấy interactions của một bài.
+   * @param {number|string} techhubId
+   * @returns {Promise<Array>}
+   */
+  async getInteractionsByTechhubId(techhubId) {
+    try {
+      const url = `${this.restUrl}/interactions?techhub_id=eq.${techhubId}&select=id,username,interaction_type,created_at&order=created_at.desc`;
+      const response = await fetch(url, { headers: this.getHeaders() });
+      if (!response.ok) throw new Error(`Failed to fetch interactions: ${response.status}`);
+      return await response.json();
+    } catch (error) {
+      console.error("[Supabase] Error fetching interactions:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Xóa toàn bộ interactions của một bài.
+   * @param {number|string} techhubId
+   * @returns {Promise<Array>}
+   */
+  async deleteInteractionsByTechhubId(techhubId) {
+    try {
+      const url = `${this.restUrl}/interactions?techhub_id=eq.${techhubId}`;
+      const response = await fetch(url, {
+        method: "DELETE",
+        headers: {
+          ...this.getHeaders(),
+          Prefer: "return=representation",
+        },
+      });
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Failed to delete interactions: ${response.status} ${errText}`);
+      }
+      return await response.json();
+    } catch (error) {
+      console.error("[Supabase] Error deleting interactions:", error);
+      throw error;
+    }
+  }
+
+  /**
    * Lấy danh sách bài viết từ TechHub API
    * @param {string} username
    * @param {number} page
