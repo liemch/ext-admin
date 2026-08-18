@@ -42,7 +42,7 @@
             type="button"
             data-panel="reply"
             data-title="AI trả lời comment"
-            data-subtitle="Đọc bài + chuỗi hội thoại rồi trả lời bằng NVIDIA AI"
+            data-subtitle="Tạo mẫu reply trước rồi đăng theo mục tiêu"
           >
             <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true">
               <path
@@ -199,12 +199,12 @@
               <div class="card">
                 <div class="card-head">
                   <div>
-                    <h2>Cấu hình trả lời</h2>
-                    <p>Chạy nền mỗi 5 phút khi bật</p>
+                    <h2>Bước 1 · Chuẩn bị mẫu</h2>
+                    <p>Chọn bài, AI quét comment chưa reply để tạo kho mẫu</p>
                   </div>
                   <div class="card-actions">
-                    <button id="runAutoReplyBtn" class="btn btn-secondary" type="button">
-                      Trả lời 1 lần
+                    <button id="generateReplyDraftsBtn" class="btn btn-primary" type="button">
+                      AI tạo mẫu
                     </button>
                   </div>
                 </div>
@@ -212,32 +212,30 @@
                 <div class="field-list">
                   <div class="field">
                     <div class="field-text">
-                      <label for="autoReplyEnabled">Tự trả lời comment</label>
-                      <span>Bật job nền quét comment mới</span>
-                    </div>
-                    <input id="autoReplyEnabled" class="switch" type="checkbox" />
-                  </div>
-                  <div class="field">
-                    <div class="field-text">
-                      <label for="enableAiReply">Dùng NVIDIA AI</label>
-                      <span>Tắt sẽ dùng template trong Supabase</span>
-                    </div>
-                    <input id="enableAiReply" class="switch" type="checkbox" checked />
-                  </div>
-                  <div class="field">
-                    <div class="field-text">
-                      <label for="replyScope">Phạm vi</label>
-                      <span>Chọn bài ở tab Bài viết nếu giới hạn 1 bài</span>
+                      <label for="replyScope">Bài cần trả lời</label>
+                      <span>Kho mẫu được tải riêng theo từng bài</span>
                     </div>
                     <select id="replyScope">
-                      <option value="all">Tất cả bài</option>
-                      <option value="selected">Chỉ bài đã chọn</option>
+                      <option value="">Chọn một bài…</option>
                     </select>
                   </div>
                   <div class="field">
                     <div class="field-text">
+                      <label for="replyGenerateCount">Số mẫu cần tạo</label>
+                      <span>Quét comment chưa reply rồi nhờ AI gen trước</span>
+                    </div>
+                    <input
+                      id="replyGenerateCount"
+                      type="number"
+                      min="1"
+                      max="50"
+                      value="5"
+                    />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
                       <label for="replySelfReplyLimit">Lượt của tôi / chuỗi</label>
-                      <span>Từ 2 lượt sẽ reply tiếp vào comment của chính bạn</span>
+                      <span>Từ 2 lượt sẽ tạo mẫu nối tiếp comment của chính bạn</span>
                     </div>
                     <select id="replySelfReplyLimit">
                       <option value="1" selected>1 lượt</option>
@@ -247,11 +245,73 @@
                   </div>
                 </div>
 
-                <div id="replyScopeLabel" class="msg muted">Phạm vi: tất cả bài</div>
+                <div id="replyScopeLabel" class="msg muted">Chưa chọn bài</div>
+                <div class="draft-toolbar">
+                  <div id="replyDraftStats" class="draft-stats">
+                    <span>Tổng <strong>0</strong></span>
+                    <span class="pending">Chưa dùng <strong>0</strong></span>
+                    <span class="used">Đã dùng <strong>0</strong></span>
+                  </div>
+                  <button
+                    id="clearPendingReplyDraftsBtn"
+                    class="btn btn-ghost draft-clear-btn"
+                    type="button"
+                    disabled
+                  >
+                    Xóa hết chưa dùng
+                  </button>
+                </div>
+                <div id="replyDraftsList" class="draft-list">
+                  <div class="empty">Chọn bài để tải các mẫu đã tạo.</div>
+                </div>
+                <div id="replyDraftMessage" class="msg hidden"></div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Bước 2 · Tự động đăng</h2>
+                    <p>Dùng lần lượt các mẫu chưa dùng của bài đang chọn</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="runAutoReplyBtn" class="btn btn-secondary" type="button">
+                      Đăng 1 mẫu ngay
+                    </button>
+                  </div>
+                </div>
+
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="autoReplyEnabled">Tự trả lời</label>
+                      <span>Hết mẫu hoặc đủ số lượng sẽ tự tắt</span>
+                    </div>
+                    <input id="autoReplyEnabled" class="switch" type="checkbox" disabled />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="replyTargetCount">Số lượng muốn đăng</label>
+                      <span>Không được vượt số mẫu chưa dùng</span>
+                    </div>
+                    <input id="replyTargetCount" type="number" min="1" max="100" value="5" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label>Khoảng cách ngẫu nhiên</label>
+                      <span>Thời gian giữa hai lượt đăng, tính bằng phút</span>
+                    </div>
+                    <div class="inline-inputs">
+                      <input id="replyMinInterval" type="number" min="1" max="1440" value="1" aria-label="Từ phút" />
+                      <span>đến</span>
+                      <input id="replyMaxInterval" type="number" min="1" max="1440" value="5" aria-label="Đến phút" />
+                    </div>
+                  </div>
+                </div>
+
                 <div id="autoReplyMessage" class="msg hidden"></div>
                 <p class="hint">
-                  Đọc nội dung bài + cả chuỗi hội thoại → NVIDIA gen câu trả lời → lưu
-                  <code>reply_drafts</code> → reply đúng comment. AI lỗi thì fallback template.
+                  Nếu đăng thất bại, mẫu vẫn được giữ để thử lại. Khi hết mẫu, hãy quay lại bước 1
+                  để nhờ AI quét comment và tạo thêm.
                 </p>
               </div>
             </section>
@@ -260,12 +320,72 @@
               <div class="card">
                 <div class="card-head">
                   <div>
-                    <h2>Cấu hình thảo luận</h2>
-                    <p>Mỗi lượt cách nhau ngẫu nhiên 1–5 phút</p>
+                    <h2>Bước 1 · Chuẩn bị mẫu</h2>
+                    <p>Chọn bài, xem kho mẫu hoặc nhờ AI tạo thêm</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="generateDiscussionDraftsBtn" class="btn btn-primary" type="button">
+                      AI tạo mẫu
+                    </button>
+                  </div>
+                </div>
+
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="discussionScope">Bài cần thảo luận</label>
+                      <span>Kho mẫu được tải riêng theo từng bài</span>
+                    </div>
+                    <select id="discussionScope">
+                      <option value="">Chọn một bài…</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="discussionGenerateCount">Số mẫu cần tạo</label>
+                      <span>AI tạo trước và lưu vào kho chờ sử dụng</span>
+                    </div>
+                    <input
+                      id="discussionGenerateCount"
+                      type="number"
+                      min="1"
+                      max="50"
+                      value="5"
+                    />
+                  </div>
+                </div>
+
+                <div id="discussionScopeLabel" class="msg muted">Chưa chọn bài</div>
+                <div class="draft-toolbar">
+                  <div id="discussionDraftStats" class="draft-stats">
+                    <span>Tổng <strong>0</strong></span>
+                    <span class="pending">Chưa dùng <strong>0</strong></span>
+                    <span class="used">Đã dùng <strong>0</strong></span>
+                  </div>
+                  <button
+                    id="clearPendingDiscussionDraftsBtn"
+                    class="btn btn-ghost draft-clear-btn"
+                    type="button"
+                    disabled
+                  >
+                    Xóa hết chưa dùng
+                  </button>
+                </div>
+                <div id="discussionDraftsList" class="draft-list">
+                  <div class="empty">Chọn bài để tải các mẫu đã tạo.</div>
+                </div>
+                <div id="discussionDraftMessage" class="msg hidden"></div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Bước 2 · Tự động đăng</h2>
+                    <p>Dùng lần lượt các mẫu chưa dùng của bài đang chọn</p>
                   </div>
                   <div class="card-actions">
                     <button id="runAutoDiscussionBtn" class="btn btn-secondary" type="button">
-                      Thảo luận 1 lần
+                      Đăng 1 mẫu ngay
                     </button>
                   </div>
                 </div>
@@ -274,40 +394,34 @@
                   <div class="field">
                     <div class="field-text">
                       <label for="autoDiscussionEnabled">Tự thảo luận</label>
-                      <span>Đăng comment gốc, không reply ai</span>
+                      <span>Hết mẫu hoặc đủ số lượng sẽ tự tắt</span>
                     </div>
-                    <input id="autoDiscussionEnabled" class="switch" type="checkbox" />
+                    <input id="autoDiscussionEnabled" class="switch" type="checkbox" disabled />
                   </div>
                   <div class="field">
                     <div class="field-text">
-                      <label for="discussionScope">Phạm vi</label>
-                      <span>Tất cả bài hoặc chỉ bài đang chọn</span>
+                      <label for="discussionTargetCount">Số lượng muốn đăng</label>
+                      <span>Không được vượt số mẫu chưa dùng</span>
                     </div>
-                    <select id="discussionScope">
-                      <option value="all">Tất cả bài</option>
-                      <option value="selected">Chỉ bài đã chọn</option>
-                    </select>
+                    <input id="discussionTargetCount" type="number" min="1" max="100" value="5" />
                   </div>
                   <div class="field">
                     <div class="field-text">
-                      <label for="discussionTargetCount">Số lần / bài</label>
-                      <span>Đủ mục tiêu sẽ tự dừng</span>
+                      <label>Khoảng cách ngẫu nhiên</label>
+                      <span>Thời gian giữa hai lượt đăng, tính bằng phút</span>
                     </div>
-                    <input
-                      id="discussionTargetCount"
-                      type="number"
-                      min="1"
-                      max="100"
-                      value="5"
-                    />
+                    <div class="inline-inputs">
+                      <input id="discussionMinInterval" type="number" min="1" max="1440" value="1" aria-label="Từ phút" />
+                      <span>đến</span>
+                      <input id="discussionMaxInterval" type="number" min="1" max="1440" value="5" aria-label="Đến phút" />
+                    </div>
                   </div>
                 </div>
 
-                <div id="discussionScopeLabel" class="msg muted">Phạm vi: tất cả bài</div>
                 <div id="autoDiscussionMessage" class="msg hidden"></div>
                 <p class="hint">
-                  NVIDIA đọc nội dung bài và các comment gốc trước đó của bạn để viết comment
-                  mới, không lặp ý và không tự cảm ơn.
+                  Nếu đăng thất bại, mẫu vẫn được giữ để thử lại. Khi hết mẫu, hãy quay lại bước 1
+                  để nhờ AI tạo thêm.
                 </p>
               </div>
             </section>

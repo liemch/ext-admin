@@ -536,6 +536,19 @@ code {
   cursor: pointer;
 }
 
+.inline-inputs {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  color: var(--text-mute);
+}
+
+.field .inline-inputs input[type="number"] {
+  width: 76px;
+  max-width: none;
+}
+
 .field input:focus,
 .field select:focus {
   border-color: var(--accent);
@@ -771,6 +784,12 @@ code {
   white-space: nowrap;
 }
 
+.row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
 .mini-btn {
   padding: 5px 11px;
   font-size: 11px;
@@ -799,6 +818,142 @@ code {
   text-align: center;
   font-size: 12px;
   color: var(--text-mute);
+}
+
+/* ============ Discussion draft inventory ============ */
+
+.draft-stats {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.draft-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.draft-clear-btn {
+  padding: 6px 10px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.draft-clear-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.draft-stats span {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line-soft);
+  background: rgba(154, 165, 196, 0.08);
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.draft-stats .pending {
+  color: var(--amber);
+  border-color: rgba(247, 193, 92, 0.25);
+}
+
+.draft-stats .used {
+  color: var(--green);
+  border-color: rgba(74, 222, 155, 0.24);
+}
+
+.draft-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.draft-item {
+  padding: 10px 12px;
+  border-radius: 11px;
+  border: 1px solid var(--line-soft);
+  background: #0b0f22;
+  box-shadow: inset 3px 0 0 var(--amber);
+}
+
+.draft-item.used {
+  opacity: 0.72;
+  box-shadow: inset 3px 0 0 var(--green);
+}
+
+.draft-item.posting {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.draft-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+  font-size: 10.5px;
+}
+
+.draft-head span {
+  color: var(--text-mute);
+}
+
+.draft-status-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.draft-edit-btn {
+  padding: 3px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  color: #dbe2ff;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.draft-edit-btn:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.draft-delete-btn {
+  padding: 3px 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 107, 107, 0.35);
+  background: rgba(255, 107, 107, 0.08);
+  color: #ffb4b4;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.draft-delete-btn:hover {
+  border-color: rgba(255, 107, 107, 0.7);
+  background: rgba(255, 107, 107, 0.16);
+}
+
+.draft-item p {
+  color: var(--text-dim);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.draft-item p.draft-source {
+  margin-bottom: 6px;
+  color: var(--text-mute);
+  font-size: 10.5px;
+  border-left: 2px solid var(--line);
+  padding-left: 8px;
 }
 
 /* ============ Schedule list ============ */
@@ -1010,6 +1165,10 @@ body.view-tab .content {
     max-width: none;
   }
 
+  .inline-inputs {
+    justify-content: flex-start;
+  }
+
   /* Hàng có công tắc vẫn giữ layout ngang cho gọn */
   .field:has(.switch) {
     flex-direction: row;
@@ -1076,6 +1235,11 @@ body.view-tab .content {
   .cell-action {
     text-align: left;
     margin-top: 10px;
+  }
+
+  .row-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
   }
 
   .mini-btn {

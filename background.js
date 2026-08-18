@@ -30,17 +30,24 @@ let autoCommentSchedule = {
   lastError: null,
 };
 const AUTO_REPLY_ALARM = "autoReplyAlarm";
-const AUTO_REPLY_PERIOD_MINUTES = 5;
+const DEFAULT_REPLY_MIN_INTERVAL_MINUTES = 1;
+const DEFAULT_REPLY_MAX_INTERVAL_MINUTES = 5;
 const AUTO_DISCUSSION_ALARM = "autoDiscussionAlarm";
-const AUTO_DISCUSSION_MIN_INTERVAL_MINUTES = 1;
-const AUTO_DISCUSSION_MAX_INTERVAL_MINUTES = 5;
+const AI_JOB_WATCHDOG_ALARM = "aiJobWatchdogAlarm";
+const DEFAULT_DISCUSSION_MIN_INTERVAL_MINUTES = 1;
+const DEFAULT_DISCUSSION_MAX_INTERVAL_MINUTES = 5;
 let autoReplyRunning = false;
 let autoReplyState = {
   enabled: false,
   useAi: true,
   username: null,
   targetTechhubId: null,
+  targetCount: 5,
+  completedCount: 0,
   maxConsecutiveSelfReplies: 1,
+  minIntervalMinutes: DEFAULT_REPLY_MIN_INTERVAL_MINUTES,
+  maxIntervalMinutes: DEFAULT_REPLY_MAX_INTERVAL_MINUTES,
+  nextRunAt: null,
   lastRunAt: null,
   lastReplyCount: 0,
   lastError: null,
@@ -52,6 +59,9 @@ let autoDiscussionState = {
   username: null,
   targetTechhubId: null,
   targetCount: 5,
+  completedCount: 0,
+  minIntervalMinutes: DEFAULT_DISCUSSION_MIN_INTERVAL_MINUTES,
+  maxIntervalMinutes: DEFAULT_DISCUSSION_MAX_INTERVAL_MINUTES,
   nextRunAt: null,
   lastRunAt: null,
   lastDiscussionCount: 0,
@@ -269,7 +279,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       !!request.enabled,
       request.useAi,
       request.techhubId,
-      request.maxConsecutiveSelfReplies
+      request.maxConsecutiveSelfReplies,
+      request.targetCount,
+      request.minIntervalMinutes,
+      request.maxIntervalMinutes
     )
       .then((state) => sendResponse({ success: true, state }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
@@ -280,7 +293,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     runAutoReply({
       manual: true,
       techhubId: request.techhubId,
-      maxConsecutiveSelfReplies: request.maxConsecutiveSelfReplies,
     })
       .then((result) => sendResponse({ success: true, ...result, state: getAutoReplyStatus() }))
       .catch((error) => sendResponse({ success: false, error: error.message, state: getAutoReplyStatus() }));
@@ -294,11 +306,52 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  if (request.action === "getReplyDrafts") {
+    getReplyDraftsForUi(request.techhubId)
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "generateReplyDrafts") {
+    generateReplyDrafts(
+      request.techhubId,
+      request.count,
+      request.maxConsecutiveSelfReplies
+    )
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "updateReplyDraft") {
+    updateReplyDraft(request.id, request.body)
+      .then((draft) => sendResponse({ success: true, draft }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "deleteReplyDraft") {
+    deleteReplyDraft(request.id)
+      .then((draft) => sendResponse({ success: true, draft }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "deletePendingReplyDrafts") {
+    deletePendingReplyDrafts(request.techhubId)
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
   if (request.action === "setAutoDiscussionEnabled") {
     setAutoDiscussionEnabled(
       !!request.enabled,
       request.techhubId,
-      request.targetCount
+      request.targetCount,
+      request.minIntervalMinutes,
+      request.maxIntervalMinutes
     )
       .then((state) => sendResponse({ success: true, state }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
@@ -321,6 +374,41 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           state: getAutoDiscussionStatus(),
         })
       );
+    return true;
+  }
+
+  if (request.action === "getDiscussionDrafts") {
+    getDiscussionDraftsForUi(request.techhubId)
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "generateDiscussionDrafts") {
+    generateDiscussionDrafts(request.techhubId, request.count)
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "updateDiscussionDraft") {
+    updateDiscussionDraft(request.id, request.body)
+      .then((draft) => sendResponse({ success: true, draft }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "deleteDiscussionDraft") {
+    deleteDiscussionDraft(request.id)
+      .then((draft) => sendResponse({ success: true, draft }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "deletePendingDiscussionDrafts") {
+    deletePendingDiscussionDrafts(request.techhubId)
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;
   }
 
@@ -388,9 +476,10 @@ function setupAlarms() {
     }
   });
   chrome.alarms.get(AUTO_REPLY_ALARM, (alarm) => {
-    if (!alarm) {
-      console.log(`[Background] Creating ${AUTO_REPLY_ALARM} (${AUTO_REPLY_PERIOD_MINUTES}m)`);
-      chrome.alarms.create(AUTO_REPLY_ALARM, { periodInMinutes: AUTO_REPLY_PERIOD_MINUTES });
+    if (!alarm && autoReplyState.enabled) {
+      scheduleNextAutoReply().catch((error) => {
+        console.error("[Background] Could not schedule auto reply:", error);
+      });
     }
   });
   // Tự thảo luận dùng alarm one-shot riêng để mỗi lượt cách ngẫu nhiên 1–5 phút.
@@ -406,6 +495,30 @@ function setupAlarms() {
       chrome.alarms.create("scheduledDeleteSweep", { periodInMinutes: 1 });
     }
   });
+  // Alarm one-shot có thể bị mất khi service worker khởi động lại, cần watchdog gắn lại.
+  chrome.alarms.get(AI_JOB_WATCHDOG_ALARM, (alarm) => {
+    if (!alarm) {
+      chrome.alarms.create(AI_JOB_WATCHDOG_ALARM, { periodInMinutes: 1 });
+    }
+  });
+}
+
+async function rearmAiJobAlarms() {
+  await Promise.all([autoReplyRestorePromise, autoDiscussionRestorePromise]);
+  if (autoReplyState.enabled && !autoReplyRunning) {
+    const alarm = await chrome.alarms.get(AUTO_REPLY_ALARM);
+    if (!alarm) {
+      console.warn("[Background] Auto reply alarm missing, re-arming.");
+      await scheduleNextAutoReply();
+    }
+  }
+  if (autoDiscussionState.enabled && !autoDiscussionRunning) {
+    const alarm = await chrome.alarms.get(AUTO_DISCUSSION_ALARM);
+    if (!alarm) {
+      console.warn("[Background] Auto discussion alarm missing, re-arming.");
+      await scheduleNextAutoDiscussion();
+    }
+  }
 }
 
 // Bắt đầu setup Alarm cho Cross Interaction và Keep Alive
@@ -428,8 +541,15 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   } else if (alarm.name === "keepAliveAlarm") {
     pingTechHubToKeepAlive();
   } else if (alarm.name === AUTO_REPLY_ALARM) {
-    runAutoJobsFromAlarm().catch((err) => {
-      console.error("[Background] Auto AI jobs failed:", err);
+    // Chờ restore xong, nếu không state vẫn là mặc định (enabled = false) và job sẽ tự tắt.
+    autoReplyRestorePromise
+      .then(() => runAutoReply({ manual: false }))
+      .catch((err) => {
+        console.error("[Background] Auto reply alarm failed:", err);
+      });
+  } else if (alarm.name === AI_JOB_WATCHDOG_ALARM) {
+    rearmAiJobAlarms().catch((err) => {
+      console.error("[Background] Could not re-arm AI job alarms:", err);
     });
   } else if (alarm.name === AUTO_COMMENT_START_ALARM) {
     autoCommentRestorePromise
@@ -438,9 +558,11 @@ chrome.alarms.onAlarm.addListener((alarm) => {
         console.error("[Background] Scheduled auto comment failed:", err);
       });
   } else if (alarm.name === AUTO_DISCUSSION_ALARM) {
-    runAutoDiscussion({ manual: false }).catch((err) => {
-      console.error("[Background] Auto discussion alarm failed:", err);
-    });
+    autoDiscussionRestorePromise
+      .then(() => runAutoDiscussion({ manual: false }))
+      .catch((err) => {
+        console.error("[Background] Auto discussion alarm failed:", err);
+      });
   } else if (alarm.name === "scheduledDeleteSweep" || alarm.name.startsWith("deletePost-")) {
     processDueScheduledDeletes().catch((err) => {
       console.error("[Background] Scheduled delete failed:", err);
@@ -449,13 +571,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 async function runAutoJobsFromAlarm() {
-  if (autoReplyState.enabled) {
-    try {
-      await runAutoReply({ manual: false });
-    } catch (error) {
-      console.error("[Background] Auto reply alarm failed:", error);
-    }
-  }
+  // Giữ hàm để tương thích cũ; auto-reply giờ dùng alarm one-shot riêng.
 }
 
 async function pingTechHubToKeepAlive() {
@@ -991,7 +1107,7 @@ async function restoreAutoComment() {
 }
 
 function getAutoReplyStatus() {
-  return { ...autoReplyState, periodMinutes: AUTO_REPLY_PERIOD_MINUTES };
+  return { ...autoReplyState };
 }
 
 function broadcastAutoReplyProgress(message, type = "info") {
@@ -1005,6 +1121,97 @@ function broadcastAutoReplyProgress(message, type = "info") {
 
 async function saveAutoReplyState() {
   await chrome.storage.local.set({ autoReplyState });
+}
+
+function getRandomReplyDelayMinutes() {
+  const min = Number(autoReplyState.minIntervalMinutes) || DEFAULT_REPLY_MIN_INTERVAL_MINUTES;
+  const max = Number(autoReplyState.maxIntervalMinutes) || DEFAULT_REPLY_MAX_INTERVAL_MINUTES;
+  return min + Math.random() * (max - min);
+}
+
+async function scheduleNextAutoReply() {
+  if (!autoReplyState.enabled) {
+    autoReplyState.nextRunAt = null;
+    await chrome.alarms.clear(AUTO_REPLY_ALARM);
+    await saveAutoReplyState();
+    return null;
+  }
+  const delayInMinutes = getRandomReplyDelayMinutes();
+  const when = Date.now() + delayInMinutes * 60 * 1000;
+  await chrome.alarms.clear(AUTO_REPLY_ALARM);
+  chrome.alarms.create(AUTO_REPLY_ALARM, { when });
+  autoReplyState.nextRunAt = new Date(when).toISOString();
+  await saveAutoReplyState();
+  return when;
+}
+
+async function getReplyDraftsForUi(techhubId) {
+  const targetId = normalizeTechhubId(techhubId);
+  if (!targetId) {
+    return { drafts: [], pendingCount: 0, usedCount: 0 };
+  }
+  const stored = await chrome.storage.local.get("userProfile");
+  const username = stored.userProfile?.username;
+  if (!username) throw new Error("Không tìm thấy profile TechHub.");
+  await getPostsForAiJob(username, targetId);
+  const drafts = await supabase.getReplyDrafts(username, targetId);
+  return {
+    drafts,
+    pendingCount: drafts.filter((draft) => draft.status === "pending").length,
+    usedCount: drafts.filter((draft) => draft.status === "used").length,
+  };
+}
+
+async function updateReplyDraft(id, body) {
+  const draftId = Number(id);
+  const content = String(body || "").trim();
+  if (!Number.isInteger(draftId) || draftId < 1) throw new Error("ID mẫu không hợp lệ.");
+  if (!content) throw new Error("Nội dung trả lời không được để trống.");
+  if (content.length > 10000) throw new Error("Nội dung trả lời quá dài.");
+  const stored = await chrome.storage.local.get("userProfile");
+  const username = stored.userProfile?.username;
+  if (!username) throw new Error("Không tìm thấy profile TechHub.");
+  return supabase.updateReplyDraftBody(username, draftId, content);
+}
+
+async function deleteReplyDraft(id) {
+  const draftId = Number(id);
+  if (!Number.isInteger(draftId) || draftId < 1) throw new Error("ID mẫu không hợp lệ.");
+  const stored = await chrome.storage.local.get("userProfile");
+  const username = stored.userProfile?.username;
+  if (!username) throw new Error("Không tìm thấy profile TechHub.");
+  return supabase.deleteReplyDraft(username, draftId);
+}
+
+async function deletePendingReplyDrafts(techhubId) {
+  const targetId = normalizeTechhubId(techhubId);
+  if (!targetId) throw new Error("Hãy chọn bài cần xóa mẫu.");
+  const stored = await chrome.storage.local.get("userProfile");
+  const username = stored.userProfile?.username;
+  if (!username) throw new Error("Không tìm thấy profile TechHub.");
+  const deleted = await supabase.deletePendingReplyDrafts(username, targetId);
+  const result = await getReplyDraftsForUi(targetId);
+  return {
+    ...result,
+    deletedCount: deleted.length,
+    message: deleted.length
+      ? `Đã xóa ${deleted.length} mẫu trả lời chưa dùng của bài #${targetId}.`
+      : `Bài #${targetId} không còn mẫu trả lời chưa dùng.`,
+  };
+}
+
+function collectReplyCandidates(allComments, username, selfReplyLimit, useAi) {
+  const leafIds = new Set(
+    findThreadLeafComments(allComments).map((c) => Number(c.id))
+  );
+  return allComments.filter((c) => {
+    const author = getCommentAuthorUsername(c);
+    if (!c?.id || !author) return false;
+    if (author !== username) return true;
+    if (selfReplyLimit < 2 || !useAi) return false;
+    if (!leafIds.has(Number(c.id))) return false;
+    return countTrailingSelfComments(c, allComments, username) < selfReplyLimit;
+  });
 }
 
 async function parseSettingNumber(map, key, fallback) {
@@ -1384,6 +1591,8 @@ async function composeAutoReplyBody({
   articleBody,
   threadText,
   username,
+  status = "used",
+  persistDraft = true,
 }) {
   const commentBody = getCommentBody(comment);
   const commentAuthor = getCommentAuthorUsername(comment);
@@ -1403,19 +1612,26 @@ async function composeAutoReplyBody({
       username,
     });
     const cfg = getNvidiaConfig();
-    await supabase.saveReplyDraft({
-      username,
-      techhubId: post.techhub_id,
-      parentCommentId: comment.id,
-      commentAuthor,
-      // Lưu cả chuỗi hội thoại hiện tại để audit khi cấu trúc cmt đổi
-      commentBody: threadSnapshot,
-      replyBody,
+    if (persistDraft) {
+      await supabase.saveReplyDraft({
+        username,
+        techhubId: post.techhub_id,
+        parentCommentId: comment.id,
+        commentAuthor,
+        commentBody: threadSnapshot,
+        replyBody,
+        source: "nvidia",
+        model: cfg.model,
+        status,
+      });
+    }
+    return {
+      body: replyBody,
       source: "nvidia",
       model: cfg.model,
-      status: "used",
-    });
-    return { body: replyBody, source: "nvidia" };
+      commentAuthor,
+      threadSnapshot,
+    };
   }
 
   if (isSelfComment) {
@@ -1424,10 +1640,164 @@ async function composeAutoReplyBody({
   if (!fallbackTemplate?.content) {
     throw new Error("Không có template reply để dùng.");
   }
-  return { body: fallbackTemplate.content, source: "template" };
+  return {
+    body: fallbackTemplate.content,
+    source: "template",
+    model: null,
+    commentAuthor,
+    threadSnapshot,
+  };
 }
 
-async function setAutoReplyEnabled(enabled, useAi, techhubId, maxConsecutiveSelfReplies) {
+async function generateReplyDrafts(techhubId, count, maxConsecutiveSelfReplies) {
+  const targetId = normalizeTechhubId(techhubId);
+  const requestedCount = Number(count);
+  if (!targetId) throw new Error("Hãy chọn bài cần tạo mẫu trả lời.");
+  if (!Number.isInteger(requestedCount) || requestedCount < 1 || requestedCount > 50) {
+    throw new Error("Số mẫu cần tạo phải từ 1 đến 50.");
+  }
+  if (autoReplyRunning || autoDiscussionRunning || autoCommentState.active) {
+    throw new Error("Đang có job AI/comment khác chạy. Hãy đợi xong trước.");
+  }
+
+  autoReplyRunning = true;
+  try {
+    const stored = await chrome.storage.local.get(["techhubCredentials", "userProfile"]);
+    const credentials = stored.techhubCredentials;
+    const username = stored.userProfile?.username;
+    if (!credentials?.csrfToken || !username) {
+      throw new Error("Thiếu phiên đăng nhập hoặc profile TechHub.");
+    }
+
+    const useAi = true;
+    const cfg = getNvidiaConfig();
+    if (!cfg.apiKey || cfg.apiKey === "YOUR_NVIDIA_API_KEY") {
+      throw new Error("Chưa cấu hình NVIDIA_CONFIG.apiKey trong config.js");
+    }
+
+    const parsedSelfReplies = Number(maxConsecutiveSelfReplies);
+    const selfReplyLimit =
+      Number.isInteger(parsedSelfReplies) && parsedSelfReplies >= 1 && parsedSelfReplies <= 3
+        ? parsedSelfReplies
+        : autoReplyState.maxConsecutiveSelfReplies || 1;
+
+    const [post] = await getPostsForAiJob(username, targetId);
+    if (!post?.techhub_uuid) throw new Error(`Bài #${targetId} thiếu TechHub UUID.`);
+
+    const [pageData, articleDetail, existingDrafts] = await Promise.all([
+      fetchArticleComments(post.techhub_uuid, credentials, { sort: "new", page: 1 }),
+      fetchArticleDetail(post.techhub_uuid, credentials),
+      supabase.getReplyDrafts(username, targetId),
+    ]);
+    const allComments = flattenComments(pageData.comments || []);
+    const candidates = collectReplyCandidates(
+      allComments,
+      username,
+      selfReplyLimit,
+      useAi
+    );
+    if (!candidates.length) {
+      throw new Error("Không có comment nào cần tạo mẫu trả lời trên bài này.");
+    }
+
+    const alreadyReplied = await supabase.getRepliedParentCommentIds(
+      username,
+      candidates.map((c) => c.id)
+    );
+    const pendingParentIds = new Set(
+      existingDrafts
+        .filter((draft) => draft.status === "pending" || draft.status === "posting")
+        .map((draft) => Number(draft.parent_comment_id))
+    );
+    const openCandidates = candidates.filter((comment) => {
+      const id = Number(comment.id);
+      return !alreadyReplied.has(id) && !pendingParentIds.has(id);
+    });
+    if (!openCandidates.length) {
+      throw new Error(
+        "Mọi comment cần trả lời đã có mẫu pending hoặc đã reply. Không còn comment mới để gen."
+      );
+    }
+
+    const toGenerate = openCandidates.slice(0, requestedCount);
+    const created = [];
+    const templates = await supabase.getCommentTemplates({ kind: "reply" });
+
+    for (let index = 0; index < toGenerate.length; index += 1) {
+      const comment = toGenerate[index];
+      chrome.runtime
+        .sendMessage({
+          action: "replyDraftProgress",
+          message: `Đang tạo mẫu reply ${index + 1}/${toGenerate.length} cho comment #${comment.id}...`,
+          type: "info",
+        })
+        .catch(() => {});
+
+      const threadText = buildCommentThreadText(comment, allComments, username);
+      let replyPayload;
+      try {
+        const template =
+          templates.length > 0
+            ? templates[Math.floor(Math.random() * templates.length)]
+            : null;
+        replyPayload = await composeAutoReplyBody({
+          useAi,
+          fallbackTemplate: template,
+          comment,
+          post,
+          articleBody: articleDetail.body,
+          threadText,
+          username,
+          status: "pending",
+          persistDraft: false,
+        });
+      } catch (error) {
+        throw new Error(`Gen mẫu cho comment #${comment.id} thất bại: ${error.message}`);
+      }
+
+      try {
+        const draft = await supabase.saveReplyDraft({
+          username,
+          techhubId: targetId,
+          parentCommentId: comment.id,
+          commentAuthor: replyPayload.commentAuthor,
+          commentBody: replyPayload.threadSnapshot,
+          replyBody: replyPayload.body,
+          source: replyPayload.source,
+          model: replyPayload.model,
+          status: "pending",
+        });
+        if (!draft) {
+          throw new Error("Supabase không trả về dữ liệu.");
+        }
+        created.push(draft);
+      } catch (error) {
+        throw new Error(`Không lưu được mẫu ${index + 1}: ${error.message}`);
+      }
+    }
+
+    autoReplyState.maxConsecutiveSelfReplies = selfReplyLimit;
+    await saveAutoReplyState();
+    const result = await getReplyDraftsForUi(targetId);
+    const skipped = requestedCount - created.length;
+    const message =
+      `Đã tạo ${created.length} mẫu reply cho bài #${targetId}. Còn ${result.pendingCount} mẫu chưa dùng.` +
+      (skipped > 0 ? ` (chỉ còn ${created.length} comment cần gen)` : "");
+    return { ...result, createdCount: created.length, message };
+  } finally {
+    autoReplyRunning = false;
+  }
+}
+
+async function setAutoReplyEnabled(
+  enabled,
+  useAi,
+  techhubId,
+  maxConsecutiveSelfReplies,
+  targetCount,
+  minIntervalMinutes,
+  maxIntervalMinutes
+) {
   if (enabled && autoCommentState.active) {
     throw new Error("Đang chạy auto-comment 1 bài. Hãy dừng trước khi bật auto-reply.");
   }
@@ -1439,24 +1809,82 @@ async function setAutoReplyEnabled(enabled, useAi, techhubId, maxConsecutiveSelf
     throw new Error("Thiếu phiên đăng nhập hoặc profile TechHub.");
   }
 
+  const targetId = normalizeTechhubId(techhubId);
+  const parsedTargetCount = Number(targetCount);
+  const parsedMinInterval = Number(minIntervalMinutes);
+  const parsedMaxInterval = Number(maxIntervalMinutes);
+  if (enabled && !targetId) {
+    throw new Error("Hãy chọn một bài trước khi bật tự trả lời.");
+  }
+  if (
+    enabled &&
+    (!Number.isInteger(parsedTargetCount) || parsedTargetCount < 1 || parsedTargetCount > 100)
+  ) {
+    throw new Error("Số lượng đăng phải từ 1 đến 100.");
+  }
+  if (
+    enabled &&
+    (!Number.isFinite(parsedMinInterval) ||
+      !Number.isFinite(parsedMaxInterval) ||
+      parsedMinInterval < 1 ||
+      parsedMaxInterval < parsedMinInterval ||
+      parsedMaxInterval > 1440)
+  ) {
+    throw new Error("Khoảng thời gian phải hợp lệ (1–1440 phút, từ ≤ đến).");
+  }
+  if (enabled) {
+    const pendingDrafts = await supabase.getReplyDrafts(
+      userProfile.username,
+      targetId,
+      "pending"
+    );
+    if (pendingDrafts.length === 0) {
+      throw new Error("Đã hết mẫu trả lời. Hãy nhờ AI tạo thêm mẫu.");
+    }
+    if (pendingDrafts.length < parsedTargetCount) {
+      throw new Error(
+        `Chỉ còn ${pendingDrafts.length} mẫu chưa dùng, không đủ để đăng ${parsedTargetCount} mẫu.`
+      );
+    }
+  }
+
+  const wasEnabled = autoReplyState.enabled;
   autoReplyState.enabled = enabled;
   if (typeof useAi === "boolean") {
     autoReplyState.useAi = useAi;
   }
   autoReplyState.username = userProfile?.username || autoReplyState.username;
-  autoReplyState.targetTechhubId = normalizeTechhubId(techhubId);
+  autoReplyState.targetTechhubId = targetId;
   const parsedSelfReplies = Number(maxConsecutiveSelfReplies);
   if (Number.isInteger(parsedSelfReplies) && parsedSelfReplies >= 1 && parsedSelfReplies <= 3) {
     autoReplyState.maxConsecutiveSelfReplies = parsedSelfReplies;
   }
+  if (Number.isInteger(parsedTargetCount) && parsedTargetCount >= 1 && parsedTargetCount <= 100) {
+    autoReplyState.targetCount = parsedTargetCount;
+  }
+  if (Number.isFinite(parsedMinInterval)) {
+    autoReplyState.minIntervalMinutes = parsedMinInterval;
+  }
+  if (Number.isFinite(parsedMaxInterval)) {
+    autoReplyState.maxIntervalMinutes = parsedMaxInterval;
+  }
+  if (enabled && !wasEnabled) autoReplyState.completedCount = 0;
   autoReplyState.lastError = null;
-  const scopeLabel = autoReplyState.targetTechhubId
-    ? `bài #${autoReplyState.targetTechhubId}`
-    : "tất cả bài";
   autoReplyState.lastMessage = enabled
-    ? `Đã bật auto-reply (${autoReplyState.useAi ? "NVIDIA AI" : "template"}) · ${scopeLabel}.`
+    ? `Đã bật tự trả lời · bài #${autoReplyState.targetTechhubId} · đăng ${
+        autoReplyState.targetCount
+      } mẫu · cách nhau ngẫu nhiên ${autoReplyState.minIntervalMinutes}–${
+        autoReplyState.maxIntervalMinutes
+      } phút.`
     : "Đã tắt tự trả lời comment.";
-  await saveAutoReplyState();
+
+  if (enabled) {
+    await scheduleNextAutoReply();
+  } else {
+    await chrome.alarms.clear(AUTO_REPLY_ALARM);
+    autoReplyState.nextRunAt = null;
+    await saveAutoReplyState();
+  }
 
   try {
     await supabase.updateSetting("enable_auto_reply", enabled, { preserveUpdatedAt: true });
@@ -1472,15 +1900,6 @@ async function setAutoReplyEnabled(enabled, useAi, techhubId, maxConsecutiveSelf
   }
 
   broadcastAutoReplyProgress(autoReplyState.lastMessage, enabled ? "success" : "muted");
-  if (enabled) {
-    runAutoReply({
-      manual: true,
-      techhubId: autoReplyState.targetTechhubId,
-      maxConsecutiveSelfReplies: autoReplyState.maxConsecutiveSelfReplies,
-    }).catch((err) => {
-      console.error("[Background] Immediate auto-reply failed:", err);
-    });
-  }
   return getAutoReplyStatus();
 }
 
@@ -1502,7 +1921,19 @@ async function restoreAutoReply() {
       if (map.enable_ai_reply) {
         autoReplyState.useAi = await parseSettingBool(map, "enable_ai_reply", autoReplyState.useAi);
       }
+      if (autoReplyState.enabled && !normalizeTechhubId(autoReplyState.targetTechhubId)) {
+        autoReplyState.enabled = false;
+        autoReplyState.lastMessage =
+          "Job trả lời cũ đã dừng. Hãy chọn bài và chuẩn bị kho mẫu trước khi bật lại.";
+        await supabase.updateSetting("enable_auto_reply", false, {
+          preserveUpdatedAt: true,
+        });
+      }
       await saveAutoReplyState();
+      if (autoReplyState.enabled) {
+        const alarm = await chrome.alarms.get(AUTO_REPLY_ALARM);
+        if (!alarm) await scheduleNextAutoReply();
+      }
     } catch (error) {
       console.warn("[Background] Could not load auto-reply settings:", error);
     }
@@ -1511,23 +1942,63 @@ async function restoreAutoReply() {
   }
 }
 
+/**
+ * Service worker có thể bị Chrome tắt giữa lượt đăng, để lại draft treo ở "posting"
+ * và job sẽ tưởng là hết mẫu. Dựa vào interactions để biết mẫu đã đăng thật hay chưa.
+ */
+async function reclaimStuckReplyDrafts(username, techhubId) {
+  let stuck = [];
+  try {
+    stuck = await supabase.getReplyDrafts(username, techhubId, "posting");
+  } catch (error) {
+    console.warn("[Background] Could not read stuck reply drafts:", error);
+    return;
+  }
+  if (!stuck.length) return;
+  let posted = new Set();
+  try {
+    posted = await supabase.getRepliedParentCommentIds(
+      username,
+      stuck.map((draft) => Number(draft.parent_comment_id))
+    );
+  } catch (error) {
+    console.warn("[Background] Could not check replied comments:", error);
+  }
+  for (const draft of stuck) {
+    const nextStatus = posted.has(Number(draft.parent_comment_id)) ? "used" : "pending";
+    try {
+      await supabase.updateReplyDraftStatus(draft.id, nextStatus);
+    } catch (error) {
+      console.warn(`[Background] Could not reclaim reply draft #${draft.id}:`, error);
+    }
+  }
+}
+
 async function runAutoReply({
   manual = false,
   techhubId = null,
-  maxConsecutiveSelfReplies = null,
 } = {}) {
   if (autoReplyRunning) {
+    if (!manual && autoReplyState.enabled) {
+      await scheduleNextAutoReply();
+    }
     return { replied: 0, skipped: true, message: "Auto-reply đang chạy." };
   }
   if (!manual && !autoReplyState.enabled) {
     return { replied: 0, skipped: true, message: "Auto-reply đang tắt." };
   }
   if (autoCommentState.active) {
+    if (!manual && autoReplyState.enabled) {
+      await scheduleNextAutoReply();
+    }
     const message = "Bỏ qua auto-reply vì auto-comment 1 bài đang chạy.";
     broadcastAutoReplyProgress(message, "info");
     return { replied: 0, skipped: true, message };
   }
   if (autoDiscussionRunning) {
+    if (!manual && autoReplyState.enabled) {
+      await scheduleNextAutoReply();
+    }
     return {
       replied: 0,
       skipped: true,
@@ -1556,188 +2027,134 @@ async function runAutoReply({
       await chrome.storage.local.set({ techhubCredentials: credentials });
     }
 
-    const settings = await supabase.getSettings([
-      "enable_auto_reply",
-      "auto_reply_max_per_run",
-      "enable_ai_reply",
-      "ai_reply_fallback_template",
-    ]);
-    if (!manual) {
-      const enabledInDb = await parseSettingBool(settings, "enable_auto_reply", autoReplyState.enabled);
-      if (!enabledInDb && !autoReplyState.enabled) {
-        return { replied: 0, skipped: true, message: "Auto-reply đang tắt." };
-      }
-    }
-
-    const maxPerRun = await parseSettingNumber(settings, "auto_reply_max_per_run", 5);
-    const useAi = await parseSettingBool(settings, "enable_ai_reply", autoReplyState.useAi !== false);
-    const fallbackTemplate = await parseSettingBool(
-      settings,
-      "ai_reply_fallback_template",
-      true
-    );
-    autoReplyState.useAi = useAi;
-
-    const templates = await supabase.getCommentTemplates({ kind: "reply" });
-    if (!useAi && !templates.length) {
-      throw new Error("Không có template kind=reply. Hãy chạy migration/seed.");
-    }
-    if (useAi) {
-      const cfg = getNvidiaConfig();
-      if (!cfg.apiKey || cfg.apiKey === "YOUR_NVIDIA_API_KEY") {
-        throw new Error("Bật AI reply nhưng chưa cấu hình NVIDIA_CONFIG.apiKey trong config.js");
-      }
-    }
-
     const scopeTechhubId = manual
       ? normalizeTechhubId(techhubId)
       : autoReplyState.targetTechhubId;
-    const requestedSelfReplies = Number(maxConsecutiveSelfReplies);
-    const selfReplyLimit =
-      manual &&
-      Number.isInteger(requestedSelfReplies) &&
-      requestedSelfReplies >= 1 &&
-      requestedSelfReplies <= 3
-        ? requestedSelfReplies
-        : autoReplyState.maxConsecutiveSelfReplies || 1;
-    const posts = await getPostsForAiJob(username, scopeTechhubId);
-    if (!posts.length) {
-      const message = "Chưa có bài của bạn trong DB. Hãy bấm Quét bài trước.";
-      autoReplyState.lastMessage = message;
-      autoReplyState.lastRunAt = new Date().toISOString();
-      autoReplyState.lastReplyCount = 0;
-      await saveAutoReplyState();
-      broadcastAutoReplyProgress(message, "muted");
-      return { replied: 0, message, posts: [] };
+    if (!scopeTechhubId) throw new Error("Hãy chọn bài cần trả lời.");
+    const [post] = await getPostsForAiJob(username, scopeTechhubId);
+    if (!post?.techhub_id) {
+      throw new Error(`Không tìm thấy bài #${scopeTechhubId} trong DB.`);
     }
 
-    broadcastAutoReplyProgress(
-      `Đang quét comment trên ${
-        scopeTechhubId ? `bài #${scopeTechhubId}` : `${posts.length} bài`
-      } · mode=${useAi ? "NVIDIA AI" : "template"}...`,
-      "info"
-    );
-    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-    for (const post of posts) {
-      if (replied >= maxPerRun) break;
-      if (!post.techhub_uuid || !post.techhub_id) continue;
-
-      let pageData;
-      let articleDetail;
+    if (
+      !manual &&
+      Number(autoReplyState.completedCount) >= Number(autoReplyState.targetCount)
+    ) {
+      autoReplyState.enabled = false;
+      autoReplyState.nextRunAt = null;
+      await chrome.alarms.clear(AUTO_REPLY_ALARM);
       try {
-        [pageData, articleDetail] = await Promise.all([
-          fetchArticleComments(post.techhub_uuid, credentials, {
-            sort: "new",
-            page: 1,
-          }),
-          fetchArticleDetail(post.techhub_uuid, credentials),
-        ]);
+        await supabase.updateSetting("enable_auto_reply", false, {
+          preserveUpdatedAt: true,
+        });
       } catch (error) {
-        console.warn(`[Background] Fetch article context failed for #${post.techhub_id}:`, error);
-        continue;
+        console.warn("[Background] Could not persist completed reply state:", error);
       }
+      const message = `Đã đăng đủ ${autoReplyState.targetCount} mẫu reply trên bài #${post.techhub_id}. Đã tự dừng.`;
+      autoReplyState.lastMessage = message;
+      await saveAutoReplyState();
+      broadcastAutoReplyProgress(message, "success");
+      return { replied: 0, message };
+    }
 
-      const allComments = flattenComments(pageData.comments || []);
-      const leafIds = new Set(
-        findThreadLeafComments(allComments).map((c) => Number(c.id))
-      );
-      const candidates = allComments.filter((c) => {
-        const author = getCommentAuthorUsername(c);
-        if (!c?.id || !author) return false;
-        if (author !== username) return true;
-        // Comment của chính mình: chỉ nối tiếp khi ở cuối chuỗi và chưa đủ số lượt
-        if (selfReplyLimit < 2 || !useAi) return false;
-        if (!leafIds.has(Number(c.id))) return false;
-        return countTrailingSelfComments(c, allComments, username) < selfReplyLimit;
-      });
-      if (!candidates.length) continue;
+    await reclaimStuckReplyDrafts(username, post.techhub_id);
 
-      const already = await supabase.getRepliedParentCommentIds(
-        username,
-        candidates.map((c) => c.id)
-      );
-
-      for (const comment of candidates) {
-        if (replied >= maxPerRun) break;
-        if (already.has(Number(comment.id))) continue;
-
-        let replyPayload;
+    const pendingDrafts = await supabase.getReplyDrafts(
+      username,
+      post.techhub_id,
+      "pending"
+    );
+    const draft = pendingDrafts[0];
+    if (!draft) {
+      if (!manual) {
+        autoReplyState.enabled = false;
+        autoReplyState.nextRunAt = null;
+        await chrome.alarms.clear(AUTO_REPLY_ALARM);
         try {
-          const template =
-            templates.length > 0
-              ? templates[Math.floor(Math.random() * templates.length)]
-              : null;
-          const threadText = buildCommentThreadText(comment, allComments, username);
-          replyPayload = await composeAutoReplyBody({
-            useAi,
-            fallbackTemplate: template,
-            comment,
-            post,
-            articleBody: articleDetail.body,
-            threadText,
-            username,
+          await supabase.updateSetting("enable_auto_reply", false, {
+            preserveUpdatedAt: true,
           });
         } catch (error) {
-          console.warn(`[Background] Compose reply failed for comment ${comment.id}:`, error);
-          if (useAi && fallbackTemplate && templates.length) {
-            const template = templates[Math.floor(Math.random() * templates.length)];
-            replyPayload = { body: template.content, source: "template-fallback" };
-            broadcastAutoReplyProgress(
-              `AI lỗi, fallback template cho #${comment.id}: ${error.message}`,
-              "warn"
-            );
-          } else {
-            continue;
-          }
+          console.warn("[Background] Could not persist empty reply state:", error);
         }
+      }
+      const message = `Đã hết mẫu trả lời cho bài #${post.techhub_id}. Hãy nhờ AI tạo thêm mẫu.${
+        manual ? "" : " Đã tự dừng."
+      }`;
+      autoReplyState.lastMessage = message;
+      autoReplyState.lastRunAt = new Date().toISOString();
+      await saveAutoReplyState();
+      broadcastAutoReplyProgress(message, "muted");
+      return { replied: 0, message };
+    }
 
-        const response = await interactWithTechHub(
-          { techhub_id: post.techhub_id },
-          "reply",
-          replyPayload.body,
-          credentials,
-          undefined,
-          { parentCommentId: comment.id }
-        );
+    const nextNumber = manual
+      ? 1
+      : Number(autoReplyState.completedCount || 0) + 1;
+    broadcastAutoReplyProgress(
+      `Đang đăng mẫu reply cho bài #${post.techhub_id}${
+        manual ? "" : ` · ${nextNumber}/${autoReplyState.targetCount}`
+      }...`,
+      "info"
+    );
 
-        if (!response?.ok) {
-          const status = response?.status || "unknown";
-          if (status === 401 || status === 403 || status === 429) {
-            throw new Error(`TechHub HTTP ${status} khi reply. Dừng job.`);
-          }
-          console.error(`[Background] Reply failed on comment ${comment.id}: HTTP ${status}`);
-          continue;
-        }
+    await supabase.updateReplyDraftStatus(draft.id, "posting");
+    try {
+      const response = await interactWithTechHub(
+        { techhub_id: post.techhub_id },
+        "reply",
+        draft.reply_body,
+        credentials,
+        undefined,
+        { parentCommentId: draft.parent_comment_id }
+      );
+      if (!response?.ok) {
+        const status = response?.status || "unknown";
+        throw new Error(`TechHub HTTP ${status} khi reply comment #${draft.parent_comment_id}.`);
+      }
+    } catch (error) {
+      await supabase.updateReplyDraftStatus(draft.id, "pending");
+      throw error;
+    }
 
-        await supabase.recordInteraction(username, post.techhub_id, "reply", comment.id);
-        replied += 1;
-        const selfChainNote =
-          getCommentAuthorUsername(comment) === username
-            ? ` · nối lượt của bạn ${
-                countTrailingSelfComments(comment, allComments, username) + 1
-              }/${selfReplyLimit}`
-            : "";
-        broadcastAutoReplyProgress(
-          `Đã reply #${comment.id} trên bài #${post.techhub_id} (${replyPayload.source})${selfChainNote} · ${replied}/${maxPerRun}.`,
-          "success"
-        );
-        await delay(getRandomAutoCommentDelay());
+    await supabase.updateReplyDraftStatus(draft.id, "used");
+    await supabase.recordInteraction(
+      username,
+      post.techhub_id,
+      "reply",
+      draft.parent_comment_id
+    );
+    replied = 1;
+    if (!manual) autoReplyState.completedCount = nextNumber;
+
+    const reachedTarget =
+      !manual &&
+      Number(autoReplyState.completedCount) >= Number(autoReplyState.targetCount);
+    if (reachedTarget) {
+      autoReplyState.enabled = false;
+      autoReplyState.nextRunAt = null;
+      await chrome.alarms.clear(AUTO_REPLY_ALARM);
+      try {
+        await supabase.updateSetting("enable_auto_reply", false, {
+          preserveUpdatedAt: true,
+        });
+      } catch (error) {
+        console.warn("[Background] Could not persist completed reply state:", error);
       }
     }
 
-    const message =
-      replied > 0
-        ? `Hoàn tất: đã reply ${replied} comment (${useAi ? "AI" : "template"}).`
-        : "Không có comment mới cần trả lời.";
+    const message = manual
+      ? `Đã đăng 1 mẫu reply trên bài #${post.techhub_id} · comment #${draft.parent_comment_id}.`
+      : `Đã đăng ${autoReplyState.completedCount}/${autoReplyState.targetCount} mẫu reply trên bài #${post.techhub_id}.${
+          reachedTarget ? " Đã tự dừng." : ""
+        }`;
     autoReplyState.username = username;
-    autoReplyState.maxConsecutiveSelfReplies = selfReplyLimit;
     autoReplyState.lastRunAt = new Date().toISOString();
     autoReplyState.lastReplyCount = replied;
     autoReplyState.lastError = null;
     autoReplyState.lastMessage = message;
     await saveAutoReplyState();
-    broadcastAutoReplyProgress(message, replied > 0 ? "success" : "muted");
+    broadcastAutoReplyProgress(message, "success");
     return { replied, message };
   } catch (error) {
     console.error("[Background] Auto reply failed:", error);
@@ -1749,15 +2166,166 @@ async function runAutoReply({
     throw error;
   } finally {
     autoReplyRunning = false;
+    if (!manual && autoReplyState.enabled) {
+      await scheduleNextAutoReply();
+      broadcastAutoReplyProgress(
+        `${autoReplyState.lastMessage} Lượt kế tiếp lúc ${new Date(
+          autoReplyState.nextRunAt
+        ).toLocaleTimeString("vi-VN")}.`,
+        autoReplyState.lastError ? "error" : "success"
+      );
+    }
   }
 }
 
 function getAutoDiscussionStatus() {
   return {
     ...autoDiscussionState,
-    minIntervalMinutes: AUTO_DISCUSSION_MIN_INTERVAL_MINUTES,
-    maxIntervalMinutes: AUTO_DISCUSSION_MAX_INTERVAL_MINUTES,
   };
+}
+
+async function getDiscussionDraftsForUi(techhubId) {
+  const targetId = normalizeTechhubId(techhubId);
+  if (!targetId) {
+    return { drafts: [], pendingCount: 0, usedCount: 0 };
+  }
+  const stored = await chrome.storage.local.get("userProfile");
+  const username = stored.userProfile?.username;
+  if (!username) throw new Error("Không tìm thấy profile TechHub.");
+  await getPostsForAiJob(username, targetId);
+  const drafts = await supabase.getDiscussionDrafts(username, targetId);
+  return {
+    drafts,
+    pendingCount: drafts.filter((draft) => draft.status === "pending").length,
+    usedCount: drafts.filter((draft) => draft.status === "used").length,
+  };
+}
+
+async function updateDiscussionDraft(id, body) {
+  const draftId = Number(id);
+  const content = String(body || "").trim();
+  if (!Number.isInteger(draftId) || draftId < 1) throw new Error("ID mẫu không hợp lệ.");
+  if (!content) throw new Error("Nội dung thảo luận không được để trống.");
+  if (content.length > 10000) throw new Error("Nội dung thảo luận quá dài.");
+  const stored = await chrome.storage.local.get("userProfile");
+  const username = stored.userProfile?.username;
+  if (!username) throw new Error("Không tìm thấy profile TechHub.");
+  return supabase.updateDiscussionDraftBody(username, draftId, content);
+}
+
+async function deleteDiscussionDraft(id) {
+  const draftId = Number(id);
+  if (!Number.isInteger(draftId) || draftId < 1) throw new Error("ID mẫu không hợp lệ.");
+  const stored = await chrome.storage.local.get("userProfile");
+  const username = stored.userProfile?.username;
+  if (!username) throw new Error("Không tìm thấy profile TechHub.");
+  return supabase.deleteDiscussionDraft(username, draftId);
+}
+
+async function deletePendingDiscussionDrafts(techhubId) {
+  const targetId = normalizeTechhubId(techhubId);
+  if (!targetId) throw new Error("Hãy chọn bài cần xóa mẫu.");
+  const stored = await chrome.storage.local.get("userProfile");
+  const username = stored.userProfile?.username;
+  if (!username) throw new Error("Không tìm thấy profile TechHub.");
+  const deleted = await supabase.deletePendingDiscussionDrafts(username, targetId);
+  const result = await getDiscussionDraftsForUi(targetId);
+  return {
+    ...result,
+    deletedCount: deleted.length,
+    message: deleted.length
+      ? `Đã xóa ${deleted.length} mẫu thảo luận chưa dùng của bài #${targetId}.`
+      : `Bài #${targetId} không còn mẫu thảo luận chưa dùng.`,
+  };
+}
+
+async function generateDiscussionDrafts(techhubId, count) {
+  const targetId = normalizeTechhubId(techhubId);
+  const requestedCount = Number(count);
+  if (!targetId) throw new Error("Hãy chọn bài cần tạo mẫu thảo luận.");
+  if (!Number.isInteger(requestedCount) || requestedCount < 1 || requestedCount > 50) {
+    throw new Error("Số mẫu cần tạo phải từ 1 đến 50.");
+  }
+  if (autoDiscussionRunning || autoCommentState.active || autoReplyRunning) {
+    throw new Error("Đang có job AI/comment khác chạy. Hãy đợi xong trước.");
+  }
+
+  autoDiscussionRunning = true;
+  try {
+    const stored = await chrome.storage.local.get(["techhubCredentials", "userProfile"]);
+    const credentials = stored.techhubCredentials;
+    const username = stored.userProfile?.username;
+    if (!credentials?.csrfToken || !username) {
+      throw new Error("Thiếu phiên đăng nhập hoặc profile TechHub.");
+    }
+    const cfg = getNvidiaConfig();
+    if (!cfg.apiKey || cfg.apiKey === "YOUR_NVIDIA_API_KEY") {
+      throw new Error("Chưa cấu hình NVIDIA_CONFIG.apiKey trong config.js");
+    }
+
+    const [post] = await getPostsForAiJob(username, targetId);
+    if (!post?.techhub_uuid) throw new Error(`Bài #${targetId} thiếu TechHub UUID.`);
+    const [pageData, articleDetail, existingDrafts] = await Promise.all([
+      fetchArticleComments(post.techhub_uuid, credentials, { sort: "new", page: 1 }),
+      fetchArticleDetail(post.techhub_uuid, credentials),
+      supabase.getDiscussionDrafts(username, targetId),
+    ]);
+    const previousTexts = flattenComments(pageData.comments || [])
+      .filter(
+        (comment) =>
+          !getCommentParentId(comment) &&
+          getCommentAuthorUsername(comment) === username &&
+          getCommentBody(comment)
+      )
+      .slice(0, 10)
+      .map((comment) => getCommentBody(comment));
+    previousTexts.push(...existingDrafts.map((draft) => draft.discussion_body).filter(Boolean));
+
+    const created = [];
+    for (let index = 0; index < requestedCount; index += 1) {
+      chrome.runtime
+        .sendMessage({
+          action: "discussionDraftProgress",
+          message: `Đang tạo mẫu ${index + 1}/${requestedCount} cho bài #${targetId}...`,
+          type: "info",
+        })
+        .catch(() => {});
+      const discussionBody = await nvidiaGenerateDiscussion({
+        postTitle: post.title,
+        articleBody: articleDetail.body,
+        previousDiscussionText: previousTexts.join("\n"),
+        discussionNumber: existingDrafts.length + index + 1,
+        discussionTarget: existingDrafts.length + requestedCount,
+        username,
+        isOwnPost: true,
+      });
+      let draft;
+      try {
+        draft = await supabase.saveDiscussionDraft({
+          username,
+          techhubId: targetId,
+          sourceCommentId: null,
+          sourceCommentBody: previousTexts.join("\n") || null,
+          discussionBody,
+          model: cfg.model,
+          status: "pending",
+        });
+      } catch (error) {
+        throw new Error(`Không lưu được mẫu ${index + 1}: ${error.message}`);
+      }
+      if (!draft) {
+        throw new Error(`Không lưu được mẫu ${index + 1}: Supabase không trả về dữ liệu.`);
+      }
+      created.push(draft);
+      previousTexts.push(discussionBody);
+    }
+
+    const result = await getDiscussionDraftsForUi(targetId);
+    const message = `Đã tạo ${created.length} mẫu cho bài #${targetId}. Còn ${result.pendingCount} mẫu chưa dùng.`;
+    return { ...result, createdCount: created.length, message };
+  } finally {
+    autoDiscussionRunning = false;
+  }
 }
 
 function broadcastAutoDiscussionProgress(message, type = "info") {
@@ -1774,11 +2342,11 @@ async function saveAutoDiscussionState() {
 }
 
 function getRandomDiscussionDelayMinutes() {
-  return (
-    AUTO_DISCUSSION_MIN_INTERVAL_MINUTES +
-    Math.random() *
-      (AUTO_DISCUSSION_MAX_INTERVAL_MINUTES - AUTO_DISCUSSION_MIN_INTERVAL_MINUTES)
-  );
+  const min = Number(autoDiscussionState.minIntervalMinutes) ||
+    DEFAULT_DISCUSSION_MIN_INTERVAL_MINUTES;
+  const max = Number(autoDiscussionState.maxIntervalMinutes) ||
+    DEFAULT_DISCUSSION_MAX_INTERVAL_MINUTES;
+  return min + Math.random() * (max - min);
 }
 
 async function scheduleNextAutoDiscussion() {
@@ -1800,7 +2368,9 @@ async function scheduleNextAutoDiscussion() {
 async function setAutoDiscussionEnabled(
   enabled,
   techhubId,
-  targetCount
+  targetCount,
+  minIntervalMinutes,
+  maxIntervalMinutes
 ) {
   if (enabled && autoCommentState.active) {
     throw new Error("Hãy dừng auto-comment trước khi bật tự thảo luận.");
@@ -1810,26 +2380,67 @@ async function setAutoDiscussionEnabled(
     throw new Error("Thiếu phiên đăng nhập hoặc profile TechHub.");
   }
 
-  const cfg = getNvidiaConfig();
-  if (enabled && (!cfg.apiKey || cfg.apiKey === "YOUR_NVIDIA_API_KEY")) {
-    throw new Error("Chưa cấu hình NVIDIA_CONFIG.apiKey trong config.js");
+  const targetId = normalizeTechhubId(techhubId);
+  const parsedTargetCount = Number(targetCount);
+  const parsedMinInterval = Number(minIntervalMinutes);
+  const parsedMaxInterval = Number(maxIntervalMinutes);
+  if (enabled && !targetId) {
+    throw new Error("Hãy chọn một bài trước khi bật tự thảo luận.");
+  }
+  if (
+    enabled &&
+    (!Number.isInteger(parsedTargetCount) || parsedTargetCount < 1 || parsedTargetCount > 100)
+  ) {
+    throw new Error("Số lượng đăng phải từ 1 đến 100.");
+  }
+  if (
+    enabled &&
+    (!Number.isFinite(parsedMinInterval) ||
+      !Number.isFinite(parsedMaxInterval) ||
+      parsedMinInterval < 1 ||
+      parsedMaxInterval < parsedMinInterval ||
+      parsedMaxInterval > 1440)
+  ) {
+    throw new Error("Khoảng thời gian phải hợp lệ (1–1440 phút, từ ≤ đến).");
+  }
+  if (enabled) {
+    const pendingDrafts = await supabase.getDiscussionDrafts(
+      stored.userProfile.username,
+      targetId,
+      "pending"
+    );
+    if (pendingDrafts.length === 0) {
+      throw new Error("Đã hết mẫu thảo luận. Hãy nhờ AI tạo thêm mẫu.");
+    }
+    if (pendingDrafts.length < parsedTargetCount) {
+      throw new Error(
+        `Chỉ còn ${pendingDrafts.length} mẫu chưa dùng, không đủ để đăng ${parsedTargetCount} mẫu.`
+      );
+    }
   }
 
+  const wasEnabled = autoDiscussionState.enabled;
   autoDiscussionState.enabled = enabled;
   autoDiscussionState.username =
     stored.userProfile?.username || autoDiscussionState.username;
-  autoDiscussionState.targetTechhubId = normalizeTechhubId(techhubId);
-  const parsedTargetCount = Number(targetCount);
+  autoDiscussionState.targetTechhubId = targetId;
   if (Number.isInteger(parsedTargetCount) && parsedTargetCount >= 1 && parsedTargetCount <= 100) {
     autoDiscussionState.targetCount = parsedTargetCount;
   }
+  if (Number.isFinite(parsedMinInterval)) {
+    autoDiscussionState.minIntervalMinutes = parsedMinInterval;
+  }
+  if (Number.isFinite(parsedMaxInterval)) {
+    autoDiscussionState.maxIntervalMinutes = parsedMaxInterval;
+  }
+  if (enabled && !wasEnabled) autoDiscussionState.completedCount = 0;
   autoDiscussionState.lastError = null;
   autoDiscussionState.lastMessage = enabled
-    ? `Đã bật AI tự thảo luận · ${
-        autoDiscussionState.targetTechhubId
-          ? `bài #${autoDiscussionState.targetTechhubId}`
-          : "tất cả bài"
-      } · mục tiêu ${autoDiscussionState.targetCount} comment gốc/bài · cách nhau ngẫu nhiên 1–5 phút.`
+    ? `Đã bật tự thảo luận · bài #${autoDiscussionState.targetTechhubId} · đăng ${
+        autoDiscussionState.targetCount
+      } mẫu · cách nhau ngẫu nhiên ${autoDiscussionState.minIntervalMinutes}–${
+        autoDiscussionState.maxIntervalMinutes
+      } phút.`
     : "Đã tắt AI tự thảo luận.";
   if (enabled) {
     await scheduleNextAutoDiscussion();
@@ -1872,6 +2483,14 @@ async function restoreAutoDiscussion() {
           autoDiscussionState.enabled
         );
       }
+      if (autoDiscussionState.enabled && !normalizeTechhubId(autoDiscussionState.targetTechhubId)) {
+        autoDiscussionState.enabled = false;
+        autoDiscussionState.lastMessage =
+          "Job thảo luận cũ đã dừng. Hãy chọn bài và chuẩn bị kho mẫu trước khi bật lại.";
+        await supabase.updateSetting("enable_ai_discussion", false, {
+          preserveUpdatedAt: true,
+        });
+      }
       await saveAutoDiscussionState();
       if (autoDiscussionState.enabled) {
         const alarm = await chrome.alarms.get(AUTO_DISCUSSION_ALARM);
@@ -1885,10 +2504,45 @@ async function restoreAutoDiscussion() {
   }
 }
 
+/**
+ * Cứu mẫu thảo luận treo ở "posting" khi service worker bị tắt giữa lượt đăng.
+ * Mẫu gốc (source_comment_id null) không tra được interactions nên trả về pending.
+ */
+async function reclaimStuckDiscussionDrafts(username, techhubId) {
+  let stuck = [];
+  try {
+    stuck = await supabase.getDiscussionDrafts(username, techhubId, "posting");
+  } catch (error) {
+    console.warn("[Background] Could not read stuck discussion drafts:", error);
+    return;
+  }
+  if (!stuck.length) return;
+  const sourceIds = stuck
+    .map((draft) => Number(draft.source_comment_id))
+    .filter((id) => Number.isFinite(id));
+  let posted = new Set();
+  if (sourceIds.length) {
+    try {
+      posted = await supabase.getDiscussedSourceCommentIds(username, sourceIds);
+    } catch (error) {
+      console.warn("[Background] Could not check discussed comments:", error);
+    }
+  }
+  for (const draft of stuck) {
+    const sourceId = Number(draft.source_comment_id);
+    const nextStatus =
+      Number.isFinite(sourceId) && posted.has(sourceId) ? "used" : "pending";
+    try {
+      await supabase.updateDiscussionDraftStatus(draft.id, nextStatus);
+    } catch (error) {
+      console.warn(`[Background] Could not reclaim discussion draft #${draft.id}:`, error);
+    }
+  }
+}
+
 async function runAutoDiscussion({
   manual = false,
   techhubId = null,
-  targetCount = null,
 } = {}) {
   if (autoDiscussionRunning) {
     if (!manual && autoDiscussionState.enabled) {
@@ -1920,46 +2574,45 @@ async function runAutoDiscussion({
       throw new Error("Thiếu phiên đăng nhập hoặc profile TechHub.");
     }
 
-    const cfg = getNvidiaConfig();
-    if (!cfg.apiKey || cfg.apiKey === "YOUR_NVIDIA_API_KEY") {
-      throw new Error("Chưa cấu hình NVIDIA_CONFIG.apiKey trong config.js");
-    }
-
-    const requestedTarget = Number(targetCount);
-    const discussionTarget =
-      manual &&
-      Number.isInteger(requestedTarget) &&
-      requestedTarget >= 1 &&
-      requestedTarget <= 100
-        ? requestedTarget
-        : autoDiscussionState.targetCount || 5;
     const scopeTechhubId = manual
       ? normalizeTechhubId(techhubId)
       : autoDiscussionState.targetTechhubId;
-    const posts = await getPostsForAiJob(username, scopeTechhubId);
-    if (!posts.length) {
-      const message = "Chưa có bài của bạn trong DB. Hãy bấm Quét bài trước.";
+    if (!scopeTechhubId) throw new Error("Hãy chọn bài cần thảo luận.");
+    const [post] = await getPostsForAiJob(username, scopeTechhubId);
+    if (!post.techhub_uuid || !post.techhub_id) {
+      throw new Error(`Bài #${post.techhub_id || "?"} thiếu TechHub UUID.`);
+    }
+
+    if (
+      !manual &&
+      Number(autoDiscussionState.completedCount) >= Number(autoDiscussionState.targetCount)
+    ) {
+      autoDiscussionState.enabled = false;
+      autoDiscussionState.nextRunAt = null;
+      await chrome.alarms.clear(AUTO_DISCUSSION_ALARM);
+      try {
+        await supabase.updateSetting("enable_ai_discussion", false, {
+          preserveUpdatedAt: true,
+        });
+      } catch (error) {
+        console.warn("[Background] Could not persist completed discussion state:", error);
+      }
+      const message = `Đã đăng đủ ${autoDiscussionState.targetCount} mẫu trên bài #${post.techhub_id}. Đã tự dừng.`;
       autoDiscussionState.lastMessage = message;
-      autoDiscussionState.lastRunAt = new Date().toISOString();
-      autoDiscussionState.lastDiscussionCount = 0;
       await saveAutoDiscussionState();
-      broadcastAutoDiscussionProgress(message, "muted");
+      broadcastAutoDiscussionProgress(message, "success");
       return { discussed: 0, message };
     }
 
-    const postIds = posts
-      .map((post) => Number(post.techhub_id))
-      .filter((id) => Number.isInteger(id));
-    const counts = await supabase.getInteractionCountsByPost(
-      username,
-      "self_discussion",
-      postIds
-    );
-    const eligiblePosts = posts.filter(
-      (post) => (counts.get(Number(post.techhub_id)) || 0) < discussionTarget
-    );
+    await reclaimStuckDiscussionDrafts(username, post.techhub_id);
 
-    if (!eligiblePosts.length) {
+    const pendingDrafts = await supabase.getDiscussionDrafts(
+      username,
+      post.techhub_id,
+      "pending"
+    );
+    const draft = pendingDrafts[0];
+    if (!draft) {
       if (!manual) {
         autoDiscussionState.enabled = false;
         autoDiscussionState.nextRunAt = null;
@@ -1969,102 +2622,83 @@ async function runAutoDiscussion({
             preserveUpdatedAt: true,
           });
         } catch (error) {
-          console.warn("[Background] Could not persist completed discussion state:", error);
+          console.warn("[Background] Could not persist empty discussion state:", error);
         }
       }
-      const message = `Đã đủ mục tiêu ${discussionTarget} comment tự thảo luận trên ${
-        scopeTechhubId ? `bài #${scopeTechhubId}` : "tất cả bài"
-      }.${manual ? "" : " Đã tự dừng."}`;
+      const message = `Đã hết mẫu thảo luận cho bài #${post.techhub_id}. Hãy nhờ AI tạo thêm mẫu.${
+        manual ? "" : " Đã tự dừng."
+      }`;
       autoDiscussionState.lastMessage = message;
       autoDiscussionState.lastRunAt = new Date().toISOString();
-      autoDiscussionState.lastDiscussionCount = 0;
       await saveAutoDiscussionState();
-      broadcastAutoDiscussionProgress(message, "success");
+      broadcastAutoDiscussionProgress(message, "muted");
       return { discussed: 0, message };
     }
 
-    // Mỗi alarm chỉ đăng đúng một comment gốc; ưu tiên bài có ít lượt nhất.
-    eligiblePosts.sort(
-      (a, b) =>
-        (counts.get(Number(a.techhub_id)) || 0) -
-        (counts.get(Number(b.techhub_id)) || 0)
-    );
-    const post = eligiblePosts[0];
-    if (!post.techhub_uuid || !post.techhub_id) {
-      throw new Error(`Bài #${post.techhub_id || "?"} thiếu TechHub UUID.`);
-    }
-    const currentCount = counts.get(Number(post.techhub_id)) || 0;
+    const nextNumber = manual
+      ? 1
+      : Number(autoDiscussionState.completedCount || 0) + 1;
     broadcastAutoDiscussionProgress(
-      `Đang sinh comment gốc cho bài #${post.techhub_id} · ${
-        currentCount + 1
-      }/${discussionTarget}...`,
+      `Đang đăng mẫu cho bài #${post.techhub_id}${
+        manual ? "" : ` · ${nextNumber}/${autoDiscussionState.targetCount}`
+      }...`,
       "info"
     );
 
-    const [pageData, articleDetail] = await Promise.all([
-      fetchArticleComments(post.techhub_uuid, credentials, {
-        sort: "new",
-        page: 1,
-      }),
-      fetchArticleDetail(post.techhub_uuid, credentials),
-    ]);
-    const ownRootComments = flattenComments(pageData.comments || [])
-      .filter(
-        (comment) =>
-          !getCommentParentId(comment) &&
-          getCommentAuthorUsername(comment) === username &&
-          getCommentBody(comment)
-      )
-      .slice(0, 10)
-      .map((comment) => getCommentBody(comment));
-    const discussionBody = await nvidiaGenerateDiscussion({
-      postTitle: post.title,
-      articleBody: articleDetail.body,
-      previousDiscussionText: ownRootComments.join("\n"),
-      discussionNumber: currentCount + 1,
-      discussionTarget,
-      username,
-      isOwnPost: true,
-    });
-
-    const response = await interactWithTechHub(
-      { techhub_id: post.techhub_id },
-      "comment",
-      discussionBody,
-      credentials
-    );
-    if (!response?.ok) {
-      const status = response?.status || "unknown";
-      throw new Error(`TechHub HTTP ${status} khi đăng comment thảo luận.`);
+    await supabase.updateDiscussionDraftStatus(draft.id, "posting");
+    let response;
+    try {
+      response = await interactWithTechHub(
+        { techhub_id: post.techhub_id },
+        "comment",
+        draft.discussion_body,
+        credentials
+      );
+      if (!response?.ok) {
+        const status = response?.status || "unknown";
+        throw new Error(`TechHub HTTP ${status} khi đăng comment thảo luận.`);
+      }
+    } catch (error) {
+      await supabase.updateDiscussionDraftStatus(draft.id, "pending");
+      throw error;
     }
 
-    await supabase.saveDiscussionDraft({
-      username,
-      techhubId: post.techhub_id,
-      sourceCommentId: null,
-      sourceCommentBody: ownRootComments.join("\n") || null,
-      discussionBody,
-      model: cfg.model,
-      status: "used",
-    });
+    await supabase.updateDiscussionDraftStatus(draft.id, "used");
     await supabase.recordInteraction(
       username,
       post.techhub_id,
       "self_discussion"
     );
     discussed = 1;
-    const newCount = currentCount + 1;
-    autoDiscussionState.lastPostDiscussionCount = newCount;
+    if (!manual) autoDiscussionState.completedCount = nextNumber;
+    autoDiscussionState.lastPostDiscussionCount =
+      Number(autoDiscussionState.lastPostDiscussionCount || 0) + 1;
     broadcastAutoDiscussionProgress(
-      `Đã đăng comment gốc vào bài #${post.techhub_id} · ${newCount}/${discussionTarget}.`,
+      `Đã đăng một mẫu vào bài #${post.techhub_id}.`,
       "success"
     );
 
-    const message =
-      `Hoàn tất 1 lượt tự thảo luận trên bài #${post.techhub_id} ` +
-      `(${autoDiscussionState.lastPostDiscussionCount}/${discussionTarget}).`;
+    const reachedTarget =
+      !manual &&
+      Number(autoDiscussionState.completedCount) >= Number(autoDiscussionState.targetCount);
+    if (reachedTarget) {
+      autoDiscussionState.enabled = false;
+      autoDiscussionState.nextRunAt = null;
+      await chrome.alarms.clear(AUTO_DISCUSSION_ALARM);
+      try {
+        await supabase.updateSetting("enable_ai_discussion", false, {
+          preserveUpdatedAt: true,
+        });
+      } catch (error) {
+        console.warn("[Background] Could not persist completed discussion state:", error);
+      }
+    }
+    const message = manual
+      ? `Đã đăng 1 mẫu thảo luận trên bài #${post.techhub_id}.`
+      : `Đã đăng ${autoDiscussionState.completedCount}/${autoDiscussionState.targetCount} mẫu trên bài #${post.techhub_id}.${
+          reachedTarget ? " Đã tự dừng." : ""
+        }`;
     autoDiscussionState.username = username;
-    autoDiscussionState.targetCount = discussionTarget;
     autoDiscussionState.lastRunAt = new Date().toISOString();
     autoDiscussionState.lastDiscussionCount = discussed;
     autoDiscussionState.lastError = null;

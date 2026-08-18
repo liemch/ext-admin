@@ -1099,81 +1099,262 @@ class SupabaseClient {
    * (vì chuỗi hội thoại có thể đổi: A → B → A ...)
    */
   async saveReplyDraft(draft) {
-    try {
-      const username = draft.username;
-      const parentCommentId = draft.parentCommentId;
-      if (username && parentCommentId != null) {
-        const delUrl =
-          `${this.restUrl}/reply_drafts?username=eq.${encodeURIComponent(username)}` +
-          `&parent_comment_id=eq.${encodeURIComponent(parentCommentId)}`;
-        await fetch(delUrl, { method: "DELETE", headers: this.getHeaders() });
-      }
-
-      const payload = {
-        username,
-        techhub_id: draft.techhubId,
-        parent_comment_id: parentCommentId,
-        comment_author: draft.commentAuthor || null,
-        comment_body: draft.commentBody || null,
-        reply_body: draft.replyBody,
-        source: draft.source || "nvidia",
-        model: draft.model || null,
-        status: draft.status || "used",
-      };
-      const response = await fetch(`${this.restUrl}/reply_drafts`, {
-        method: "POST",
-        headers: this.getHeaders(),
-        body: JSON.stringify(payload),
-      });
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`Failed to save reply draft: ${response.status} ${errText}`);
-      }
-      const data = await response.json();
-      return Array.isArray(data) ? data[0] : data;
-    } catch (error) {
-      console.error("[Supabase] Error saving reply draft:", error);
-      return null;
+    const username = draft.username;
+    const parentCommentId = draft.parentCommentId;
+    if (username && parentCommentId != null) {
+      const delUrl =
+        `${this.restUrl}/reply_drafts?username=eq.${encodeURIComponent(username)}` +
+        `&parent_comment_id=eq.${encodeURIComponent(parentCommentId)}`;
+      await fetch(delUrl, { method: "DELETE", headers: this.getHeaders() });
     }
+
+    const payload = {
+      username,
+      techhub_id: draft.techhubId,
+      parent_comment_id: parentCommentId,
+      comment_author: draft.commentAuthor || null,
+      comment_body: draft.commentBody || null,
+      reply_body: draft.replyBody,
+      source: draft.source || "nvidia",
+      model: draft.model || null,
+      status: draft.status || "used",
+    };
+    const response = await fetch(`${this.restUrl}/reply_drafts`, {
+      method: "POST",
+      headers: this.getHeaders(),
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error("[Supabase] Error saving reply draft:", errText);
+      throw new Error(`Supabase ${response.status}: ${errText}`);
+    }
+    const data = await response.json();
+    return Array.isArray(data) ? data[0] : data;
+  }
+
+  /**
+   * Lấy kho mẫu reply của một bài, mẫu cũ trước để đăng đúng thứ tự.
+   */
+  async getReplyDrafts(username, techhubId, status = null) {
+    const params = new URLSearchParams({
+      username: `eq.${username}`,
+      techhub_id: `eq.${techhubId}`,
+      select: "*",
+      order: "created_at.asc",
+    });
+    if (status) params.set("status", `eq.${status}`);
+
+    const response = await fetch(`${this.restUrl}/reply_drafts?${params}`, {
+      method: "GET",
+      headers: this.getHeaders(),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Failed to load reply drafts: ${response.status} ${errText}`);
+    }
+    return response.json();
+  }
+
+  async updateReplyDraftBody(username, id, replyBody) {
+    const url =
+      `${this.restUrl}/reply_drafts?id=eq.${encodeURIComponent(id)}` +
+      `&username=eq.${encodeURIComponent(username)}&status=eq.pending`;
+    const response = await fetch(url, {
+      method: "PATCH",
+      headers: this.getHeaders(),
+      body: JSON.stringify({ reply_body: replyBody }),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Failed to update reply draft: ${response.status} ${errText}`);
+    }
+    const data = await response.json();
+    const updated = Array.isArray(data) ? data[0] : data;
+    if (!updated) throw new Error("Mẫu không còn ở trạng thái chưa dùng.");
+    return updated;
+  }
+
+  async updateReplyDraftStatus(id, status) {
+    const response = await fetch(`${this.restUrl}/reply_drafts?id=eq.${id}`, {
+      method: "PATCH",
+      headers: this.getHeaders(),
+      body: JSON.stringify({ status }),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Failed to update reply draft: ${response.status} ${errText}`);
+    }
+    const data = await response.json();
+    return Array.isArray(data) ? data[0] : data;
+  }
+
+  /** Chỉ xóa mẫu reply đang pending của đúng user. */
+  async deleteReplyDraft(username, id) {
+    const url =
+      `${this.restUrl}/reply_drafts?id=eq.${encodeURIComponent(id)}` +
+      `&username=eq.${encodeURIComponent(username)}&status=eq.pending`;
+    const response = await fetch(url, {
+      method: "DELETE",
+      headers: this.getHeaders(),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Failed to delete reply draft: ${response.status} ${errText}`);
+    }
+    const data = await response.json();
+    const deleted = Array.isArray(data) ? data[0] : data;
+    if (!deleted) throw new Error("Mẫu không còn ở trạng thái chưa dùng.");
+    return deleted;
+  }
+
+  /** Xóa toàn bộ mẫu reply pending của một bài. */
+  async deletePendingReplyDrafts(username, techhubId) {
+    const url =
+      `${this.restUrl}/reply_drafts?username=eq.${encodeURIComponent(username)}` +
+      `&techhub_id=eq.${encodeURIComponent(techhubId)}&status=eq.pending`;
+    const response = await fetch(url, {
+      method: "DELETE",
+      headers: this.getHeaders(),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Failed to delete pending reply drafts: ${response.status} ${errText}`);
+    }
+    const data = await response.json();
+    return Array.isArray(data) ? data : data ? [data] : [];
   }
 
   /**
    * Lưu draft thảo luận. Comment gốc không có source_comment_id nên giữ từng bản gen.
    */
   async saveDiscussionDraft(draft) {
-    try {
-      const username = draft.username;
-      const sourceCommentId = draft.sourceCommentId;
-      if (username && sourceCommentId != null) {
-        const delUrl =
-          `${this.restUrl}/discussion_drafts?username=eq.${encodeURIComponent(username)}` +
-          `&source_comment_id=eq.${encodeURIComponent(sourceCommentId)}`;
-        await fetch(delUrl, { method: "DELETE", headers: this.getHeaders() });
-      }
-
-      const response = await fetch(`${this.restUrl}/discussion_drafts`, {
-        method: "POST",
-        headers: this.getHeaders(),
-        body: JSON.stringify({
-          username,
-          techhub_id: draft.techhubId,
-          source_comment_id: sourceCommentId ?? null,
-          source_comment_body: draft.sourceCommentBody || null,
-          discussion_body: draft.discussionBody,
-          model: draft.model || null,
-          status: draft.status || "used",
-        }),
-      });
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`Failed to save discussion draft: ${response.status} ${errText}`);
-      }
-      const data = await response.json();
-      return Array.isArray(data) ? data[0] : data;
-    } catch (error) {
-      console.error("[Supabase] Error saving discussion draft:", error);
-      return null;
+    const username = draft.username;
+    const sourceCommentId = draft.sourceCommentId;
+    if (username && sourceCommentId != null) {
+      const delUrl =
+        `${this.restUrl}/discussion_drafts?username=eq.${encodeURIComponent(username)}` +
+        `&source_comment_id=eq.${encodeURIComponent(sourceCommentId)}`;
+      await fetch(delUrl, { method: "DELETE", headers: this.getHeaders() });
     }
+
+    const response = await fetch(`${this.restUrl}/discussion_drafts`, {
+      method: "POST",
+      headers: this.getHeaders(),
+      body: JSON.stringify({
+        username,
+        techhub_id: draft.techhubId,
+        source_comment_id: sourceCommentId ?? null,
+        source_comment_body: draft.sourceCommentBody || null,
+        discussion_body: draft.discussionBody,
+        model: draft.model || null,
+        status: draft.status || "used",
+      }),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error("[Supabase] Error saving discussion draft:", errText);
+      throw new Error(`Supabase ${response.status}: ${errText}`);
+    }
+    const data = await response.json();
+    return Array.isArray(data) ? data[0] : data;
+  }
+
+  /**
+   * Lấy kho mẫu thảo luận của một bài, mẫu cũ trước để đăng đúng thứ tự.
+   */
+  async getDiscussionDrafts(username, techhubId, status = null) {
+    const params = new URLSearchParams({
+      username: `eq.${username}`,
+      techhub_id: `eq.${techhubId}`,
+      select: "*",
+      order: "created_at.asc",
+    });
+    if (status) params.set("status", `eq.${status}`);
+
+    const response = await fetch(`${this.restUrl}/discussion_drafts?${params}`, {
+      method: "GET",
+      headers: this.getHeaders(),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Failed to load discussion drafts: ${response.status} ${errText}`);
+    }
+    return response.json();
+  }
+
+  async updateDiscussionDraftBody(username, id, discussionBody) {
+    const url =
+      `${this.restUrl}/discussion_drafts?id=eq.${encodeURIComponent(id)}` +
+      `&username=eq.${encodeURIComponent(username)}&status=eq.pending`;
+    const response = await fetch(url, {
+      method: "PATCH",
+      headers: this.getHeaders(),
+      body: JSON.stringify({ discussion_body: discussionBody }),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Failed to update discussion draft: ${response.status} ${errText}`);
+    }
+    const data = await response.json();
+    const updated = Array.isArray(data) ? data[0] : data;
+    if (!updated) throw new Error("Mẫu không còn ở trạng thái chưa dùng.");
+    return updated;
+  }
+
+  /**
+   * Đổi trạng thái mẫu sau khi đã đăng thành công.
+   */
+  async updateDiscussionDraftStatus(id, status) {
+    const response = await fetch(`${this.restUrl}/discussion_drafts?id=eq.${id}`, {
+      method: "PATCH",
+      headers: this.getHeaders(),
+      body: JSON.stringify({ status }),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Failed to update discussion draft: ${response.status} ${errText}`);
+    }
+    const data = await response.json();
+    return Array.isArray(data) ? data[0] : data;
+  }
+
+  /** Chỉ xóa mẫu thảo luận đang pending của đúng user. */
+  async deleteDiscussionDraft(username, id) {
+    const url =
+      `${this.restUrl}/discussion_drafts?id=eq.${encodeURIComponent(id)}` +
+      `&username=eq.${encodeURIComponent(username)}&status=eq.pending`;
+    const response = await fetch(url, {
+      method: "DELETE",
+      headers: this.getHeaders(),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Failed to delete discussion draft: ${response.status} ${errText}`);
+    }
+    const data = await response.json();
+    const deleted = Array.isArray(data) ? data[0] : data;
+    if (!deleted) throw new Error("Mẫu không còn ở trạng thái chưa dùng.");
+    return deleted;
+  }
+
+  /** Xóa toàn bộ mẫu thảo luận pending của một bài. */
+  async deletePendingDiscussionDrafts(username, techhubId) {
+    const url =
+      `${this.restUrl}/discussion_drafts?username=eq.${encodeURIComponent(username)}` +
+      `&techhub_id=eq.${encodeURIComponent(techhubId)}&status=eq.pending`;
+    const response = await fetch(url, {
+      method: "DELETE",
+      headers: this.getHeaders(),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(
+        `Failed to delete pending discussion drafts: ${response.status} ${errText}`
+      );
+    }
+    const data = await response.json();
+    return Array.isArray(data) ? data : data ? [data] : [];
   }
 }
 

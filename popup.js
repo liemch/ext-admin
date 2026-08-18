@@ -30,11 +30,30 @@ const elements = {
   autoCommentScheduleInfo: document.getElementById("autoCommentScheduleInfo"),
   syncMyPostsBtn: document.getElementById("syncMyPostsBtn"),
   runAutoReplyBtn: document.getElementById("runAutoReplyBtn"),
+  generateReplyDraftsBtn: document.getElementById("generateReplyDraftsBtn"),
   autoReplyEnabled: document.getElementById("autoReplyEnabled"),
-  enableAiReply: document.getElementById("enableAiReply"),
+  autoReplyMessage: document.getElementById("autoReplyMessage"),
+  replyDraftMessage: document.getElementById("replyDraftMessage"),
+  replyDraftStats: document.getElementById("replyDraftStats"),
+  replyDraftsList: document.getElementById("replyDraftsList"),
+  clearPendingReplyDraftsBtn: document.getElementById("clearPendingReplyDraftsBtn"),
+  replyGenerateCount: document.getElementById("replyGenerateCount"),
+  replyTargetCount: document.getElementById("replyTargetCount"),
+  replyMinInterval: document.getElementById("replyMinInterval"),
+  replyMaxInterval: document.getElementById("replyMaxInterval"),
   runAutoDiscussionBtn: document.getElementById("runAutoDiscussionBtn"),
+  generateDiscussionDraftsBtn: document.getElementById("generateDiscussionDraftsBtn"),
   autoDiscussionEnabled: document.getElementById("autoDiscussionEnabled"),
   autoDiscussionMessage: document.getElementById("autoDiscussionMessage"),
+  discussionDraftMessage: document.getElementById("discussionDraftMessage"),
+  discussionDraftStats: document.getElementById("discussionDraftStats"),
+  discussionDraftsList: document.getElementById("discussionDraftsList"),
+  clearPendingDiscussionDraftsBtn: document.getElementById(
+    "clearPendingDiscussionDraftsBtn"
+  ),
+  discussionGenerateCount: document.getElementById("discussionGenerateCount"),
+  discussionMinInterval: document.getElementById("discussionMinInterval"),
+  discussionMaxInterval: document.getElementById("discussionMaxInterval"),
   replyScope: document.getElementById("replyScope"),
   replyScopeLabel: document.getElementById("replyScopeLabel"),
   replySelfReplyLimit: document.getElementById("replySelfReplyLimit"),
@@ -42,7 +61,6 @@ const elements = {
   discussionScopeLabel: document.getElementById("discussionScopeLabel"),
   discussionTargetCount: document.getElementById("discussionTargetCount"),
   myPostsList: document.getElementById("myPostsList"),
-  autoReplyMessage: document.getElementById("autoReplyMessage"),
   postsMessage: document.getElementById("postsMessage"),
   deleteTechhubId: document.getElementById("deleteTechhubId"),
   deleteAtInput: document.getElementById("deleteAtInput"),
@@ -62,6 +80,10 @@ let currentUserProfile = null;
 let selectedTechhubId = null;
 let cachedPosts = [];
 let postsFilter = "";
+let pendingReplyDraftCount = 0;
+let pendingDiscussionDraftCount = 0;
+let currentReplyDrafts = [];
+let currentDiscussionDrafts = [];
 const jobFlags = { comment: false, reply: false, discussion: false };
 
 document.addEventListener("DOMContentLoaded", init);
@@ -71,9 +93,25 @@ chrome.runtime.onMessage.addListener((request) => {
   }
   if (request.action === "autoReplyProgress") {
     renderAutoReplyStatus(request.state, request.message, request.type);
+    if (request.type === "success" || request.type === "muted") {
+      loadReplyDrafts();
+    }
+  }
+  if (request.action === "replyDraftProgress") {
+    showAdminMsg(elements.replyDraftMessage, request.message, request.type || "info");
   }
   if (request.action === "autoDiscussionProgress") {
     renderAutoDiscussionStatus(request.state, request.message, request.type);
+    if (request.type === "success" || request.type === "muted") {
+      loadDiscussionDrafts();
+    }
+  }
+  if (request.action === "discussionDraftProgress") {
+    showAdminMsg(
+      elements.discussionDraftMessage,
+      request.message,
+      request.type || "info"
+    );
   }
   if (request.action === "scheduledDeleteProgress") {
     if (request.items) renderScheduledDeletes(request.items);
@@ -257,42 +295,93 @@ function setupEventListeners() {
   if (elements.runAutoReplyBtn) {
     elements.runAutoReplyBtn.addEventListener("click", runAutoReplyOnce);
   }
+  if (elements.generateReplyDraftsBtn) {
+    elements.generateReplyDraftsBtn.addEventListener("click", generateReplyDrafts);
+  }
   if (elements.autoReplyEnabled) {
     elements.autoReplyEnabled.addEventListener("change", toggleAutoReply);
   }
-  if (elements.enableAiReply) {
-    elements.enableAiReply.addEventListener("change", toggleAutoReply);
-  }
   if (elements.runAutoDiscussionBtn) {
     elements.runAutoDiscussionBtn.addEventListener("click", runAutoDiscussionOnce);
+  }
+  if (elements.generateDiscussionDraftsBtn) {
+    elements.generateDiscussionDraftsBtn.addEventListener("click", generateDiscussionDrafts);
   }
   if (elements.autoDiscussionEnabled) {
     elements.autoDiscussionEnabled.addEventListener("change", toggleAutoDiscussion);
   }
   if (elements.replyScope) {
     elements.replyScope.addEventListener("change", () => {
+      const id = Number(elements.replyScope.value);
+      if (Number.isInteger(id) && id > 0) {
+        selectPost(id, { updateAiSelectors: false });
+        loadReplyDrafts();
+      } else {
+        selectedTechhubId = null;
+        renderReplyDrafts([]);
+      }
       updateScopeLabels();
-      if (elements.autoReplyEnabled?.checked) toggleAutoReply();
     });
   }
   if (elements.discussionScope) {
     elements.discussionScope.addEventListener("change", () => {
+      const id = Number(elements.discussionScope.value);
+      if (Number.isInteger(id) && id > 0) {
+        selectPost(id, { updateAiSelectors: false });
+        loadDiscussionDrafts();
+      } else {
+        selectedTechhubId = null;
+        renderDiscussionDrafts([]);
+      }
       updateScopeLabels();
-      if (elements.autoDiscussionEnabled?.checked) toggleAutoDiscussion();
     });
   }
-  if (elements.replySelfReplyLimit) {
-    elements.replySelfReplyLimit.addEventListener("change", () => {
-      if (elements.autoReplyEnabled?.checked) toggleAutoReply();
+  if (elements.clearPendingReplyDraftsBtn) {
+    elements.clearPendingReplyDraftsBtn.addEventListener(
+      "click",
+      clearPendingReplyDrafts
+    );
+  }
+  if (elements.clearPendingDiscussionDraftsBtn) {
+    elements.clearPendingDiscussionDraftsBtn.addEventListener(
+      "click",
+      clearPendingDiscussionDrafts
+    );
+  }
+  if (elements.replyDraftsList) {
+    elements.replyDraftsList.addEventListener("click", (event) => {
+      const editBtn = event.target.closest("[data-edit-reply-draft]");
+      if (editBtn) {
+        editReplyDraft(Number(editBtn.dataset.editReplyDraft));
+        return;
+      }
+      const deleteBtn = event.target.closest("[data-delete-reply-draft]");
+      if (deleteBtn) {
+        deleteReplyDraft(Number(deleteBtn.dataset.deleteReplyDraft));
+      }
     });
   }
-  if (elements.discussionTargetCount) {
-    elements.discussionTargetCount.addEventListener("change", () => {
-      if (elements.autoDiscussionEnabled?.checked) toggleAutoDiscussion();
+  if (elements.discussionDraftsList) {
+    elements.discussionDraftsList.addEventListener("click", (event) => {
+      const editBtn = event.target.closest("[data-edit-discussion-draft]");
+      if (editBtn) {
+        editDiscussionDraft(Number(editBtn.dataset.editDiscussionDraft));
+        return;
+      }
+      const deleteBtn = event.target.closest("[data-delete-discussion-draft]");
+      if (deleteBtn) {
+        deleteDiscussionDraft(Number(deleteBtn.dataset.deleteDiscussionDraft));
+      }
     });
   }
   if (elements.myPostsList) {
     elements.myPostsList.addEventListener("click", (event) => {
+      const actionBtn = event.target.closest("[data-post-action]");
+      if (actionBtn) {
+        event.preventDefault();
+        openPostAction(Number(actionBtn.dataset.postId), actionBtn.dataset.postAction);
+        return;
+      }
       const selectBtn = event.target.closest("[data-select-id]");
       if (selectBtn) {
         event.preventDefault();
@@ -383,7 +472,9 @@ async function loadAdminGate() {
     await loadAutoCommentStatus();
     await loadMyPosts();
     await loadAutoReplyStatus();
+    await loadReplyDrafts();
     await loadAutoDiscussionStatus();
+    await loadDiscussionDrafts();
     await loadScheduledDeletes();
   } catch (error) {
     showError("Lỗi: " + error.message);
@@ -399,32 +490,40 @@ function showAdminMsg(el, text, type = "info") {
   el.textContent = text;
 }
 
-function selectPost(techhubId) {
+function selectPost(techhubId, { updateAiSelectors = true } = {}) {
   if (!Number.isInteger(techhubId) || techhubId < 1) return;
   selectedTechhubId = techhubId;
+  if (updateAiSelectors) {
+    if (elements.replyScope && !elements.replyScope.disabled) {
+      elements.replyScope.value = String(techhubId);
+    }
+    if (elements.discussionScope && !elements.discussionScope.disabled) {
+      elements.discussionScope.value = String(techhubId);
+    }
+  }
   if (elements.deleteTechhubId) {
     elements.deleteTechhubId.value = String(techhubId);
   }
   renderMyPosts(cachedPosts);
   updateSelectedPostLabel(true);
   updateScopeLabels();
+  loadReplyDrafts();
+  loadDiscussionDrafts();
 }
 
 /**
  * techhub_id để chạy job AI: null = tất cả bài
  */
 function resolveScopeTechhubId(selectEl) {
-  if (selectEl?.value !== "selected") return null;
-  return Number.isInteger(selectedTechhubId) ? selectedTechhubId : null;
+  const value = Number(selectEl?.value);
+  return Number.isInteger(value) && value > 0 ? value : null;
 }
 
 function describeScope(selectEl) {
-  if (selectEl?.value !== "selected") return "Phạm vi: tất cả bài";
-  if (!Number.isInteger(selectedTechhubId)) {
-    return 'Phạm vi: chưa chọn bài — bấm Chọn ở tab "Bài của tôi"';
-  }
-  const post = cachedPosts.find((p) => Number(p.techhub_id) === selectedTechhubId);
-  return `Phạm vi: chỉ bài #${selectedTechhubId}${post?.title ? ` · ${post.title}` : ""}`;
+  const techhubId = resolveScopeTechhubId(selectEl);
+  if (!techhubId) return "Chưa chọn bài";
+  const post = cachedPosts.find((p) => Number(p.techhub_id) === techhubId);
+  return `Đang chọn #${techhubId}${post?.title ? ` · ${post.title}` : ""}`;
 }
 
 function updateScopeLabels() {
@@ -440,6 +539,56 @@ function updateScopeLabels() {
     discussionText,
     discussionText.includes("chưa chọn") ? "error" : "muted"
   );
+}
+
+function populateAiPostSelectors() {
+  const selectedValue = Number.isInteger(selectedTechhubId) ? String(selectedTechhubId) : "";
+  const options = cachedPosts
+    .map(
+      (post) =>
+        `<option value="${Number(post.techhub_id)}">#${Number(post.techhub_id)} · ${escapeHtml(
+          post.title || "(không tiêu đề)"
+        )}</option>`
+    )
+    .join("");
+  if (elements.replyScope) {
+    const previous = elements.replyScope.value;
+    elements.replyScope.innerHTML = `<option value="">Chọn một bài…</option>${options}`;
+    elements.replyScope.value = cachedPosts.some((post) => String(post.techhub_id) === previous)
+      ? previous
+      : selectedValue;
+  }
+  if (elements.discussionScope) {
+    const previous = elements.discussionScope.value;
+    elements.discussionScope.innerHTML = `<option value="">Chọn một bài…</option>${options}`;
+    elements.discussionScope.value = cachedPosts.some(
+      (post) => String(post.techhub_id) === previous
+    )
+      ? previous
+      : selectedValue;
+  }
+  updateScopeLabels();
+}
+
+function openPostAction(techhubId, action) {
+  selectPost(techhubId);
+  if (action === "reply" && elements.replyScope && !elements.replyScope.disabled) {
+    elements.replyScope.value = String(techhubId);
+    showPanel("reply");
+  } else if (
+    action === "discussion" &&
+    elements.discussionScope &&
+    !elements.discussionScope.disabled
+  ) {
+    elements.discussionScope.value = String(techhubId);
+    showPanel("discussion");
+    loadDiscussionDrafts();
+  } else if (action === "reply") {
+    showPanel("reply");
+  } else if (action === "discussion") {
+    showPanel("discussion");
+  }
+  updateScopeLabels();
 }
 
 function updateSelectedPostLabel(notify = false) {
@@ -675,6 +824,7 @@ function formatPostScore(score) {
 
 function renderMyPosts(posts) {
   cachedPosts = Array.isArray(posts) ? posts : [];
+  populateAiPostSelectors();
   if (!elements.myPostsList) return;
 
   const totalScore = cachedPosts.reduce((sum, p) => sum + calcPostScore(p), 0);
@@ -732,9 +882,13 @@ function renderMyPosts(posts) {
           formatRelativeDate(p.created_at)
         )}</td>` +
         `<td class="cell-action">` +
+        `<div class="row-actions">` +
         `<button type="button" class="mini-btn${
           selected ? " is-selected" : ""
         }" data-select-id="${id}">${selected ? "Đang chọn" : "Chọn"}</button>` +
+        `<button type="button" class="mini-btn" data-post-action="reply" data-post-id="${id}">AI trả lời</button>` +
+        `<button type="button" class="mini-btn" data-post-action="discussion" data-post-id="${id}">AI thảo luận</button>` +
+        `</div>` +
         `</td>` +
         `</tr>`
       );
@@ -796,35 +950,227 @@ async function syncMyPosts() {
   }
 }
 
+function renderReplyDrafts(drafts = []) {
+  const list = Array.isArray(drafts) ? drafts : [];
+  currentReplyDrafts = list;
+  const pending = list.filter((draft) => draft.status === "pending");
+  const used = list.filter((draft) => draft.status === "used");
+  pendingReplyDraftCount = pending.length;
+  if (elements.replyDraftStats) {
+    elements.replyDraftStats.innerHTML =
+      `<span>Tổng <strong>${list.length}</strong></span>` +
+      `<span class="pending">Chưa dùng <strong>${pending.length}</strong></span>` +
+      `<span class="used">Đã dùng <strong>${used.length}</strong></span>`;
+  }
+  if (elements.clearPendingReplyDraftsBtn) {
+    elements.clearPendingReplyDraftsBtn.disabled = pending.length === 0;
+  }
+  if (elements.replyDraftsList) {
+    elements.replyDraftsList.innerHTML = list.length
+      ? list
+          .map(
+            (draft, index) =>
+              `<article class="draft-item ${escapeHtml(draft.status || "pending")}">` +
+              `<div class="draft-head"><strong>Mẫu ${index + 1} · cmt #${escapeHtml(
+                String(draft.parent_comment_id || "?")
+              )}</strong>` +
+              `<div class="draft-status-actions"><span>${
+                draft.status === "used"
+                  ? "Đã dùng"
+                  : draft.status === "posting"
+                    ? "Đang đăng"
+                    : "Chưa dùng"
+              }</span>${
+                draft.status === "pending"
+                  ? `<button type="button" class="draft-edit-btn" data-edit-reply-draft="${Number(
+                      draft.id
+                    )}">Chỉnh sửa</button>` +
+                    `<button type="button" class="draft-delete-btn" data-delete-reply-draft="${Number(
+                      draft.id
+                    )}">Xóa</button>`
+                  : ""
+              }</div></div>` +
+              (draft.comment_body
+                ? `<p class="draft-source">${escapeHtml(
+                    String(draft.comment_body).slice(0, 220)
+                  )}</p>`
+                : "") +
+              `<p>${escapeHtml(draft.reply_body || "")}</p>` +
+              `</article>`
+          )
+          .join("")
+      : `<div class="empty">${
+          resolveScopeTechhubId(elements.replyScope)
+            ? "Bài này chưa có mẫu. Hãy nhờ AI tạo mẫu."
+            : "Chọn bài để tải các mẫu đã tạo."
+        }</div>`;
+  }
+  const hasPost = !!resolveScopeTechhubId(elements.replyScope);
+  if (elements.autoReplyEnabled && !elements.autoReplyEnabled.checked) {
+    elements.autoReplyEnabled.disabled = !hasPost || pending.length === 0;
+  }
+  if (elements.runAutoReplyBtn) {
+    elements.runAutoReplyBtn.disabled = !hasPost || pending.length === 0;
+  }
+}
+
+async function editReplyDraft(id) {
+  const draft = currentReplyDrafts.find((item) => Number(item.id) === id);
+  if (!draft || draft.status !== "pending") return;
+  const body = window.prompt("Chỉnh sửa nội dung trả lời:", draft.reply_body || "");
+  if (body === null) return;
+  const content = body.trim();
+  if (!content) {
+    showAdminMsg(elements.replyDraftMessage, "Nội dung không được để trống.", "error");
+    return;
+  }
+  try {
+    const response = await sendMessage({ action: "updateReplyDraft", id, body: content });
+    if (!response?.success) throw new Error(response?.error || "Không cập nhật được mẫu");
+    showAdminMsg(elements.replyDraftMessage, "Đã cập nhật nội dung mẫu trả lời.", "success");
+    await loadReplyDrafts();
+  } catch (error) {
+    showAdminMsg(elements.replyDraftMessage, `Lỗi chỉnh sửa: ${error.message}`, "error");
+  }
+}
+
+async function deleteReplyDraft(id) {
+  const draft = currentReplyDrafts.find((item) => Number(item.id) === id);
+  if (!draft || draft.status !== "pending") return;
+  if (!window.confirm("Xóa mẫu trả lời này? Không thể hoàn tác.")) return;
+  try {
+    const response = await sendMessage({ action: "deleteReplyDraft", id });
+    if (!response?.success) throw new Error(response?.error || "Không xóa được mẫu");
+    showAdminMsg(elements.replyDraftMessage, "Đã xóa mẫu trả lời.", "success");
+    await loadReplyDrafts();
+  } catch (error) {
+    showAdminMsg(elements.replyDraftMessage, `Lỗi xóa mẫu: ${error.message}`, "error");
+  }
+}
+
+async function clearPendingReplyDrafts() {
+  const techhubId = resolveScopeTechhubId(elements.replyScope);
+  if (!techhubId) {
+    showAdminMsg(elements.replyDraftMessage, "Hãy chọn bài cần xóa mẫu.", "error");
+    return;
+  }
+  if (pendingReplyDraftCount < 1) return;
+  if (
+    !window.confirm(
+      `Xóa hết ${pendingReplyDraftCount} mẫu trả lời chưa dùng của bài #${techhubId}?`
+    )
+  ) {
+    return;
+  }
+  elements.clearPendingReplyDraftsBtn.disabled = true;
+  try {
+    const response = await sendMessage({
+      action: "deletePendingReplyDrafts",
+      techhubId,
+    });
+    if (!response?.success) throw new Error(response?.error || "Không xóa được mẫu");
+    renderReplyDrafts(response.drafts || []);
+    showAdminMsg(elements.replyDraftMessage, response.message, "success");
+  } catch (error) {
+    showAdminMsg(elements.replyDraftMessage, `Lỗi xóa mẫu: ${error.message}`, "error");
+    elements.clearPendingReplyDraftsBtn.disabled = pendingReplyDraftCount === 0;
+  }
+}
+
+async function loadReplyDrafts() {
+  const techhubId = resolveScopeTechhubId(elements.replyScope);
+  if (!techhubId) {
+    renderReplyDrafts([]);
+    return;
+  }
+  try {
+    if (elements.replyDraftsList) {
+      elements.replyDraftsList.innerHTML = '<div class="empty">Đang tải mẫu…</div>';
+    }
+    const response = await sendMessage({ action: "getReplyDrafts", techhubId });
+    if (!response?.success) throw new Error(response?.error || "Không tải được mẫu");
+    renderReplyDrafts(response.drafts || []);
+  } catch (error) {
+    showAdminMsg(elements.replyDraftMessage, `Lỗi tải mẫu: ${error.message}`, "error");
+    renderReplyDrafts([]);
+  }
+}
+
+async function generateReplyDrafts() {
+  const techhubId = resolveScopeTechhubId(elements.replyScope);
+  const count = Number(elements.replyGenerateCount?.value);
+  if (!techhubId) {
+    showAdminMsg(elements.replyDraftMessage, "Hãy chọn bài cần tạo mẫu.", "error");
+    return;
+  }
+  if (!Number.isInteger(count) || count < 1 || count > 50) {
+    showAdminMsg(elements.replyDraftMessage, "Số mẫu cần tạo phải từ 1 đến 50.", "error");
+    return;
+  }
+  elements.generateReplyDraftsBtn.disabled = true;
+  try {
+    showAdminMsg(
+      elements.replyDraftMessage,
+      `Đang nhờ AI tạo tối đa ${count} mẫu. Vui lòng chờ…`,
+      "muted"
+    );
+    const response = await sendMessage({
+      action: "generateReplyDrafts",
+      techhubId,
+      count,
+      maxConsecutiveSelfReplies: Number(elements.replySelfReplyLimit?.value) || 1,
+    });
+    if (!response?.success) throw new Error(response?.error || "Không tạo được mẫu");
+    renderReplyDrafts(response.drafts || []);
+    showAdminMsg(elements.replyDraftMessage, response.message, "success");
+  } catch (error) {
+    showAdminMsg(elements.replyDraftMessage, `Lỗi tạo mẫu: ${error.message}`, "error");
+  } finally {
+    elements.generateReplyDraftsBtn.disabled = false;
+  }
+}
+
 function renderAutoReplyStatus(state, message = "", type = "info") {
   if (!state) return;
   if (elements.autoReplyEnabled) {
     elements.autoReplyEnabled.checked = !!state.enabled;
-  }
-  if (elements.enableAiReply && typeof state.useAi === "boolean") {
-    elements.enableAiReply.checked = !!state.useAi;
+    elements.autoReplyEnabled.disabled =
+      !state.enabled &&
+      (!resolveScopeTechhubId(elements.replyScope) || pendingReplyDraftCount === 0);
   }
   if (state.targetTechhubId) {
     selectedTechhubId = Number(state.targetTechhubId);
-    if (elements.replyScope) elements.replyScope.value = "selected";
+    if (elements.replyScope) elements.replyScope.value = String(state.targetTechhubId);
+  }
+  if (elements.replyTargetCount && state.targetCount) {
+    elements.replyTargetCount.value = String(state.targetCount);
+  }
+  if (elements.replyMinInterval && state.minIntervalMinutes) {
+    elements.replyMinInterval.value = String(state.minIntervalMinutes);
+  }
+  if (elements.replyMaxInterval && state.maxIntervalMinutes) {
+    elements.replyMaxInterval.value = String(state.maxIntervalMinutes);
   }
   if (elements.replySelfReplyLimit && state.maxConsecutiveSelfReplies) {
     elements.replySelfReplyLimit.value = String(state.maxConsecutiveSelfReplies);
   }
+  if (elements.replyScope) elements.replyScope.disabled = !!state.enabled;
   setJobFlag("reply", !!state.enabled);
   updateScopeLabels();
 
-  const mode = state.useAi ? "AI" : "template";
-  const scope = state.targetTechhubId ? `bài #${state.targetTechhubId}` : "tất cả bài";
-  const selfInfo =
-    Number(state.maxConsecutiveSelfReplies) > 1
-      ? ` · nối lượt của tôi ≤${state.maxConsecutiveSelfReplies}`
-      : "";
-  const detail = state.enabled
-    ? `Đang bật · ${mode} · ${scope}${selfInfo}`
-    : `Đang tắt · ${mode} · ${scope}${selfInfo}`;
+  const scope = state.targetTechhubId ? `bài #${state.targetTechhubId}` : "chưa chọn bài";
+  const target = Number(state.targetCount) || 5;
+  const detail =
+    `${state.enabled ? "Đang bật" : "Đang tắt"} · ${scope} · đã đăng ${
+      state.completedCount || 0
+    }/${target}` +
+    (state.nextRunAt
+      ? ` · lượt tới ${new Date(state.nextRunAt).toLocaleTimeString()}`
+      : "");
   const runInfo = state.lastRunAt
-    ? ` · lần chạy ${new Date(state.lastRunAt).toLocaleString()} · reply=${state.lastReplyCount || 0}`
+    ? ` · lần chạy ${new Date(state.lastRunAt).toLocaleString()} · reply=${
+        state.lastReplyCount || 0
+      }`
     : "";
   showAdminMsg(
     elements.autoReplyMessage,
@@ -849,27 +1195,43 @@ async function loadAutoReplyStatus() {
 
 async function toggleAutoReply() {
   const enabled = !!elements.autoReplyEnabled.checked;
-  const useAi = !!elements.enableAiReply?.checked;
   const techhubId = resolveScopeTechhubId(elements.replyScope);
+  const targetCount = Number(elements.replyTargetCount?.value) || 5;
+  const minIntervalMinutes = Number(elements.replyMinInterval?.value);
+  const maxIntervalMinutes = Number(elements.replyMaxInterval?.value);
   const maxConsecutiveSelfReplies = Number(elements.replySelfReplyLimit?.value) || 1;
-  if (enabled && elements.replyScope?.value === "selected" && !techhubId) {
+  if (!Number.isInteger(targetCount) || targetCount < 1 || targetCount > 100) {
+    elements.autoReplyEnabled.checked = false;
+    showAdminMsg(elements.autoReplyMessage, "Số lượng đăng phải từ 1 đến 100.", "error");
+    return;
+  }
+  if (enabled && !techhubId) {
+    elements.autoReplyEnabled.checked = false;
+    showAdminMsg(elements.autoReplyMessage, "Hãy chọn bài cần trả lời.", "error");
+    return;
+  }
+  if (enabled && pendingReplyDraftCount < targetCount) {
     elements.autoReplyEnabled.checked = false;
     showAdminMsg(
       elements.autoReplyMessage,
-      'Chưa chọn bài — bấm Chọn ở tab "Bài của tôi" hoặc đổi phạm vi sang tất cả bài.',
+      pendingReplyDraftCount === 0
+        ? "Đã hết mẫu trả lời. Hãy nhờ AI tạo thêm mẫu."
+        : `Chỉ còn ${pendingReplyDraftCount} mẫu chưa dùng. Hãy giảm số lượng hoặc tạo thêm mẫu.`,
       "error"
     );
     return;
   }
   elements.autoReplyEnabled.disabled = true;
-  if (elements.enableAiReply) elements.enableAiReply.disabled = true;
   try {
     const response = await sendMessage({
       action: "setAutoReplyEnabled",
       enabled,
-      useAi,
+      useAi: true,
       techhubId,
       maxConsecutiveSelfReplies,
+      targetCount,
+      minIntervalMinutes,
+      maxIntervalMinutes,
     });
     if (!response?.success) throw new Error(response?.error || "Không cập nhật được");
     renderAutoReplyStatus(
@@ -881,38 +1243,216 @@ async function toggleAutoReply() {
     elements.autoReplyEnabled.checked = !enabled;
     showAdminMsg(elements.autoReplyMessage, `Lỗi: ${error.message}`, "error");
   } finally {
-    elements.autoReplyEnabled.disabled = false;
-    if (elements.enableAiReply) elements.enableAiReply.disabled = false;
+    elements.autoReplyEnabled.disabled =
+      !elements.autoReplyEnabled.checked &&
+      (!techhubId || pendingReplyDraftCount === 0);
   }
 }
 
 async function runAutoReplyOnce() {
   const techhubId = resolveScopeTechhubId(elements.replyScope);
-  if (elements.replyScope?.value === "selected" && !techhubId) {
-    showAdminMsg(
-      elements.autoReplyMessage,
-      'Chưa chọn bài — bấm Chọn ở tab "Bài của tôi".',
-      "error"
-    );
+  if (!techhubId) {
+    showAdminMsg(elements.autoReplyMessage, "Hãy chọn bài cần trả lời.", "error");
     return;
   }
   elements.runAutoReplyBtn.disabled = true;
   try {
-    showAdminMsg(elements.autoReplyMessage, "Đang chạy auto-reply...", "muted");
+    showAdminMsg(elements.autoReplyMessage, "Đang đăng mẫu trả lời...", "muted");
     const response = await sendMessage({
       action: "runAutoReplyOnce",
       techhubId,
-      maxConsecutiveSelfReplies: Number(elements.replySelfReplyLimit?.value) || 1,
     });
     if (!response?.success) {
       renderAutoReplyStatus(response?.state, response?.error || "Thất bại", "error");
       throw new Error(response?.error || "Auto-reply thất bại");
     }
     renderAutoReplyStatus(response.state, response.message || "Xong.", "success");
+    await loadReplyDrafts();
   } catch (error) {
     showAdminMsg(elements.autoReplyMessage, `Lỗi: ${error.message}`, "error");
   } finally {
-    elements.runAutoReplyBtn.disabled = false;
+    elements.runAutoReplyBtn.disabled = pendingReplyDraftCount === 0;
+  }
+}
+
+function renderDiscussionDrafts(drafts = []) {
+  const list = Array.isArray(drafts) ? drafts : [];
+  currentDiscussionDrafts = list;
+  const pending = list.filter((draft) => draft.status === "pending");
+  const used = list.filter((draft) => draft.status === "used");
+  pendingDiscussionDraftCount = pending.length;
+  if (elements.discussionDraftStats) {
+    elements.discussionDraftStats.innerHTML =
+      `<span>Tổng <strong>${list.length}</strong></span>` +
+      `<span class="pending">Chưa dùng <strong>${pending.length}</strong></span>` +
+      `<span class="used">Đã dùng <strong>${used.length}</strong></span>`;
+  }
+  if (elements.clearPendingDiscussionDraftsBtn) {
+    elements.clearPendingDiscussionDraftsBtn.disabled = pending.length === 0;
+  }
+  if (elements.discussionDraftsList) {
+    elements.discussionDraftsList.innerHTML = list.length
+      ? list
+          .map(
+            (draft, index) =>
+              `<article class="draft-item ${escapeHtml(draft.status || "pending")}">` +
+              `<div class="draft-head"><strong>Mẫu ${index + 1}</strong>` +
+              `<div class="draft-status-actions"><span>${
+                draft.status === "used"
+                  ? "Đã dùng"
+                  : draft.status === "posting"
+                    ? "Đang đăng"
+                    : "Chưa dùng"
+              }</span>${
+                draft.status === "pending"
+                  ? `<button type="button" class="draft-edit-btn" data-edit-discussion-draft="${Number(
+                      draft.id
+                    )}">Chỉnh sửa</button>` +
+                    `<button type="button" class="draft-delete-btn" data-delete-discussion-draft="${Number(
+                      draft.id
+                    )}">Xóa</button>`
+                  : ""
+              }</div></div>` +
+              `<p>${escapeHtml(draft.discussion_body || "")}</p>` +
+              `</article>`
+          )
+          .join("")
+      : `<div class="empty">${
+          resolveScopeTechhubId(elements.discussionScope)
+            ? "Bài này chưa có mẫu. Hãy nhờ AI tạo mẫu."
+            : "Chọn bài để tải các mẫu đã tạo."
+        }</div>`;
+  }
+  const hasPost = !!resolveScopeTechhubId(elements.discussionScope);
+  if (elements.autoDiscussionEnabled && !elements.autoDiscussionEnabled.checked) {
+    elements.autoDiscussionEnabled.disabled = !hasPost || pending.length === 0;
+  }
+  if (elements.runAutoDiscussionBtn) {
+    elements.runAutoDiscussionBtn.disabled = !hasPost || pending.length === 0;
+  }
+}
+
+async function editDiscussionDraft(id) {
+  const draft = currentDiscussionDrafts.find((item) => Number(item.id) === id);
+  if (!draft || draft.status !== "pending") return;
+  const body = window.prompt("Chỉnh sửa nội dung thảo luận:", draft.discussion_body || "");
+  if (body === null) return;
+  const content = body.trim();
+  if (!content) {
+    showAdminMsg(elements.discussionDraftMessage, "Nội dung không được để trống.", "error");
+    return;
+  }
+  try {
+    const response = await sendMessage({
+      action: "updateDiscussionDraft",
+      id,
+      body: content,
+    });
+    if (!response?.success) throw new Error(response?.error || "Không cập nhật được mẫu");
+    showAdminMsg(
+      elements.discussionDraftMessage,
+      "Đã cập nhật nội dung mẫu thảo luận.",
+      "success"
+    );
+    await loadDiscussionDrafts();
+  } catch (error) {
+    showAdminMsg(elements.discussionDraftMessage, `Lỗi chỉnh sửa: ${error.message}`, "error");
+  }
+}
+
+async function deleteDiscussionDraft(id) {
+  const draft = currentDiscussionDrafts.find((item) => Number(item.id) === id);
+  if (!draft || draft.status !== "pending") return;
+  if (!window.confirm("Xóa mẫu thảo luận này? Không thể hoàn tác.")) return;
+  try {
+    const response = await sendMessage({ action: "deleteDiscussionDraft", id });
+    if (!response?.success) throw new Error(response?.error || "Không xóa được mẫu");
+    showAdminMsg(elements.discussionDraftMessage, "Đã xóa mẫu thảo luận.", "success");
+    await loadDiscussionDrafts();
+  } catch (error) {
+    showAdminMsg(elements.discussionDraftMessage, `Lỗi xóa mẫu: ${error.message}`, "error");
+  }
+}
+
+async function clearPendingDiscussionDrafts() {
+  const techhubId = resolveScopeTechhubId(elements.discussionScope);
+  if (!techhubId) {
+    showAdminMsg(elements.discussionDraftMessage, "Hãy chọn bài cần xóa mẫu.", "error");
+    return;
+  }
+  if (pendingDiscussionDraftCount < 1) return;
+  if (
+    !window.confirm(
+      `Xóa hết ${pendingDiscussionDraftCount} mẫu thảo luận chưa dùng của bài #${techhubId}?`
+    )
+  ) {
+    return;
+  }
+  elements.clearPendingDiscussionDraftsBtn.disabled = true;
+  try {
+    const response = await sendMessage({
+      action: "deletePendingDiscussionDrafts",
+      techhubId,
+    });
+    if (!response?.success) throw new Error(response?.error || "Không xóa được mẫu");
+    renderDiscussionDrafts(response.drafts || []);
+    showAdminMsg(elements.discussionDraftMessage, response.message, "success");
+  } catch (error) {
+    showAdminMsg(
+      elements.discussionDraftMessage,
+      `Lỗi xóa mẫu: ${error.message}`,
+      "error"
+    );
+    elements.clearPendingDiscussionDraftsBtn.disabled =
+      pendingDiscussionDraftCount === 0;
+  }
+}
+
+async function loadDiscussionDrafts() {
+  const techhubId = resolveScopeTechhubId(elements.discussionScope);
+  if (!techhubId) {
+    renderDiscussionDrafts([]);
+    return;
+  }
+  try {
+    if (elements.discussionDraftsList) {
+      elements.discussionDraftsList.innerHTML = '<div class="empty">Đang tải mẫu…</div>';
+    }
+    const response = await sendMessage({ action: "getDiscussionDrafts", techhubId });
+    if (!response?.success) throw new Error(response?.error || "Không tải được mẫu");
+    renderDiscussionDrafts(response.drafts || []);
+  } catch (error) {
+    showAdminMsg(elements.discussionDraftMessage, `Lỗi tải mẫu: ${error.message}`, "error");
+    renderDiscussionDrafts([]);
+  }
+}
+
+async function generateDiscussionDrafts() {
+  const techhubId = resolveScopeTechhubId(elements.discussionScope);
+  const count = Number(elements.discussionGenerateCount?.value);
+  if (!techhubId) {
+    showAdminMsg(elements.discussionDraftMessage, "Hãy chọn bài cần tạo mẫu.", "error");
+    return;
+  }
+  if (!Number.isInteger(count) || count < 1 || count > 50) {
+    showAdminMsg(elements.discussionDraftMessage, "Số mẫu cần tạo phải từ 1 đến 50.", "error");
+    return;
+  }
+  elements.generateDiscussionDraftsBtn.disabled = true;
+  try {
+    showAdminMsg(
+      elements.discussionDraftMessage,
+      `Đang nhờ AI tạo ${count} mẫu. Vui lòng chờ…`,
+      "muted"
+    );
+    const response = await sendMessage({ action: "generateDiscussionDrafts", techhubId, count });
+    if (!response?.success) throw new Error(response?.error || "Không tạo được mẫu");
+    renderDiscussionDrafts(response.drafts || []);
+    showAdminMsg(elements.discussionDraftMessage, response.message, "success");
+  } catch (error) {
+    showAdminMsg(elements.discussionDraftMessage, `Lỗi tạo mẫu: ${error.message}`, "error");
+  } finally {
+    elements.generateDiscussionDraftsBtn.disabled = false;
   }
 }
 
@@ -920,21 +1460,33 @@ function renderAutoDiscussionStatus(state, message = "", type = "info") {
   if (!state) return;
   if (elements.autoDiscussionEnabled) {
     elements.autoDiscussionEnabled.checked = !!state.enabled;
+    elements.autoDiscussionEnabled.disabled =
+      !state.enabled &&
+      (!resolveScopeTechhubId(elements.discussionScope) || pendingDiscussionDraftCount === 0);
   }
   if (state.targetTechhubId) {
     selectedTechhubId = Number(state.targetTechhubId);
-    if (elements.discussionScope) elements.discussionScope.value = "selected";
+    if (elements.discussionScope) elements.discussionScope.value = String(state.targetTechhubId);
   }
   if (elements.discussionTargetCount && state.targetCount) {
     elements.discussionTargetCount.value = String(state.targetCount);
   }
+  if (elements.discussionMinInterval && state.minIntervalMinutes) {
+    elements.discussionMinInterval.value = String(state.minIntervalMinutes);
+  }
+  if (elements.discussionMaxInterval && state.maxIntervalMinutes) {
+    elements.discussionMaxInterval.value = String(state.maxIntervalMinutes);
+  }
+  if (elements.discussionScope) elements.discussionScope.disabled = !!state.enabled;
   setJobFlag("discussion", !!state.enabled);
   updateScopeLabels();
 
-  const scope = state.targetTechhubId ? `bài #${state.targetTechhubId}` : "tất cả bài";
+  const scope = state.targetTechhubId ? `bài #${state.targetTechhubId}` : "chưa chọn bài";
   const target = Number(state.targetCount) || 5;
   const detail =
-    `${state.enabled ? "Đang bật" : "Đang tắt"} · ${scope} · mục tiêu ${target}/bài` +
+    `${state.enabled ? "Đang bật" : "Đang tắt"} · ${scope} · đã đăng ${
+      state.completedCount || 0
+    }/${target}` +
     (state.nextRunAt
       ? ` · lượt tới ${new Date(state.nextRunAt).toLocaleTimeString()}`
       : "");
@@ -968,6 +1520,8 @@ async function toggleAutoDiscussion() {
   const enabled = !!elements.autoDiscussionEnabled.checked;
   const techhubId = resolveScopeTechhubId(elements.discussionScope);
   const targetCount = Number(elements.discussionTargetCount?.value) || 5;
+  const minIntervalMinutes = Number(elements.discussionMinInterval?.value);
+  const maxIntervalMinutes = Number(elements.discussionMaxInterval?.value);
   if (!Number.isInteger(targetCount) || targetCount < 1 || targetCount > 100) {
     elements.autoDiscussionEnabled.checked = false;
     showAdminMsg(
@@ -977,11 +1531,22 @@ async function toggleAutoDiscussion() {
     );
     return;
   }
-  if (enabled && elements.discussionScope?.value === "selected" && !techhubId) {
+  if (enabled && !techhubId) {
     elements.autoDiscussionEnabled.checked = false;
     showAdminMsg(
       elements.autoDiscussionMessage,
-      'Chưa chọn bài — bấm Chọn ở tab "Bài của tôi" hoặc đổi phạm vi sang tất cả bài.',
+      "Hãy chọn bài cần thảo luận.",
+      "error"
+    );
+    return;
+  }
+  if (enabled && pendingDiscussionDraftCount < targetCount) {
+    elements.autoDiscussionEnabled.checked = false;
+    showAdminMsg(
+      elements.autoDiscussionMessage,
+      pendingDiscussionDraftCount === 0
+        ? "Đã hết mẫu thảo luận. Hãy nhờ AI tạo thêm mẫu."
+        : `Chỉ còn ${pendingDiscussionDraftCount} mẫu chưa dùng. Hãy giảm số lượng hoặc tạo thêm mẫu.`,
       "error"
     );
     return;
@@ -993,6 +1558,8 @@ async function toggleAutoDiscussion() {
       enabled,
       techhubId,
       targetCount,
+      minIntervalMinutes,
+      maxIntervalMinutes,
     });
     if (!response?.success) throw new Error(response?.error || "Không cập nhật được");
     renderAutoDiscussionStatus(
@@ -1004,46 +1571,39 @@ async function toggleAutoDiscussion() {
     elements.autoDiscussionEnabled.checked = !enabled;
     showAdminMsg(elements.autoDiscussionMessage, `Lỗi: ${error.message}`, "error");
   } finally {
-    elements.autoDiscussionEnabled.disabled = false;
+    elements.autoDiscussionEnabled.disabled =
+      !elements.autoDiscussionEnabled.checked &&
+      (!techhubId || pendingDiscussionDraftCount === 0);
   }
 }
 
 async function runAutoDiscussionOnce() {
   const techhubId = resolveScopeTechhubId(elements.discussionScope);
-  const targetCount = Number(elements.discussionTargetCount?.value) || 5;
-  if (!Number.isInteger(targetCount) || targetCount < 1 || targetCount > 100) {
+  if (!techhubId) {
     showAdminMsg(
       elements.autoDiscussionMessage,
-      "Số lần tự thảo luận phải từ 1 đến 100.",
-      "error"
-    );
-    return;
-  }
-  if (elements.discussionScope?.value === "selected" && !techhubId) {
-    showAdminMsg(
-      elements.autoDiscussionMessage,
-      'Chưa chọn bài — bấm Chọn ở tab "Bài của tôi".',
+      "Hãy chọn bài cần thảo luận.",
       "error"
     );
     return;
   }
   elements.runAutoDiscussionBtn.disabled = true;
   try {
-    showAdminMsg(elements.autoDiscussionMessage, "Đang sinh thảo luận AI...", "muted");
+    showAdminMsg(elements.autoDiscussionMessage, "Đang đăng mẫu thảo luận...", "muted");
     const response = await sendMessage({
       action: "runAutoDiscussionOnce",
       techhubId,
-      targetCount,
     });
     if (!response?.success) {
       renderAutoDiscussionStatus(response?.state, response?.error || "Thất bại", "error");
       throw new Error(response?.error || "AI thảo luận thất bại");
     }
     renderAutoDiscussionStatus(response.state, response.message || "Xong.", "success");
+    await loadDiscussionDrafts();
   } catch (error) {
     showAdminMsg(elements.autoDiscussionMessage, `Lỗi: ${error.message}`, "error");
   } finally {
-    elements.runAutoDiscussionBtn.disabled = false;
+    elements.runAutoDiscussionBtn.disabled = pendingDiscussionDraftCount === 0;
   }
 }
 
