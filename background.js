@@ -2293,7 +2293,7 @@ async function generateDiscussionDrafts(techhubId, count) {
       const discussionBody = await nvidiaGenerateDiscussion({
         postTitle: post.title,
         articleBody: articleDetail.body,
-        previousDiscussionText: previousTexts.join("\n"),
+        previousBodies: previousTexts,
         discussionNumber: existingDrafts.length + index + 1,
         discussionTarget: existingDrafts.length + requestedCount,
         username,

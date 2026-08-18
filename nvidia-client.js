@@ -47,13 +47,91 @@ function stripHtml(html) {
     .trim();
 }
 
-function cleanAiReplyText(text) {
+// Chữ Hán/Nhật/Hàn lọt vào bài tiếng Việt là dấu hiệu model bị leak ngôn ngữ.
+const FOREIGN_SCRIPT_RE = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/;
+
+const SENTENCE_END_RE = /[.!?…]/;
+
+function hasForeignScript(text) {
+  return FOREIGN_SCRIPT_RE.test(String(text || ""));
+}
+
+/**
+ * Bỏ đoạn câu dở dang ở cuối (khi model bị cắt vì hết token) để không mất chữ giữa câu.
+ */
+function dropTrailingFragment(text) {
+  const out = String(text || "").trim();
+  if (!out || SENTENCE_END_RE.test(out.slice(-1))) return out;
+  const lastEnd = Math.max(
+    out.lastIndexOf("."),
+    out.lastIndexOf("!"),
+    out.lastIndexOf("?"),
+    out.lastIndexOf("…")
+  );
+  if (lastEnd < 0) return out;
+  const trimmed = out.slice(0, lastEnd + 1).trim();
+  return trimmed || out;
+}
+
+/**
+ * Cắt về đúng ranh giới câu thay vì cắt cứng giữa từ.
+ */
+function trimToSentenceLimit(text, maxLength) {
+  const out = String(text || "").trim();
+  if (out.length <= maxLength) return out;
+  const slice = out.slice(0, maxLength);
+  const lastEnd = Math.max(
+    slice.lastIndexOf("."),
+    slice.lastIndexOf("!"),
+    slice.lastIndexOf("?"),
+    slice.lastIndexOf("…")
+  );
+  if (lastEnd >= Math.floor(maxLength * 0.4)) {
+    return slice.slice(0, lastEnd + 1).trim();
+  }
+  const lastSpace = slice.lastIndexOf(" ");
+  const cut = lastSpace > 0 ? slice.slice(0, lastSpace) : slice;
+  return `${cut.trim()}…`;
+}
+
+function cleanAiReplyText(text, options = {}) {
+  const maxLength = options.maxLength || 400;
   let out = String(text || "").trim();
   out = out.replace(/^["'«»]|["'«»]$/g, "").trim();
   // Bỏ prefix kiểu "Reply:" / "Trả lời:"
   out = out.replace(/^(reply|trả lời|phan hoi|phản hồi)\s*[:\-–]\s*/i, "").trim();
-  if (out.length > 400) out = out.slice(0, 397).trim() + "...";
-  return out;
+  return trimToSentenceLimit(out, maxLength);
+}
+
+/**
+ * Lấy "vân tay" mở đầu để phát hiện các mẫu bị mở bài giống nhau.
+ */
+function getOpeningKey(text, wordCount = 5) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .trim()
+    .split(/\s+/)
+    .slice(0, wordCount)
+    .join(" ");
+}
+
+function sharesOpeningWith(text, previousTexts = []) {
+  const key = getOpeningKey(text, 4);
+  if (!key) return false;
+  return previousTexts.some((prev) => getOpeningKey(prev, 4) === key);
+}
+
+function postChatCompletion(cfg, payload) {
+  return fetch(`${cfg.baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${cfg.apiKey}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
 }
 
 async function nvidiaChat(messages, options = {}) {
@@ -72,16 +150,19 @@ async function nvidiaChat(messages, options = {}) {
     stream: false,
     chat_template_kwargs: { enable_thinking: !!enableThinking },
   };
+  if (options.presencePenalty) payload.presence_penalty = options.presencePenalty;
+  if (options.frequencyPenalty) payload.frequency_penalty = options.frequencyPenalty;
 
-  const response = await fetch(`${cfg.baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${cfg.apiKey}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  let response = await postChatCompletion(cfg, payload);
+  // Không phải model nào trên NIM cũng nhận penalty, bỏ ra thử lại thay vì để job chết.
+  if (
+    response.status === 400 &&
+    (payload.presence_penalty || payload.frequency_penalty)
+  ) {
+    delete payload.presence_penalty;
+    delete payload.frequency_penalty;
+    response = await postChatCompletion(cfg, payload);
+  }
 
   if (!response.ok) {
     const errText = await response.text();
@@ -89,9 +170,13 @@ async function nvidiaChat(messages, options = {}) {
   }
 
   const data = await response.json();
-  const message = data?.choices?.[0]?.message || {};
-  const content = message.content || message.reasoning_content || "";
-  const cleaned = cleanAiReplyText(content);
+  const choice = data?.choices?.[0] || {};
+  const message = choice.message || {};
+  let content = message.content || message.reasoning_content || "";
+  if (choice.finish_reason === "length") {
+    content = dropTrailingFragment(content);
+  }
+  const cleaned = cleanAiReplyText(content, { maxLength: options.maxLength });
   if (!cleaned) throw new Error("NVIDIA AI trả về nội dung rỗng.");
   return cleaned;
 }
@@ -155,15 +240,41 @@ function looksLikeThanksOrPraise(text) {
   );
 }
 
+// Mỗi mẫu đi theo một góc tiếp cận khác nhau để không bị mở bài rập khuôn.
+const DISCUSSION_ANGLES = [
+  "Kể một chi tiết/trải nghiệm cụ thể của riêng bạn liên quan tới bài, có bối cảnh rõ ràng.",
+  "Nêu một mặt trái hoặc điều ít ai nói tới của chủ đề, giọng điềm tĩnh.",
+  "Đặt một câu hỏi mở cho người đọc, hỏi về cách họ từng xử lý tình huống tương tự.",
+  "Bổ sung một lưu ý thực tế, kinh nghiệm rút ra hoặc cách áp dụng cụ thể.",
+  "So sánh giữa lúc đó và bây giờ, chỉ ra điều đã thay đổi.",
+  "Mở rộng sang một tình huống liên quan mà bài chưa nhắc tới.",
+];
+
 /**
  * Sinh comment gốc để tác giả tự bổ sung/thảo luận dưới bài của mình.
  */
 async function nvidiaGenerateDiscussion(input) {
   const articleBody = stripHtml(input.articleBody || "").slice(0, 5000);
-  const previousDiscussionText = stripHtml(
-    input.previousDiscussionText || ""
+  const previousBodies = (
+    Array.isArray(input.previousBodies) ? input.previousBodies : []
+  )
+    .map((body) => stripHtml(body))
+    .filter(Boolean)
+    .slice(-12);
+  const previousDiscussionText = (
+    previousBodies.length
+      ? previousBodies.join("\n")
+      : stripHtml(input.previousDiscussionText || "")
   ).slice(0, 3500);
   if (!articleBody) throw new Error("Không lấy được nội dung bài để thảo luận.");
+
+  const bannedOpenings = [
+    ...new Set(previousBodies.map((body) => getOpeningKey(body, 6)).filter(Boolean)),
+  ].slice(0, 12);
+  const angle =
+    DISCUSSION_ANGLES[
+      (Math.max(1, Number(input.discussionNumber) || 1) - 1) % DISCUSSION_ANGLES.length
+    ];
 
   const systemPrompt =
     `Bạn CHÍNH LÀ tác giả bài viết (@${input.username || "author"}) trên TechHub. ` +
@@ -172,8 +283,11 @@ async function nvidiaGenerateDiscussion(input) {
     "kinh nghiệm hoặc câu hỏi mở liên quan chặt chẽ tới nội dung bài. " +
     "TUYỆT ĐỐI không cảm ơn, không khen bài viết, không giả vờ là độc giả, " +
     "không nhắc rằng đây là comment tự động và không lặp lại các comment trước. " +
-    "Viết tiếng Việt tự nhiên, 1-3 câu, không markdown, không hashtag, không sáo rỗng, " +
-    "không mở đầu bằng lời chào. Chỉ trả về đúng nội dung bình luận.";
+    "CHỈ dùng tiếng Việt phổ thông, tuyệt đối không chèn chữ Trung/Nhật/Hàn hay từ tiếng Anh, " +
+    "không dùng từ lạ hoặc ghép từ sai nghĩa. " +
+    "Viết 1-3 câu hoàn chỉnh, luôn kết thúc bằng dấu câu, không viết dở dang. " +
+    "Không markdown, không hashtag, không sáo rỗng, không mở đầu bằng lời chào. " +
+    "Chỉ trả về đúng nội dung bình luận.";
 
   const userPrompt =
     `Tiêu đề: ${input.postTitle || "(không tiêu đề)"}\n` +
@@ -181,38 +295,65 @@ async function nvidiaGenerateDiscussion(input) {
     `Các comment gốc trước đây của tác giả (không được lặp ý):\n${
       previousDiscussionText || "(chưa có)"
     }\n\n` +
+    (bannedOpenings.length
+      ? `Các cách mở đầu ĐÃ DÙNG, phải mở đầu khác hoàn toàn:\n- ${bannedOpenings.join(
+          "\n- "
+        )}\n\n`
+      : "") +
+    `Góc tiếp cận cho comment này: ${angle}\n\n` +
     `Đây là comment tự thảo luận số ${input.discussionNumber || 1}/${
       input.discussionTarget || "?"
     }. Hãy viết một comment gốc mới dưới bài với tư cách tác giả.`;
 
-  const options = { maxTokens: 240, temperature: 0.75 };
-  const first = await nvidiaChat(
-    [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
-    ],
-    options
-  );
+  const options = {
+    maxTokens: 420,
+    maxLength: 500,
+    temperature: 0.95,
+    topP: 0.92,
+    presencePenalty: 0.6,
+    frequencyPenalty: 0.5,
+  };
+  const messages = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userPrompt },
+  ];
+  const first = await nvidiaChat(messages, options);
 
-  if (!looksLikeThanksOrPraise(first)) return first;
+  const problems = [];
+  if (looksLikeThanksOrPraise(first)) {
+    problems.push(
+      "bị sai vai vì bạn là tác giả nên không được cảm ơn hay khen bài của chính mình"
+    );
+  }
+  if (hasForeignScript(first)) {
+    problems.push("có lẫn chữ nước ngoài, phải viết thuần tiếng Việt");
+  }
+  if (sharesOpeningWith(first, previousBodies)) {
+    problems.push("mở đầu giống một comment đã có, phải mở đầu bằng cách khác hẳn");
+  }
+  if (!problems.length) return first;
 
-  // Gen lại một lần với ràng buộc chặt hơn nếu AI vẫn đi cảm ơn/khen bài của chính mình
   const retry = await nvidiaChat(
     [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
+      ...messages,
       { role: "assistant", content: first },
       {
         role: "user",
         content:
-          "Câu trên bị sai vai: bạn là tác giả nên không được cảm ơn hay khen bài của chính mình. " +
-          "Viết lại một bình luận khác, chỉ bổ sung nội dung/ví dụ/câu hỏi mở, tuyệt đối không có từ cảm ơn hay lời khen bài.",
+          `Câu trên ${problems.join("; ")}. ` +
+          "Viết lại một bình luận khác hoàn toàn: đổi cách mở đầu, chỉ bổ sung nội dung/ví dụ/câu hỏi mở, " +
+          "thuần tiếng Việt, các câu hoàn chỉnh.",
       },
     ],
     options
   );
 
-  return looksLikeThanksOrPraise(retry) ? retry.replace(/^[^.!?]*(cảm ơn|thank)[^.!?]*[.!?]\s*/i, "").trim() || retry : retry;
+  if (looksLikeThanksOrPraise(retry)) {
+    return (
+      retry.replace(/^[^.!?]*(cảm ơn|thank)[^.!?]*[.!?]\s*/i, "").trim() || retry
+    );
+  }
+  return retry;
 }
 
 if (typeof module !== "undefined" && module.exports) {
@@ -222,5 +363,9 @@ if (typeof module !== "undefined" && module.exports) {
     getNvidiaConfig,
     cleanAiReplyText,
     stripHtml,
+    hasForeignScript,
+    getOpeningKey,
+    trimToSentenceLimit,
+    dropTrailingFragment,
   };
 }
