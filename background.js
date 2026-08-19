@@ -251,10 +251,11 @@ async function getCachedCommunityPosts(communitySlug) {
 /**
  * Quét TechHub rồi lưu kết quả vào Supabase để các lần xem sau dùng cache.
  */
-async function scanCommunityArticles(communitySlug, months = 1) {
+async function scanCommunityArticles(communitySlug, fromMonth, toMonth) {
   const actorUsername = await requireTechHubActor();
   const result = await supabase.fetchTechHubCommunityArticles(communitySlug, {
-    months,
+    fromMonth,
+    toMonth,
   });
 
   let saved = 0;
@@ -269,9 +270,9 @@ async function scanCommunityArticles(communitySlug, months = 1) {
     console.error("[Background] Không lưu được bài chuyên mục:", error);
   }
 
-  // Ưu tiên đọc lại từ DB để danh sách hiển thị khớp đúng dữ liệu đã lưu.
+  // Danh sách sau khi làm mới vẫn lấy toàn bộ cache, không thu hẹp theo tháng vừa quét.
   let posts = null;
-  if (saved > 0 && !communityColumnsMissing) {
+  if (!communityColumnsMissing) {
     try {
       const cached = await getCachedCommunityPosts(result.communitySlug);
       if (cached.posts.length) posts = cached.posts;
@@ -305,6 +306,9 @@ async function scanCommunityArticles(communitySlug, months = 1) {
     scannedPages: result.scannedPages,
     scannedArticles: result.scannedArticles,
     months: result.months,
+    fromMonth: result.fromMonth,
+    toMonth: result.toMonth,
+    rangeLabel: result.rangeLabel,
     stopBefore: result.stopBefore,
     reachedWindowEnd: result.reachedWindowEnd,
     hasMore: result.hasMore,
@@ -721,7 +725,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === "scanCommunityArticles") {
-    scanCommunityArticles(request.communitySlug, request.months)
+    scanCommunityArticles(request.communitySlug, request.fromMonth, request.toMonth)
       .then((result) => sendResponse({ success: true, ...result }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;

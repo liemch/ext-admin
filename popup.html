@@ -531,7 +531,7 @@
                 <div class="card-head">
                   <div>
                     <h2>Bài theo chuyên mục</h2>
-                    <p>Đọc từ dữ liệu đã lưu · chỉ gọi TechHub khi bấm Làm mới</p>
+                    <p>Luôn đọc từ dữ liệu đã lưu · chỉ gọi TechHub khi bấm Làm mới</p>
                   </div>
                   <div class="card-actions">
                     <label class="search" for="communityPostsSearch">
@@ -572,13 +572,14 @@
                   </div>
                   <div class="field">
                     <div class="field-text">
-                      <label for="communityScanMonths">Khoảng thời gian</label>
-                      <span>Chỉ gọi TechHub cho bài trong khoảng này, rồi lưu lại</span>
+                      <label>Từ tháng đến tháng</label>
+                      <span>Tháng lịch, tối đa 2 tháng. Chỉ dùng khi bấm Làm mới</span>
                     </div>
-                    <select id="communityScanMonths">
-                      <option value="1" selected>1 tháng gần nhất</option>
-                      <option value="2">2 tháng gần nhất</option>
-                    </select>
+                    <div class="inline-inputs">
+                      <input id="communityScanFromMonth" type="month" aria-label="Từ tháng" />
+                      <span>đến</span>
+                      <input id="communityScanToMonth" type="month" aria-label="Đến tháng" />
+                    </div>
                   </div>
                 </div>
                 <div id="communityPostsList" class="table-wrap">
@@ -586,7 +587,8 @@
                 </div>
                 <div id="communityPostsMessage" class="msg hidden"></div>
                 <p class="hint">
-                  Bấm Chọn thảo luận để chuyển bài sang mục AI thảo luận bài người khác.
+                  Danh sách luôn hiện toàn bộ bài đã lưu. Bấm Làm mới từ TechHub chỉ quét lại
+                  đúng khoảng tháng đã chọn. Chọn thảo luận để chuyển sang mục AI thảo luận.
                 </p>
               </div>
             </section>

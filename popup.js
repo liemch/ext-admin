@@ -69,7 +69,8 @@ const elements = {
   dashboardTable: document.getElementById("dashboardTable"),
   dashboardMessage: document.getElementById("dashboardMessage"),
   communitySlug: document.getElementById("communitySlug"),
-  communityScanMonths: document.getElementById("communityScanMonths"),
+  communityScanFromMonth: document.getElementById("communityScanFromMonth"),
+  communityScanToMonth: document.getElementById("communityScanToMonth"),
   communityPostsSearch: document.getElementById("communityPostsSearch"),
   scanCommunityBtn: document.getElementById("scanCommunityBtn"),
   loadCachedCommunityBtn: document.getElementById("loadCachedCommunityBtn"),
@@ -333,7 +334,20 @@ async function restoreActivePanel() {
   }
 }
 
+function currentMonthValue() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function getCommunityScanRangeFromUi() {
+  return resolveCommunityScanRange(
+    elements.communityScanFromMonth?.value,
+    elements.communityScanToMonth?.value
+  );
+}
+
 async function restoreCommunityBrowserPreferences() {
+  const fallback = currentMonthValue();
   try {
     const stored = await chrome.storage.local.get(COMMUNITY_BROWSER_KEY);
     const preferences = stored[COMMUNITY_BROWSER_KEY];
@@ -343,11 +357,19 @@ async function restoreCommunityBrowserPreferences() {
     if (preferences?.slug && elements.dashboardCommunitySlug) {
       elements.dashboardCommunitySlug.value = preferences.slug;
     }
-    if (preferences?.months && elements.communityScanMonths) {
-      elements.communityScanMonths.value = String(preferences.months);
+    const fromMonth = preferences?.fromMonth || fallback;
+    const toMonth = preferences?.toMonth || preferences?.fromMonth || fallback;
+    if (elements.communityScanFromMonth) elements.communityScanFromMonth.value = fromMonth;
+    if (elements.communityScanToMonth) elements.communityScanToMonth.value = toMonth;
+    try {
+      getCommunityScanRangeFromUi();
+    } catch {
+      if (elements.communityScanFromMonth) elements.communityScanFromMonth.value = fallback;
+      if (elements.communityScanToMonth) elements.communityScanToMonth.value = fallback;
     }
   } catch {
-    // Giữ giá trị mặc định trong giao diện
+    if (elements.communityScanFromMonth) elements.communityScanFromMonth.value = fallback;
+    if (elements.communityScanToMonth) elements.communityScanToMonth.value = fallback;
   }
 }
 
@@ -2043,13 +2065,12 @@ function describeCommunityScan(response) {
   const listed = response?.posts?.length || 0;
   const pages = Number(response?.scannedPages) || 0;
   const months = Number(response?.months) || 1;
+  const rangeLabel = response?.rangeLabel || `${months} tháng`;
   if (!listed && !(found > 0)) {
-    return response?.filterMode === "client"
-      ? `Không thấy bài nào của chuyên mục trong ${months} tháng gần nhất. Hãy kiểm tra lại slug.`
-      : `Chưa tìm thấy bài nào trong ${months} tháng gần nhất.`;
+    return `Chưa tìm thấy bài nào trong ${rangeLabel}.`;
   }
   const parts = [
-    `Đã làm mới ${Number.isFinite(found) ? found : listed} bài trong ${months} tháng gần nhất · gọi ${pages} trang TechHub.`,
+    `Đã làm mới ${Number.isFinite(found) ? found : listed} bài của ${rangeLabel} · gọi ${pages} trang TechHub.`,
   ];
   if (response.filterMode === "client") {
     parts.push(
@@ -2077,7 +2098,13 @@ function describeCommunityScan(response) {
 
 async function scanCommunityArticles() {
   const communitySlug = getCommunitySlugInput();
-  const months = Number(elements.communityScanMonths?.value);
+  let range;
+  try {
+    range = getCommunityScanRangeFromUi();
+  } catch (error) {
+    showAdminMsg(elements.communityPostsMessage, error.message, "error");
+    return;
+  }
   if (!isValidCommunitySlug(communitySlug)) {
     showAdminMsg(
       elements.communityPostsMessage,
@@ -2086,29 +2113,30 @@ async function scanCommunityArticles() {
     );
     return;
   }
-  if (months !== 1 && months !== 2) {
-    showAdminMsg(elements.communityPostsMessage, "Chọn 1 tháng hoặc 2 tháng để làm mới.", "error");
-    return;
-  }
 
   elements.scanCommunityBtn.disabled = true;
   try {
     showAdminMsg(
       elements.communityPostsMessage,
-      `Đang làm mới ${months} tháng gần nhất của ${communitySlug}...`,
+      `Đang làm mới ${range.label} của ${communitySlug}...`,
       "muted"
     );
     const response = await sendMessage({
       action: "scanCommunityArticles",
       communitySlug,
-      months,
+      fromMonth: range.fromMonth,
+      toMonth: range.toMonth,
     });
     if (!response?.success) {
       throw new Error(response?.error || "Không quét được chuyên mục");
     }
     renderCommunityPosts(response.posts || []);
     await chrome.storage.local.set({
-      [COMMUNITY_BROWSER_KEY]: { slug: communitySlug, months },
+      [COMMUNITY_BROWSER_KEY]: {
+        slug: communitySlug,
+        fromMonth: range.fromMonth,
+        toMonth: range.toMonth,
+      },
     });
     showAdminMsg(
       elements.communityPostsMessage,

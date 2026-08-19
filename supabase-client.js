@@ -65,6 +65,45 @@ function extractMedalsCount(article) {
 }
 
 /**
+ * Khoảng tháng lịch: từ tháng A đến tháng B, tối đa 2 tháng.
+ * `end` là mốc exclusive (đầu tháng liền sau tháng kết thúc).
+ */
+function resolveCommunityScanRange(fromMonth, toMonth) {
+  const parse = (value) => {
+    const match = String(value || "").trim().match(/^(\d{4})-(\d{2})$/);
+    if (!match) return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    if (!Number.isInteger(year) || month < 1 || month > 12) return null;
+    return { year, month };
+  };
+  const from = parse(fromMonth);
+  const to = parse(toMonth);
+  if (!from || !to) throw new Error("Tháng không hợp lệ. Hãy chọn dạng YYYY-MM.");
+  const fromIndex = from.year * 12 + from.month;
+  const toIndex = to.year * 12 + to.month;
+  if (fromIndex > toIndex) {
+    throw new Error("Tháng bắt đầu phải trước hoặc trùng tháng kết thúc.");
+  }
+  const span = toIndex - fromIndex + 1;
+  if (span > 2) throw new Error("Chỉ được chọn tối đa 2 tháng.");
+  const start = new Date(from.year, from.month - 1, 1);
+  const end = new Date(to.year, to.month, 1);
+  const pad = (n) => String(n).padStart(2, "0");
+  return {
+    fromMonth: `${from.year}-${pad(from.month)}`,
+    toMonth: `${to.year}-${pad(to.month)}`,
+    label:
+      fromIndex === toIndex
+        ? `${pad(from.month)}/${from.year}`
+        : `${pad(from.month)}/${from.year}–${pad(to.month)}/${to.year}`,
+    span,
+    start,
+    end,
+  };
+}
+
+/**
  * @typedef {Object} PostDetailModel
  * @property {number} id
  * @property {number|null} techhub_id
@@ -792,20 +831,14 @@ class SupabaseClient {
       throw new Error("Slug chuyên mục không hợp lệ.");
     }
 
-    const months = Math.min(2, Math.max(1, Number(options.months) || 1));
+    const range = resolveCommunityScanRange(
+      options.fromMonth || options.toMonth,
+      options.toMonth || options.fromMonth
+    );
+    const fromStart = range.start.getTime();
+    const toEnd = range.end.getTime();
     const sort = options.sort || "new";
     const dateRange = options.dateRange || "all";
-    // sort=new: bài cũ hơn mốc này thì các trang sau cũng cũ hơn, dừng để khỏi spam.
-    const stopBefore = (() => {
-      if (options.stopBefore) {
-        const time = new Date(options.stopBefore).getTime();
-        return Number.isFinite(time) ? time : null;
-      }
-      const start = new Date();
-      start.setHours(0, 0, 0, 0);
-      start.setMonth(start.getMonth() - months);
-      return start.getTime();
-    })();
     const MAX_PAGES = 30;
     const buildUrl = (params) => {
       const query = new URLSearchParams(params);
@@ -893,11 +926,16 @@ class SupabaseClient {
         if (!Number.isInteger(id) || seenIds.has(id)) continue;
         if (slugOf(article) !== slug) continue;
         const articleTime = new Date(
-          article?.published_at || article?.created_at || 0
+          article?.created_at || article?.published_at || 0
         ).getTime();
-        if (stopBefore && Number.isFinite(articleTime) && articleTime < stopBefore) {
-          reachedStopBefore = true;
-          continue;
+        if (Number.isFinite(articleTime)) {
+          // sort=new: bài mới hơn khoảng chọn thì bỏ qua và tiếp tục lật trang.
+          if (articleTime >= toEnd) continue;
+          // Bài cũ hơn tháng bắt đầu thì các trang sau cũng cũ hơn, dừng hẳn.
+          if (articleTime < fromStart) {
+            reachedStopBefore = true;
+            continue;
+          }
         }
         seenIds.add(id);
         articles.push(article);
@@ -915,8 +953,12 @@ class SupabaseClient {
       communitySlug: slug,
       scannedPages: page,
       scannedArticles,
-      months,
-      stopBefore: new Date(stopBefore).toISOString(),
+      months: range.span,
+      fromMonth: range.fromMonth,
+      toMonth: range.toMonth,
+      rangeLabel: range.label,
+      stopBefore: range.start.toISOString(),
+      stopAfter: range.end.toISOString(),
       reachedWindowEnd: reachedStopBefore,
       hasMore,
       reportedTotal: Number.isFinite(reportedTotal) ? reportedTotal : null,
