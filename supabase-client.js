@@ -777,6 +777,332 @@ class SupabaseClient {
   }
 
   /**
+   * Quét bài theo chuyên mục.
+   *
+   * Trang chuyên mục gọi `?community__slug=<slug>&sort=new&date_range=all`;
+   * thiếu `date_range=all` thì API chỉ trả về bài trong khoảng thời gian mặc định.
+   * Các tên query khác chỉ là dự phòng, và vì TechHub bỏ qua param lạ rồi trả về
+   * feed chung nên một ứng viên chỉ được chấp nhận khi mọi bài đều đúng slug.
+   */
+  async fetchTechHubCommunityArticles(communitySlug, options = {}) {
+    const slug = String(communitySlug || "")
+      .trim()
+      .toLowerCase();
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
+      throw new Error("Slug chuyên mục không hợp lệ.");
+    }
+
+    const months = Math.min(2, Math.max(1, Number(options.months) || 1));
+    const sort = options.sort || "new";
+    const dateRange = options.dateRange || "all";
+    // sort=new: bài cũ hơn mốc này thì các trang sau cũng cũ hơn, dừng để khỏi spam.
+    const stopBefore = (() => {
+      if (options.stopBefore) {
+        const time = new Date(options.stopBefore).getTime();
+        return Number.isFinite(time) ? time : null;
+      }
+      const start = new Date();
+      start.setHours(0, 0, 0, 0);
+      start.setMonth(start.getMonth() - months);
+      return start.getTime();
+    })();
+    const MAX_PAGES = 30;
+    const buildUrl = (params) => {
+      const query = new URLSearchParams(params);
+      query.set("sort", sort);
+      query.set("date_range", dateRange);
+      return `https://techhub.fpt.net/api/v1/articles/?${query.toString()}`;
+    };
+    const candidates = ["community__slug", "community_slug", "community"].map(
+      (queryName) => ({
+        mode: queryName,
+        build: (page) => buildUrl({ [queryName]: slug, page: String(page) }),
+      })
+    );
+    const feedCandidate = {
+      mode: "client",
+      build: (page) => buildUrl({ page: String(page) }),
+    };
+
+    const fetchPage = async (candidate, page) => {
+      const response = await fetch(candidate.build(page), {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(
+          `Không quét được chuyên mục (HTTP ${response.status}: ${errorText.slice(0, 120)})`
+        );
+      }
+      return response.json();
+    };
+    const getRows = (data) =>
+      Array.isArray(data?.results)
+        ? data.results
+        : Array.isArray(data?.results?.data)
+          ? data.results.data
+          : Array.isArray(data)
+            ? data
+            : [];
+    const slugOf = (article) =>
+      String(
+        article?.community?.slug ||
+          article?.community_slug ||
+          article?.communitySlug ||
+          ""
+      ).toLowerCase();
+
+    let selected = null;
+    let firstData = null;
+    for (const candidate of candidates) {
+      try {
+        const data = await fetchPage(candidate, 1);
+        const rows = getRows(data);
+        if (rows.length === 0) continue;
+        // Param bị bỏ qua sẽ lẫn bài chuyên mục khác; chỉ nhận khi toàn bộ khớp slug.
+        const known = rows.filter((row) => slugOf(row));
+        if (known.length === rows.length && known.every((row) => slugOf(row) === slug)) {
+          selected = candidate;
+          firstData = data;
+          break;
+        }
+      } catch (error) {
+        console.warn(`[TechHub] Community filter ${candidate.mode} failed:`, error);
+      }
+    }
+
+    if (!firstData) {
+      selected = feedCandidate;
+      firstData = await fetchPage(feedCandidate, 1);
+    }
+
+    const articles = [];
+    const seenIds = new Set();
+    let page = 1;
+    let scannedArticles = 0;
+    let data = firstData;
+    let hasMore = false;
+    let reachedStopBefore = false;
+    while (page <= MAX_PAGES) {
+      const rows = getRows(data);
+      scannedArticles += rows.length;
+      for (const article of rows) {
+        const id = Number(article?.id);
+        if (!Number.isInteger(id) || seenIds.has(id)) continue;
+        if (slugOf(article) !== slug) continue;
+        const articleTime = new Date(
+          article?.published_at || article?.created_at || 0
+        ).getTime();
+        if (stopBefore && Number.isFinite(articleTime) && articleTime < stopBefore) {
+          reachedStopBefore = true;
+          continue;
+        }
+        seenIds.add(id);
+        articles.push(article);
+      }
+      hasMore = !!data?.next && rows.length > 0 && !reachedStopBefore;
+      if (reachedStopBefore || !hasMore || page >= MAX_PAGES) break;
+      page += 1;
+      data = await fetchPage(selected, page);
+    }
+
+    const reportedTotal = Number(firstData?.count);
+
+    return {
+      articles,
+      communitySlug: slug,
+      scannedPages: page,
+      scannedArticles,
+      months,
+      stopBefore: new Date(stopBefore).toISOString(),
+      reachedWindowEnd: reachedStopBefore,
+      hasMore,
+      reportedTotal: Number.isFinite(reportedTotal) ? reportedTotal : null,
+      filterMode: selected.mode,
+    };
+  }
+
+  /**
+   * Tìm chính xác một bài TechHub theo numeric ID.
+   * API danh sách hỗ trợ filter id; luôn đối chiếu lại ID để tránh lấy nhầm kết quả.
+   */
+  async fetchTechHubArticleById(techhubId) {
+    const id = Number(techhubId);
+    if (!Number.isInteger(id) || id < 1) throw new Error("ID bài viết không hợp lệ.");
+    const url = `https://techhub.fpt.net/api/v1/articles/?id=${encodeURIComponent(id)}&page=1`;
+    const response = await fetch(url, {
+      method: "GET",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(
+        `Không tra được bài #${id} từ TechHub (HTTP ${response.status}: ${errorText.slice(0, 160)})`
+      );
+    }
+    const data = await response.json();
+    const results = Array.isArray(data?.results)
+      ? data.results
+      : Array.isArray(data?.results?.data)
+        ? data.results.data
+        : Array.isArray(data)
+          ? data
+          : [];
+    return results.find((article) => Number(article?.id) === id) || null;
+  }
+
+  /**
+   * Chuyển article của TechHub sang payload bảng posts.
+   * Trả về null nếu thiếu dữ liệu bắt buộc để caller tự quyết định bỏ qua hay báo lỗi.
+   */
+  buildTechHubPostPayload(article) {
+    const id = Number(article?.id);
+    if (!Number.isInteger(id) || id < 1) return null;
+    const username =
+      article?.username ||
+      article?.author?.username ||
+      article?.user?.username ||
+      article?.created_by?.username ||
+      article?.owner?.username ||
+      null;
+    const uuid = article?.uuid || article?.article_uuid || null;
+    if (!username || !uuid) return null;
+
+    const communitySlug =
+      article?.community?.slug || article?.community_slug || article?.communitySlug || null;
+    const communityName =
+      article?.community?.name ||
+      article?.community?.title ||
+      article?.community_name ||
+      null;
+    const customUrl =
+      communitySlug && article?.slug
+        ? `https://techhub.fpt.net/c/${communitySlug}/${uuid}/${article.slug}`
+        : `https://techhub.fpt.net/p/${username}/${uuid}/${article?.slug || ""}`;
+
+    return {
+      title: article?.title || `Bài #${id}`,
+      status: article?.status || "open",
+      techhub_id: id,
+      techhub_uuid: uuid,
+      username,
+      url: customUrl.replace(/\/$/, ""),
+      votes_score: Number(article?.votes_score || 0),
+      comments_count: Number(article?.comments_count || 0),
+      medals_count: extractMedalsCount(article),
+      feed_score: Number(article?.feed_score || 0),
+      created_at: article?.created_at || new Date().toISOString(),
+      published_at: article?.published_at || null,
+      community_slug: communitySlug,
+      community_name: communityName,
+      last_seen_at: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Gửi upsert vào posts, tự bỏ cột chuyên mục nếu DB chưa chạy migration 010.
+   */
+  async upsertPostRows(payloads) {
+    const body = this.postsCommunityColumnsMissing
+      ? payloads.map(({ community_slug, community_name, last_seen_at, ...rest }) => rest)
+      : payloads;
+    const send = (rows) =>
+      fetch(`${this.restUrl}/posts?on_conflict=techhub_id`, {
+        method: "POST",
+        headers: {
+          ...this.getHeaders(),
+          Prefer: "resolution=merge-duplicates,return=representation",
+        },
+        body: JSON.stringify(rows),
+      });
+
+    let response = await send(body);
+    if (!response.ok) {
+      const errorText = await response.text();
+      const missingCommunityColumn =
+        /community_slug|community_name|last_seen_at/.test(errorText) &&
+        /schema cache|column/i.test(errorText);
+      if (!missingCommunityColumn) {
+        throw new Error(`${response.status} ${errorText}`);
+      }
+      // DB chưa có cột chuyên mục: vẫn lưu phần còn lại để không mất dữ liệu quét.
+      this.postsCommunityColumnsMissing = true;
+      response = await send(
+        payloads.map(({ community_slug, community_name, last_seen_at, ...rest }) => rest)
+      );
+      if (!response.ok) {
+        throw new Error(`${response.status} ${await response.text()}`);
+      }
+    }
+    const rows = await response.json();
+    return Array.isArray(rows) ? rows : [rows];
+  }
+
+  /**
+   * Lưu metadata bài người khác để draft/job có thể tham chiếu ổn định theo techhub_id.
+   */
+  async upsertExternalPost(article) {
+    const id = Number(article?.id);
+    if (!Number.isInteger(id) || id < 1) throw new Error("TechHub trả về ID bài không hợp lệ.");
+    const payload = this.buildTechHubPostPayload(article);
+    if (!payload) throw new Error(`Bài #${id} thiếu tác giả hoặc UUID.`);
+    try {
+      const rows = await this.upsertPostRows([payload]);
+      return rows[0];
+    } catch (error) {
+      throw new Error(`Không lưu được bài #${id}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Lưu hàng loạt bài đã quét từ chuyên mục, chia lô để tránh payload quá lớn.
+   */
+  async upsertScannedPosts(articles) {
+    const payloads = (Array.isArray(articles) ? articles : [])
+      .map((article) => this.buildTechHubPostPayload(article))
+      .filter(Boolean);
+    const skipped = (Array.isArray(articles) ? articles.length : 0) - payloads.length;
+    let saved = 0;
+    const CHUNK_SIZE = 100;
+    for (let i = 0; i < payloads.length; i += CHUNK_SIZE) {
+      const rows = await this.upsertPostRows(payloads.slice(i, i + CHUNK_SIZE));
+      saved += rows.length;
+    }
+    return {
+      saved,
+      skipped,
+      communityColumnsMissing: !!this.postsCommunityColumnsMissing,
+    };
+  }
+
+  /**
+   * Đọc bài chuyên mục đã lưu, dùng thay cho việc gọi lại TechHub.
+   */
+  async getPostsByCommunity(communitySlug, options = {}) {
+    const slug = String(communitySlug || "").trim().toLowerCase();
+    if (!slug) return [];
+    const limit = Math.min(1000, Math.max(1, Number(options.limit) || 500));
+    const url =
+      `${this.restUrl}/posts?community_slug=eq.${encodeURIComponent(slug)}` +
+      `&order=created_at.desc&limit=${limit}`;
+    const response = await fetch(url, { headers: this.getHeaders() });
+    if (!response.ok) {
+      const errorText = await response.text();
+      if (/community_slug/.test(errorText)) {
+        this.postsCommunityColumnsMissing = true;
+        throw new Error(
+          "Bảng posts chưa có cột chuyên mục. Hãy chạy migration 010_posts_community.sql."
+        );
+      }
+      throw new Error(`Không đọc được bài chuyên mục: ${response.status} ${errorText}`);
+    }
+    return await response.json();
+  }
+
+  /**
    * Đồng bộ bài viết từ TechHub vào Supabase
    * @param {string} username
    * @returns {Promise<{created: number, updated: number, message: string}>}
@@ -810,16 +1136,18 @@ class SupabaseClient {
         };
       }
 
-      // Loại bài đã publish (published_at khác null)
-      const pending = allArticles.filter((a) => !a.published_at);
-      const skipped = allArticles.length - pending.length;
-
+      // Bài chưa publish: tạo mới / cập nhật thống kê.
+      // Bài đã publish: chỉ cập nhật published_at + status nếu đã có trong DB,
+      // để danh sách (published_at is null) tự loại chúng ra.
+      const unpublished = allArticles.filter((a) => !a.published_at);
+      const published = allArticles.filter((a) => !!a.published_at);
       let created = 0;
       let updated = 0;
-      const total = pending.length;
+      let markedPublished = 0;
+      const total = unpublished.length;
 
       for (let i = 0; i < total; i++) {
-        const article = pending[i];
+        const article = unpublished[i];
 
         if (onProgress) {
           onProgress(`Đang đồng bộ bài ${i + 1}/${total}...`);
@@ -863,11 +1191,33 @@ class SupabaseClient {
         }
       }
 
+      if (onProgress && published.length) {
+        onProgress(`Đang đánh dấu ${published.length} bài đã publish...`);
+      }
+      for (const article of published) {
+        const existingPost = await this.findPostByTechhubId(article.id);
+        if (!existingPost) continue;
+        const medalsCount = extractMedalsCount(article);
+        await this.updatePost(article.id, {
+          votesScore: article.votes_score,
+          commentsCount: article.comments_count,
+          medalsCount,
+          feedScore: article.feed_score,
+          publishedAt: article.published_at,
+          status: article.status,
+        });
+        markedPublished++;
+        console.log(`[Supabase] Marked published: ${article.title}`);
+      }
+
       return {
         created,
         updated,
-        skipped,
-        message: `Đã quét ${allArticles.length} bài · ${created} mới · ${updated} cập nhật · bỏ ${skipped} bài đã publish`,
+        skipped: published.length,
+        markedPublished,
+        message:
+          `Đã quét ${allArticles.length} bài · ${created} mới · ${updated} cập nhật` +
+          ` · đánh dấu publish ${markedPublished}/${published.length}`,
       };
     } catch (error) {
       console.error("[Supabase] Error syncing posts:", error);

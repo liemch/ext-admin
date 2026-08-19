@@ -60,6 +60,60 @@ const elements = {
   discussionScope: document.getElementById("discussionScope"),
   discussionScopeLabel: document.getElementById("discussionScopeLabel"),
   discussionTargetCount: document.getElementById("discussionTargetCount"),
+  externalDiscussionDot: document.getElementById("externalDiscussionDot"),
+  dashboardScope: document.getElementById("dashboardScope"),
+  dashboardCommunityField: document.getElementById("dashboardCommunityField"),
+  dashboardCommunitySlug: document.getElementById("dashboardCommunitySlug"),
+  refreshDashboardBtn: document.getElementById("refreshDashboardBtn"),
+  dashboardCards: document.getElementById("dashboardCards"),
+  dashboardTable: document.getElementById("dashboardTable"),
+  dashboardMessage: document.getElementById("dashboardMessage"),
+  communitySlug: document.getElementById("communitySlug"),
+  communityScanMonths: document.getElementById("communityScanMonths"),
+  communityPostsSearch: document.getElementById("communityPostsSearch"),
+  scanCommunityBtn: document.getElementById("scanCommunityBtn"),
+  loadCachedCommunityBtn: document.getElementById("loadCachedCommunityBtn"),
+  communityPostsList: document.getElementById("communityPostsList"),
+  communityPostsMessage: document.getElementById("communityPostsMessage"),
+  externalDiscussionPostId: document.getElementById("externalDiscussionPostId"),
+  loadExternalPostBtn: document.getElementById("loadExternalPostBtn"),
+  externalPostPreview: document.getElementById("externalPostPreview"),
+  generateExternalDiscussionDraftsBtn: document.getElementById(
+    "generateExternalDiscussionDraftsBtn"
+  ),
+  externalDiscussionGenerateCount: document.getElementById(
+    "externalDiscussionGenerateCount"
+  ),
+  externalDiscussionDraftStats: document.getElementById(
+    "externalDiscussionDraftStats"
+  ),
+  externalDiscussionDraftsList: document.getElementById(
+    "externalDiscussionDraftsList"
+  ),
+  externalDiscussionDraftMessage: document.getElementById(
+    "externalDiscussionDraftMessage"
+  ),
+  clearPendingExternalDiscussionDraftsBtn: document.getElementById(
+    "clearPendingExternalDiscussionDraftsBtn"
+  ),
+  runAutoExternalDiscussionBtn: document.getElementById(
+    "runAutoExternalDiscussionBtn"
+  ),
+  autoExternalDiscussionEnabled: document.getElementById(
+    "autoExternalDiscussionEnabled"
+  ),
+  externalDiscussionTargetCount: document.getElementById(
+    "externalDiscussionTargetCount"
+  ),
+  externalDiscussionMinInterval: document.getElementById(
+    "externalDiscussionMinInterval"
+  ),
+  externalDiscussionMaxInterval: document.getElementById(
+    "externalDiscussionMaxInterval"
+  ),
+  autoExternalDiscussionMessage: document.getElementById(
+    "autoExternalDiscussionMessage"
+  ),
   myPostsList: document.getElementById("myPostsList"),
   postsMessage: document.getElementById("postsMessage"),
   deleteTechhubId: document.getElementById("deleteTechhubId"),
@@ -73,6 +127,7 @@ const elements = {
 };
 
 const ACTIVE_PANEL_KEY = "activePanel";
+const COMMUNITY_BROWSER_KEY = "communityBrowserPreferences";
 
 const isTabView = new URLSearchParams(location.search).get("view") === "tab";
 
@@ -84,7 +139,17 @@ let pendingReplyDraftCount = 0;
 let pendingDiscussionDraftCount = 0;
 let currentReplyDrafts = [];
 let currentDiscussionDrafts = [];
-const jobFlags = { comment: false, reply: false, discussion: false };
+let communityPosts = [];
+let communityPostsFilter = "";
+let externalDiscussionPost = null;
+let pendingExternalDiscussionDraftCount = 0;
+let currentExternalDiscussionDrafts = [];
+const jobFlags = {
+  comment: false,
+  reply: false,
+  discussion: false,
+  externalDiscussion: false,
+};
 
 document.addEventListener("DOMContentLoaded", init);
 chrome.runtime.onMessage.addListener((request) => {
@@ -113,6 +178,19 @@ chrome.runtime.onMessage.addListener((request) => {
       request.type || "info"
     );
   }
+  if (request.action === "autoExternalDiscussionProgress") {
+    renderAutoExternalDiscussionStatus(request.state, request.message, request.type);
+    if (request.type === "success" || request.type === "muted") {
+      loadExternalDiscussionDrafts();
+    }
+  }
+  if (request.action === "externalDiscussionDraftProgress") {
+    showAdminMsg(
+      elements.externalDiscussionDraftMessage,
+      request.message,
+      request.type || "info"
+    );
+  }
   if (request.action === "scheduledDeleteProgress") {
     if (request.items) renderScheduledDeletes(request.items);
     if (request.message) {
@@ -128,7 +206,8 @@ chrome.runtime.onMessage.addListener((request) => {
 async function init() {
   applyViewMode();
   setupEventListeners();
-  await restoreActivePanel();
+  await Promise.all([restoreActivePanel(), restoreCommunityBrowserPreferences()]);
+  syncDashboardScopeFields();
 
   if (
     SUPABASE_CONFIG.url === "YOUR_SUPABASE_URL" ||
@@ -171,6 +250,7 @@ function setJobFlag(name, active) {
     comment: elements.commentDot,
     reply: elements.replyDot,
     discussion: elements.discussionDot,
+    externalDiscussion: elements.externalDiscussionDot,
   };
   dots[name]?.classList.toggle("hidden", !jobFlags[name]);
 
@@ -178,6 +258,7 @@ function setJobFlag(name, active) {
     jobFlags.comment ? "auto comment" : null,
     jobFlags.reply ? "AI trả lời" : null,
     jobFlags.discussion ? "AI thảo luận" : null,
+    jobFlags.externalDiscussion ? "thảo luận bài khác" : null,
   ].filter(Boolean);
 
   if (!elements.jobBadge) return;
@@ -235,6 +316,10 @@ function showPanel(name, persist = true) {
   if (persist) {
     chrome.storage.local.set({ [ACTIVE_PANEL_KEY]: name }).catch(() => {});
   }
+
+  if (name === "community" && communityPosts.length === 0) {
+    loadCachedCommunityPosts(false);
+  }
 }
 
 async function restoreActivePanel() {
@@ -245,6 +330,24 @@ async function restoreActivePanel() {
     }
   } catch {
     // Giữ panel mặc định
+  }
+}
+
+async function restoreCommunityBrowserPreferences() {
+  try {
+    const stored = await chrome.storage.local.get(COMMUNITY_BROWSER_KEY);
+    const preferences = stored[COMMUNITY_BROWSER_KEY];
+    if (preferences?.slug && elements.communitySlug) {
+      elements.communitySlug.value = preferences.slug;
+    }
+    if (preferences?.slug && elements.dashboardCommunitySlug) {
+      elements.dashboardCommunitySlug.value = preferences.slug;
+    }
+    if (preferences?.months && elements.communityScanMonths) {
+      elements.communityScanMonths.value = String(preferences.months);
+    }
+  } catch {
+    // Giữ giá trị mặc định trong giao diện
   }
 }
 
@@ -310,6 +413,74 @@ function setupEventListeners() {
   if (elements.autoDiscussionEnabled) {
     elements.autoDiscussionEnabled.addEventListener("change", toggleAutoDiscussion);
   }
+  if (elements.scanCommunityBtn) {
+    elements.scanCommunityBtn.addEventListener("click", scanCommunityArticles);
+  }
+  if (elements.loadCachedCommunityBtn) {
+    elements.loadCachedCommunityBtn.addEventListener("click", () =>
+      loadCachedCommunityPosts(true)
+    );
+  }
+  if (elements.refreshDashboardBtn) {
+    elements.refreshDashboardBtn.addEventListener("click", loadMonthlyStats);
+  }
+  if (elements.dashboardScope) {
+    elements.dashboardScope.addEventListener("change", syncDashboardScopeFields);
+  }
+  if (elements.communityPostsSearch) {
+    elements.communityPostsSearch.addEventListener("input", () => {
+      communityPostsFilter = elements.communityPostsSearch.value.trim().toLowerCase();
+      renderCommunityPosts(communityPosts);
+    });
+  }
+  if (elements.communityPostsList) {
+    elements.communityPostsList.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-community-select-id]");
+      if (!button) return;
+      selectCommunityPost(Number(button.dataset.communitySelectId));
+    });
+  }
+  if (elements.loadExternalPostBtn) {
+    elements.loadExternalPostBtn.addEventListener("click", loadExternalDiscussionPost);
+  }
+  if (elements.generateExternalDiscussionDraftsBtn) {
+    elements.generateExternalDiscussionDraftsBtn.addEventListener(
+      "click",
+      generateExternalDiscussionDrafts
+    );
+  }
+  if (elements.clearPendingExternalDiscussionDraftsBtn) {
+    elements.clearPendingExternalDiscussionDraftsBtn.addEventListener(
+      "click",
+      clearPendingExternalDiscussionDrafts
+    );
+  }
+  if (elements.runAutoExternalDiscussionBtn) {
+    elements.runAutoExternalDiscussionBtn.addEventListener(
+      "click",
+      runAutoExternalDiscussionOnce
+    );
+  }
+  if (elements.autoExternalDiscussionEnabled) {
+    elements.autoExternalDiscussionEnabled.addEventListener(
+      "change",
+      toggleAutoExternalDiscussion
+    );
+  }
+  if (elements.externalDiscussionPostId) {
+    elements.externalDiscussionPostId.addEventListener("input", () => {
+      const nextId = Number(elements.externalDiscussionPostId.value);
+      if (
+        externalDiscussionPost &&
+        Number(externalDiscussionPost.techhub_id) !== nextId
+      ) {
+        externalDiscussionPost = null;
+        renderExternalPostPreview(null);
+        renderExternalDiscussionDrafts([]);
+      }
+      if (communityPosts.length) renderCommunityPosts(communityPosts);
+    });
+  }
   if (elements.replyScope) {
     elements.replyScope.addEventListener("change", () => {
       const id = Number(elements.replyScope.value);
@@ -371,6 +542,25 @@ function setupEventListeners() {
       const deleteBtn = event.target.closest("[data-delete-discussion-draft]");
       if (deleteBtn) {
         deleteDiscussionDraft(Number(deleteBtn.dataset.deleteDiscussionDraft));
+      }
+    });
+  }
+  if (elements.externalDiscussionDraftsList) {
+    elements.externalDiscussionDraftsList.addEventListener("click", (event) => {
+      const editBtn = event.target.closest("[data-edit-external-discussion-draft]");
+      if (editBtn) {
+        editExternalDiscussionDraft(
+          Number(editBtn.dataset.editExternalDiscussionDraft)
+        );
+        return;
+      }
+      const deleteBtn = event.target.closest(
+        "[data-delete-external-discussion-draft]"
+      );
+      if (deleteBtn) {
+        deleteExternalDiscussionDraft(
+          Number(deleteBtn.dataset.deleteExternalDiscussionDraft)
+        );
       }
     });
   }
@@ -475,6 +665,10 @@ async function loadAdminGate() {
     await loadReplyDrafts();
     await loadAutoDiscussionStatus();
     await loadDiscussionDrafts();
+    await loadAutoExternalDiscussionStatus();
+    if (Number(elements.externalDiscussionPostId?.value) > 0) {
+      await loadExternalDiscussionPost();
+    }
     await loadScheduledDeletes();
   } catch (error) {
     showError("Lỗi: " + error.message);
@@ -1604,6 +1798,812 @@ async function runAutoDiscussionOnce() {
     showAdminMsg(elements.autoDiscussionMessage, `Lỗi: ${error.message}`, "error");
   } finally {
     elements.runAutoDiscussionBtn.disabled = pendingDiscussionDraftCount === 0;
+  }
+}
+
+function renderCommunityPosts(posts = []) {
+  communityPosts = Array.isArray(posts) ? posts : [];
+  if (!elements.communityPostsList) return;
+  const selectedId = getExternalDiscussionId();
+  const visible = communityPostsFilter
+    ? communityPosts.filter((post) => {
+        const haystack = `${post.title || ""} ${post.username || ""} ${
+          post.techhub_id || ""
+        }`.toLowerCase();
+        return haystack.includes(communityPostsFilter);
+      })
+    : communityPosts;
+
+  if (visible.length === 0) {
+    elements.communityPostsList.innerHTML = `<div class="empty">${
+      communityPosts.length
+        ? "Không có bài nào khớp bộ lọc."
+        : "Chưa tìm thấy bài nào trong chuyên mục này."
+    }</div>`;
+    return;
+  }
+
+  const rows = visible
+    .map((post) => {
+      const id = Number(post.techhub_id);
+      const isOwn = !!post.is_own;
+      const isOpen = String(post.status || "").toLowerCase() === "open";
+      const canDiscuss = !isOwn && isOpen;
+      const selected = id === selectedId;
+      const statusLabel = isOwn ? "Bài của bạn" : isOpen ? "Đang mở" : post.status || "Đã đóng";
+      const statusClass = isOpen && !isOwn ? "open" : "other";
+      return (
+        `<tr class="${selected ? "selected" : ""}">` +
+        `<td class="cell-title">` +
+        `<a class="post-link" href="${escapeHtml(
+          post.url || "https://techhub.fpt.net/"
+        )}" target="_blank" rel="noopener noreferrer">${escapeHtml(
+          post.title || "(không tiêu đề)"
+        )}</a>` +
+        `<div class="post-sub"><span>#${id}</span><span>@${escapeHtml(
+          post.username || "-"
+        )}</span></div></td>` +
+        `<td data-label="Điểm"><span class="score">${formatPostScore(
+          calcPostScore(post)
+        )}</span></td>` +
+        `<td data-label="Medal"><span class="num">${Number(
+          post.medals_count || 0
+        )}</span></td>` +
+        `<td data-label="Cmt"><span class="num">${Number(
+          post.comments_count || 0
+        )}</span></td>` +
+        `<td data-label="Trạng thái"><span class="badge ${statusClass}">${escapeHtml(
+          statusLabel
+        )}</span></td>` +
+        `<td class="cell-date" data-label="Ngày">${escapeHtml(
+          formatRelativeDate(post.created_at || post.published_at)
+        )}${post.published_at ? "" : " · chưa publish"}</td>` +
+        `<td class="cell-action"><button type="button" class="mini-btn${
+          selected ? " is-selected" : ""
+        }" ${canDiscuss ? `data-community-select-id="${id}"` : "disabled"}>${
+          selected ? "Đang chọn" : canDiscuss ? "Chọn thảo luận" : "Không thể chọn"
+        }</button></td>` +
+        `</tr>`
+      );
+    })
+    .join("");
+
+  elements.communityPostsList.innerHTML =
+    '<table class="data-table"><thead><tr>' +
+    "<th>Tiêu đề</th><th>Điểm</th><th>Medal</th><th>Cmt</th>" +
+    "<th>Trạng thái</th><th>Ngày</th><th></th>" +
+    `</tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function syncDashboardScopeFields() {
+  const isCommunity = elements.dashboardScope?.value === "community";
+  elements.dashboardCommunityField?.classList.toggle("hidden", !isCommunity);
+}
+
+function formatDelta(current, previous) {
+  const diff = current - previous;
+  if (diff === 0) return '<span class="delta flat">không đổi</span>';
+  const percent = previous > 0 ? ` (${Math.round((diff / previous) * 100)}%)` : "";
+  return `<span class="delta ${diff > 0 ? "up" : "down"}">${
+    diff > 0 ? "+" : ""
+  }${diff}${percent}</span>`;
+}
+
+function renderMonthlyStats(response) {
+  const [current, previous] = response?.months || [];
+  if (!current || !previous) return;
+
+  if (elements.dashboardCards) {
+    const cards = [
+      { label: "Bài tạo mới", key: "created" },
+      { label: "Bài được publish", key: "published" },
+    ];
+    elements.dashboardCards.innerHTML = cards
+      .map(
+        (card) =>
+          `<div class="stat-card">` +
+          `<span class="stat-label">${card.label} · ${escapeHtml(current.label)}</span>` +
+          `<strong class="stat-value accent">${current[card.key]}</strong>` +
+          `<span class="stat-hint">Tháng ${escapeHtml(previous.label)}: ${
+            previous[card.key]
+          } · ${formatDelta(current[card.key], previous[card.key])}</span>` +
+          `</div>`
+      )
+      .join("");
+  }
+
+  if (elements.dashboardTable) {
+    const rows = [current, previous]
+      .map((month) => {
+        const rate = month.created
+          ? `${Math.round((month.published / month.created) * 100)}%`
+          : "-";
+        return (
+          `<tr><td class="cell-title"><strong>Tháng ${escapeHtml(
+            month.label
+          )}</strong></td>` +
+          `<td data-label="Bài tạo"><span class="num">${month.created}</span></td>` +
+          `<td data-label="Publish"><span class="num">${month.published}</span></td>` +
+          `<td data-label="Tỉ lệ publish"><span class="num">${rate}</span></td>` +
+          `<td data-label="Medal"><span class="num">${month.medals}</span></td>` +
+          `<td data-label="Cmt"><span class="num">${month.comments}</span></td></tr>`
+        );
+      })
+      .join("");
+    elements.dashboardTable.innerHTML =
+      '<table class="data-table"><thead><tr>' +
+      "<th>Tháng</th><th>Bài tạo</th><th>Publish</th><th>Tỉ lệ publish</th>" +
+      "<th>Medal</th><th>Cmt</th>" +
+      `</tr></thead><tbody>${rows}</tbody></table>`;
+  }
+}
+
+async function loadMonthlyStats() {
+  const scope = elements.dashboardScope?.value === "community" ? "community" : "own";
+  const communitySlug = String(elements.dashboardCommunitySlug?.value || "")
+    .trim()
+    .toLowerCase();
+  if (scope === "community" && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(communitySlug)) {
+    showAdminMsg(elements.dashboardMessage, "Slug chuyên mục không hợp lệ.", "error");
+    return;
+  }
+
+  elements.refreshDashboardBtn.disabled = true;
+  try {
+    showAdminMsg(elements.dashboardMessage, "Đang tải số liệu từ TechHub...", "muted");
+    const response = await sendMessage({
+      action: "getMonthlyPostStats",
+      scope,
+      communitySlug,
+    });
+    if (!response?.success) {
+      throw new Error(response?.error || "Không tải được số liệu");
+    }
+    renderMonthlyStats(response);
+    showAdminMsg(
+      elements.dashboardMessage,
+      `Tính trên ${response.postCount} bài đã lưu ${
+        scope === "community" ? `của chuyên mục ${communitySlug}` : `của @${response.username}`
+      } · cập nhật ${formatRelativeDate(response.lastSyncedAt)}.`,
+      "success"
+    );
+  } catch (error) {
+    showAdminMsg(elements.dashboardMessage, `Lỗi thống kê: ${error.message}`, "error");
+  } finally {
+    elements.refreshDashboardBtn.disabled = false;
+  }
+}
+
+function getCommunitySlugInput() {
+  return String(elements.communitySlug?.value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function isValidCommunitySlug(slug) {
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug);
+}
+
+async function loadCachedCommunityPosts(showEmptyMessage = false) {
+  const communitySlug = getCommunitySlugInput();
+  if (!isValidCommunitySlug(communitySlug)) {
+    if (showEmptyMessage) {
+      showAdminMsg(
+        elements.communityPostsMessage,
+        "Slug chỉ gồm chữ thường không dấu, số và dấu gạch ngang.",
+        "error"
+      );
+    }
+    return;
+  }
+  if (elements.loadCachedCommunityBtn) {
+    elements.loadCachedCommunityBtn.disabled = true;
+  }
+  try {
+    const response = await sendMessage({
+      action: "getCachedCommunityPosts",
+      communitySlug,
+    });
+    if (!response?.success) {
+      throw new Error(response?.error || "Không đọc được dữ liệu đã lưu");
+    }
+    renderCommunityPosts(response.posts || []);
+    if (response.posts?.length) {
+      showAdminMsg(
+        elements.communityPostsMessage,
+        `Đang xem ${response.posts.length} bài đã lưu · cập nhật ${formatRelativeDate(
+          response.lastSyncedAt
+        )}. Bấm Làm mới từ TechHub khi cần dữ liệu mới.`,
+        "muted"
+      );
+    } else if (showEmptyMessage) {
+      showAdminMsg(
+        elements.communityPostsMessage,
+        "Chưa có dữ liệu đã lưu cho chuyên mục này. Hãy bấm Làm mới từ TechHub.",
+        "muted"
+      );
+    }
+  } catch (error) {
+    if (showEmptyMessage) {
+      showAdminMsg(
+        elements.communityPostsMessage,
+        `Lỗi đọc dữ liệu đã lưu: ${error.message}`,
+        "error"
+      );
+    }
+  } finally {
+    if (elements.loadCachedCommunityBtn) {
+      elements.loadCachedCommunityBtn.disabled = false;
+    }
+  }
+}
+
+function describeCommunityScan(response) {
+  const found = Number(response?.refreshedCount);
+  const listed = response?.posts?.length || 0;
+  const pages = Number(response?.scannedPages) || 0;
+  const months = Number(response?.months) || 1;
+  if (!listed && !(found > 0)) {
+    return response?.filterMode === "client"
+      ? `Không thấy bài nào của chuyên mục trong ${months} tháng gần nhất. Hãy kiểm tra lại slug.`
+      : `Chưa tìm thấy bài nào trong ${months} tháng gần nhất.`;
+  }
+  const parts = [
+    `Đã làm mới ${Number.isFinite(found) ? found : listed} bài trong ${months} tháng gần nhất · gọi ${pages} trang TechHub.`,
+  ];
+  if (response.filterMode === "client") {
+    parts.push(
+      `TechHub không lọc trực tiếp theo chuyên mục nên đã lọc ${
+        Number(response.scannedArticles) || 0
+      } bài của feed chung.`
+    );
+  }
+  if (response.reachedWindowEnd) {
+    parts.push("Đã tới mốc thời gian nên dừng, không quét bài cũ hơn.");
+  } else if (response.hasMore) {
+    parts.push("Chuyên mục còn bài mới hơn mốc này nhưng đã chạm giới hạn an toàn.");
+  }
+  if (response.saveError) {
+    parts.push(`Chưa lưu được vào hệ thống: ${response.saveError}`);
+  } else if (response.communityColumnsMissing) {
+    parts.push(
+      "Đã lưu bài nhưng chưa gắn được chuyên mục; hãy chạy migration 010_posts_community.sql để dùng dữ liệu đã lưu."
+    );
+  } else if (response.saved) {
+    parts.push(`Đã lưu ${response.saved} bài vào hệ thống.`);
+  }
+  return parts.join(" ");
+}
+
+async function scanCommunityArticles() {
+  const communitySlug = getCommunitySlugInput();
+  const months = Number(elements.communityScanMonths?.value);
+  if (!isValidCommunitySlug(communitySlug)) {
+    showAdminMsg(
+      elements.communityPostsMessage,
+      "Slug chỉ gồm chữ thường không dấu, số và dấu gạch ngang.",
+      "error"
+    );
+    return;
+  }
+  if (months !== 1 && months !== 2) {
+    showAdminMsg(elements.communityPostsMessage, "Chọn 1 tháng hoặc 2 tháng để làm mới.", "error");
+    return;
+  }
+
+  elements.scanCommunityBtn.disabled = true;
+  try {
+    showAdminMsg(
+      elements.communityPostsMessage,
+      `Đang làm mới ${months} tháng gần nhất của ${communitySlug}...`,
+      "muted"
+    );
+    const response = await sendMessage({
+      action: "scanCommunityArticles",
+      communitySlug,
+      months,
+    });
+    if (!response?.success) {
+      throw new Error(response?.error || "Không quét được chuyên mục");
+    }
+    renderCommunityPosts(response.posts || []);
+    await chrome.storage.local.set({
+      [COMMUNITY_BROWSER_KEY]: { slug: communitySlug, months },
+    });
+    showAdminMsg(
+      elements.communityPostsMessage,
+      describeCommunityScan(response),
+      response.saveError || !response.posts?.length || response.hasMore
+        ? "muted"
+        : "success"
+    );
+  } catch (error) {
+    renderCommunityPosts([]);
+    showAdminMsg(
+      elements.communityPostsMessage,
+      `Lỗi quét chuyên mục: ${error.message}`,
+      "error"
+    );
+  } finally {
+    elements.scanCommunityBtn.disabled = false;
+  }
+}
+
+async function selectCommunityPost(techhubId) {
+  const post = communityPosts.find((item) => Number(item.techhub_id) === techhubId);
+  if (
+    !post ||
+    post.is_own ||
+    String(post.status || "").toLowerCase() !== "open" ||
+    !elements.externalDiscussionPostId
+  ) {
+    return;
+  }
+  elements.externalDiscussionPostId.value = String(techhubId);
+  if (
+    externalDiscussionPost &&
+    Number(externalDiscussionPost.techhub_id) !== techhubId
+  ) {
+    renderExternalPostPreview(null);
+    renderExternalDiscussionDrafts([]);
+  }
+  renderCommunityPosts(communityPosts);
+  showPanel("external-discussion");
+  await loadExternalDiscussionPost();
+}
+
+function getExternalDiscussionId() {
+  const id = Number(elements.externalDiscussionPostId?.value);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+function renderExternalPostPreview(post) {
+  externalDiscussionPost = post || null;
+  if (!elements.externalPostPreview) return;
+  if (!post) {
+    elements.externalPostPreview.classList.add("hidden");
+    elements.externalPostPreview.innerHTML = "";
+    if (elements.generateExternalDiscussionDraftsBtn) {
+      elements.generateExternalDiscussionDraftsBtn.disabled = true;
+    }
+    return;
+  }
+  elements.externalPostPreview.classList.remove("hidden");
+  elements.externalPostPreview.innerHTML =
+    `<strong>#${Number(post.techhub_id)} · ${escapeHtml(
+      post.title || "(không tiêu đề)"
+    )}</strong>` +
+    `<span>Tác giả @${escapeHtml(post.username || "?")} · trạng thái ${escapeHtml(
+      post.status || "-"
+    )} · ${
+      post.published_at
+        ? `publish ${escapeHtml(formatDateTime(post.published_at))}`
+        : "chưa publish"
+    }</span>`;
+  if (elements.generateExternalDiscussionDraftsBtn) {
+    elements.generateExternalDiscussionDraftsBtn.disabled = false;
+  }
+}
+
+function renderExternalDiscussionDrafts(drafts = []) {
+  const list = Array.isArray(drafts) ? drafts : [];
+  currentExternalDiscussionDrafts = list;
+  const pending = list.filter((draft) => draft.status === "pending");
+  const used = list.filter((draft) => draft.status === "used");
+  pendingExternalDiscussionDraftCount = pending.length;
+  if (elements.externalDiscussionDraftStats) {
+    elements.externalDiscussionDraftStats.innerHTML =
+      `<span>Tổng <strong>${list.length}</strong></span>` +
+      `<span class="pending">Chưa dùng <strong>${pending.length}</strong></span>` +
+      `<span class="used">Đã dùng <strong>${used.length}</strong></span>`;
+  }
+  if (elements.clearPendingExternalDiscussionDraftsBtn) {
+    elements.clearPendingExternalDiscussionDraftsBtn.disabled = pending.length === 0;
+  }
+  if (elements.externalDiscussionDraftsList) {
+    elements.externalDiscussionDraftsList.innerHTML = list.length
+      ? list
+          .map(
+            (draft, index) =>
+              `<article class="draft-item ${escapeHtml(draft.status || "pending")}">` +
+              `<div class="draft-head"><strong>Mẫu ${index + 1}</strong>` +
+              `<div class="draft-status-actions"><span>${
+                draft.status === "used"
+                  ? "Đã dùng"
+                  : draft.status === "posting"
+                    ? "Đang đăng"
+                    : "Chưa dùng"
+              }</span>${
+                draft.status === "pending"
+                  ? `<button type="button" class="draft-edit-btn" data-edit-external-discussion-draft="${Number(
+                      draft.id
+                    )}">Chỉnh sửa</button>` +
+                    `<button type="button" class="draft-delete-btn" data-delete-external-discussion-draft="${Number(
+                      draft.id
+                    )}">Xóa</button>`
+                  : ""
+              }</div></div>` +
+              `<p>${escapeHtml(draft.discussion_body || "")}</p>` +
+              `</article>`
+          )
+          .join("")
+      : `<div class="empty">${
+          externalDiscussionPost
+            ? "Bài này chưa có mẫu. Hãy nhờ AI tạo mẫu."
+            : "Nhập ID và tải bài để xem kho mẫu."
+        }</div>`;
+  }
+  const hasPost = !!externalDiscussionPost;
+  if (
+    elements.autoExternalDiscussionEnabled &&
+    !elements.autoExternalDiscussionEnabled.checked
+  ) {
+    elements.autoExternalDiscussionEnabled.disabled =
+      !hasPost || pending.length === 0;
+  }
+  if (elements.runAutoExternalDiscussionBtn) {
+    elements.runAutoExternalDiscussionBtn.disabled =
+      !hasPost || pending.length === 0;
+  }
+}
+
+async function loadExternalDiscussionPost() {
+  const techhubId = getExternalDiscussionId();
+  if (!techhubId) {
+    showAdminMsg(
+      elements.externalDiscussionDraftMessage,
+      "ID bài viết phải là số nguyên dương.",
+      "error"
+    );
+    return;
+  }
+  elements.loadExternalPostBtn.disabled = true;
+  try {
+    showAdminMsg(
+      elements.externalDiscussionDraftMessage,
+      `Đang tải bài #${techhubId}...`,
+      "muted"
+    );
+    const response = await sendMessage({
+      action: "resolveExternalDiscussionPost",
+      techhubId,
+    });
+    if (!response?.success) throw new Error(response?.error || "Không tải được bài");
+    renderExternalPostPreview(response.post);
+    await loadExternalDiscussionDrafts();
+    showAdminMsg(
+      elements.externalDiscussionDraftMessage,
+      `Đã tải bài #${techhubId} của @${response.post.username}.`,
+      "success"
+    );
+  } catch (error) {
+    renderExternalPostPreview(null);
+    renderExternalDiscussionDrafts([]);
+    showAdminMsg(
+      elements.externalDiscussionDraftMessage,
+      `Lỗi tải bài: ${error.message}`,
+      "error"
+    );
+  } finally {
+    elements.loadExternalPostBtn.disabled = false;
+  }
+}
+
+async function loadExternalDiscussionDrafts() {
+  const techhubId = getExternalDiscussionId();
+  if (!techhubId || !externalDiscussionPost) {
+    renderExternalDiscussionDrafts([]);
+    return;
+  }
+  try {
+    const response = await sendMessage({
+      action: "getExternalDiscussionDrafts",
+      techhubId,
+    });
+    if (!response?.success) throw new Error(response?.error || "Không tải được mẫu");
+    renderExternalPostPreview(response.post);
+    renderExternalDiscussionDrafts(response.drafts || []);
+  } catch (error) {
+    showAdminMsg(
+      elements.externalDiscussionDraftMessage,
+      `Lỗi tải mẫu: ${error.message}`,
+      "error"
+    );
+  }
+}
+
+async function generateExternalDiscussionDrafts() {
+  const techhubId = getExternalDiscussionId();
+  const count = Number(elements.externalDiscussionGenerateCount?.value);
+  if (!techhubId || !externalDiscussionPost) {
+    showAdminMsg(
+      elements.externalDiscussionDraftMessage,
+      "Hãy tải bài người khác trước.",
+      "error"
+    );
+    return;
+  }
+  if (!Number.isInteger(count) || count < 1 || count > 50) {
+    showAdminMsg(
+      elements.externalDiscussionDraftMessage,
+      "Số mẫu cần tạo phải từ 1 đến 50.",
+      "error"
+    );
+    return;
+  }
+  elements.generateExternalDiscussionDraftsBtn.disabled = true;
+  try {
+    showAdminMsg(
+      elements.externalDiscussionDraftMessage,
+      `Đang nhờ AI tạo ${count} mẫu theo vai người đọc...`,
+      "muted"
+    );
+    const response = await sendMessage({
+      action: "generateExternalDiscussionDrafts",
+      techhubId,
+      count,
+    });
+    if (!response?.success) throw new Error(response?.error || "Không tạo được mẫu");
+    renderExternalPostPreview(response.post);
+    renderExternalDiscussionDrafts(response.drafts || []);
+    showAdminMsg(
+      elements.externalDiscussionDraftMessage,
+      response.message,
+      "success"
+    );
+  } catch (error) {
+    showAdminMsg(
+      elements.externalDiscussionDraftMessage,
+      `Lỗi tạo mẫu: ${error.message}`,
+      "error"
+    );
+  } finally {
+    elements.generateExternalDiscussionDraftsBtn.disabled = false;
+  }
+}
+
+async function editExternalDiscussionDraft(id) {
+  const draft = currentExternalDiscussionDrafts.find(
+    (item) => Number(item.id) === id
+  );
+  if (!draft || draft.status !== "pending") return;
+  const body = window.prompt("Chỉnh sửa nội dung thảo luận:", draft.discussion_body || "");
+  if (body === null) return;
+  const content = body.trim();
+  if (!content) {
+    showAdminMsg(
+      elements.externalDiscussionDraftMessage,
+      "Nội dung không được để trống.",
+      "error"
+    );
+    return;
+  }
+  try {
+    const response = await sendMessage({
+      action: "updateDiscussionDraft",
+      id,
+      body: content,
+    });
+    if (!response?.success) throw new Error(response?.error || "Không cập nhật được mẫu");
+    await loadExternalDiscussionDrafts();
+    showAdminMsg(
+      elements.externalDiscussionDraftMessage,
+      "Đã cập nhật mẫu.",
+      "success"
+    );
+  } catch (error) {
+    showAdminMsg(
+      elements.externalDiscussionDraftMessage,
+      `Lỗi chỉnh sửa: ${error.message}`,
+      "error"
+    );
+  }
+}
+
+async function deleteExternalDiscussionDraft(id) {
+  const draft = currentExternalDiscussionDrafts.find(
+    (item) => Number(item.id) === id
+  );
+  if (!draft || draft.status !== "pending") return;
+  if (!window.confirm("Xóa mẫu thảo luận này? Không thể hoàn tác.")) return;
+  try {
+    const response = await sendMessage({ action: "deleteDiscussionDraft", id });
+    if (!response?.success) throw new Error(response?.error || "Không xóa được mẫu");
+    await loadExternalDiscussionDrafts();
+    showAdminMsg(
+      elements.externalDiscussionDraftMessage,
+      "Đã xóa mẫu.",
+      "success"
+    );
+  } catch (error) {
+    showAdminMsg(
+      elements.externalDiscussionDraftMessage,
+      `Lỗi xóa mẫu: ${error.message}`,
+      "error"
+    );
+  }
+}
+
+async function clearPendingExternalDiscussionDrafts() {
+  const techhubId = getExternalDiscussionId();
+  if (!techhubId || pendingExternalDiscussionDraftCount < 1) return;
+  if (
+    !window.confirm(
+      `Xóa hết ${pendingExternalDiscussionDraftCount} mẫu chưa dùng của bài #${techhubId}?`
+    )
+  ) {
+    return;
+  }
+  elements.clearPendingExternalDiscussionDraftsBtn.disabled = true;
+  try {
+    const response = await sendMessage({
+      action: "deletePendingExternalDiscussionDrafts",
+      techhubId,
+    });
+    if (!response?.success) throw new Error(response?.error || "Không xóa được mẫu");
+    renderExternalDiscussionDrafts(response.drafts || []);
+    showAdminMsg(
+      elements.externalDiscussionDraftMessage,
+      response.message,
+      "success"
+    );
+  } catch (error) {
+    showAdminMsg(
+      elements.externalDiscussionDraftMessage,
+      `Lỗi xóa mẫu: ${error.message}`,
+      "error"
+    );
+    elements.clearPendingExternalDiscussionDraftsBtn.disabled =
+      pendingExternalDiscussionDraftCount === 0;
+  }
+}
+
+function renderAutoExternalDiscussionStatus(state, message = "", type = "info") {
+  if (!state) return;
+  if (elements.autoExternalDiscussionEnabled) {
+    elements.autoExternalDiscussionEnabled.checked = !!state.enabled;
+    elements.autoExternalDiscussionEnabled.disabled =
+      !state.enabled &&
+      (!externalDiscussionPost || pendingExternalDiscussionDraftCount === 0);
+  }
+  if (state.targetTechhubId && elements.externalDiscussionPostId) {
+    elements.externalDiscussionPostId.value = String(state.targetTechhubId);
+  }
+  if (elements.externalDiscussionTargetCount && state.targetCount) {
+    elements.externalDiscussionTargetCount.value = String(state.targetCount);
+  }
+  if (elements.externalDiscussionMinInterval && state.minIntervalMinutes) {
+    elements.externalDiscussionMinInterval.value = String(state.minIntervalMinutes);
+  }
+  if (elements.externalDiscussionMaxInterval && state.maxIntervalMinutes) {
+    elements.externalDiscussionMaxInterval.value = String(state.maxIntervalMinutes);
+  }
+  if (elements.externalDiscussionPostId) {
+    elements.externalDiscussionPostId.disabled = !!state.enabled;
+  }
+  setJobFlag("externalDiscussion", !!state.enabled);
+  const target = Number(state.targetCount) || 5;
+  const detail =
+    `${state.enabled ? "Đang bật" : "Đang tắt"} · bài #${
+      state.targetTechhubId || "?"
+    } · đã đăng ${state.completedCount || 0}/${target}` +
+    (state.nextRunAt
+      ? ` · lượt tới ${new Date(state.nextRunAt).toLocaleTimeString()}`
+      : "");
+  showAdminMsg(
+    elements.autoExternalDiscussionMessage,
+    message ? `${message} (${detail})` : detail,
+    state.lastError ? "error" : type
+  );
+}
+
+async function loadAutoExternalDiscussionStatus() {
+  try {
+    const response = await sendMessage({
+      action: "getAutoExternalDiscussionStatus",
+    });
+    if (!response?.success) throw new Error(response?.error || "Không đọc được trạng thái");
+    renderAutoExternalDiscussionStatus(
+      response.state,
+      response.state.lastMessage || "",
+      response.state.enabled ? "success" : "muted"
+    );
+  } catch (error) {
+    showAdminMsg(
+      elements.autoExternalDiscussionMessage,
+      `Lỗi: ${error.message}`,
+      "error"
+    );
+  }
+}
+
+async function toggleAutoExternalDiscussion() {
+  const enabled = !!elements.autoExternalDiscussionEnabled.checked;
+  const techhubId = getExternalDiscussionId();
+  const targetCount = Number(elements.externalDiscussionTargetCount?.value) || 5;
+  const minIntervalMinutes = Number(elements.externalDiscussionMinInterval?.value);
+  const maxIntervalMinutes = Number(elements.externalDiscussionMaxInterval?.value);
+  if (enabled && (!externalDiscussionPost || !techhubId)) {
+    elements.autoExternalDiscussionEnabled.checked = false;
+    showAdminMsg(
+      elements.autoExternalDiscussionMessage,
+      "Hãy tải bài người khác trước.",
+      "error"
+    );
+    return;
+  }
+  if (enabled && pendingExternalDiscussionDraftCount < targetCount) {
+    elements.autoExternalDiscussionEnabled.checked = false;
+    showAdminMsg(
+      elements.autoExternalDiscussionMessage,
+      `Chỉ còn ${pendingExternalDiscussionDraftCount} mẫu chưa dùng. Hãy giảm số lượng hoặc tạo thêm mẫu.`,
+      "error"
+    );
+    return;
+  }
+  elements.autoExternalDiscussionEnabled.disabled = true;
+  try {
+    const response = await sendMessage({
+      action: "setAutoExternalDiscussionEnabled",
+      enabled,
+      techhubId,
+      targetCount,
+      minIntervalMinutes,
+      maxIntervalMinutes,
+    });
+    if (!response?.success) throw new Error(response?.error || "Không cập nhật được");
+    renderAutoExternalDiscussionStatus(
+      response.state,
+      response.state.lastMessage,
+      enabled ? "success" : "muted"
+    );
+  } catch (error) {
+    elements.autoExternalDiscussionEnabled.checked = !enabled;
+    showAdminMsg(
+      elements.autoExternalDiscussionMessage,
+      `Lỗi: ${error.message}`,
+      "error"
+    );
+  } finally {
+    elements.autoExternalDiscussionEnabled.disabled =
+      !elements.autoExternalDiscussionEnabled.checked &&
+      (!externalDiscussionPost || pendingExternalDiscussionDraftCount === 0);
+  }
+}
+
+async function runAutoExternalDiscussionOnce() {
+  const techhubId = getExternalDiscussionId();
+  if (!techhubId || !externalDiscussionPost) {
+    showAdminMsg(
+      elements.autoExternalDiscussionMessage,
+      "Hãy tải bài người khác trước.",
+      "error"
+    );
+    return;
+  }
+  elements.runAutoExternalDiscussionBtn.disabled = true;
+  try {
+    showAdminMsg(
+      elements.autoExternalDiscussionMessage,
+      "Đang đăng một mẫu...",
+      "muted"
+    );
+    const response = await sendMessage({
+      action: "runAutoExternalDiscussionOnce",
+      techhubId,
+    });
+    if (!response?.success) throw new Error(response?.error || "Đăng thất bại");
+    renderAutoExternalDiscussionStatus(response.state, response.message, "success");
+    await loadExternalDiscussionDrafts();
+  } catch (error) {
+    showAdminMsg(
+      elements.autoExternalDiscussionMessage,
+      `Lỗi: ${error.message}`,
+      "error"
+    );
+  } finally {
+    elements.runAutoExternalDiscussionBtn.disabled =
+      pendingExternalDiscussionDraftCount === 0;
   }
 }
 

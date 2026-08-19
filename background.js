@@ -33,6 +33,7 @@ const AUTO_REPLY_ALARM = "autoReplyAlarm";
 const DEFAULT_REPLY_MIN_INTERVAL_MINUTES = 1;
 const DEFAULT_REPLY_MAX_INTERVAL_MINUTES = 5;
 const AUTO_DISCUSSION_ALARM = "autoDiscussionAlarm";
+const AUTO_EXTERNAL_DISCUSSION_ALARM = "autoExternalDiscussionAlarm";
 const AI_JOB_WATCHDOG_ALARM = "aiJobWatchdogAlarm";
 const DEFAULT_DISCUSSION_MIN_INTERVAL_MINUTES = 1;
 const DEFAULT_DISCUSSION_MAX_INTERVAL_MINUTES = 5;
@@ -69,6 +70,21 @@ let autoDiscussionState = {
   lastError: null,
   lastMessage: null,
 };
+let autoExternalDiscussionRunning = false;
+let autoExternalDiscussionState = {
+  enabled: false,
+  username: null,
+  targetTechhubId: null,
+  targetCount: 5,
+  completedCount: 0,
+  minIntervalMinutes: DEFAULT_DISCUSSION_MIN_INTERVAL_MINUTES,
+  maxIntervalMinutes: DEFAULT_DISCUSSION_MAX_INTERVAL_MINUTES,
+  nextRunAt: null,
+  lastRunAt: null,
+  lastDiscussionCount: 0,
+  lastError: null,
+  lastMessage: null,
+};
 
 function normalizeTechhubId(value) {
   const id = Number(value);
@@ -87,10 +103,288 @@ async function getPostsForAiJob(username, targetTechhubId) {
   if (!post) {
     throw new Error(`Không tìm thấy bài #${targetId} trong DB. Hãy bấm Quét bài.`);
   }
-  if (post.username && post.username !== username) {
+  if (!post.username || post.username !== username) {
     throw new Error(`Bài #${targetId} không thuộc @${username}.`);
   }
   return [post];
+}
+
+/**
+ * Resolve bài của người khác (kể cả chưa publish) mà không nới ownership guard
+ * của job bài mình.
+ */
+async function resolveExternalDiscussionPost(techhubId) {
+  const targetId = normalizeTechhubId(techhubId);
+  if (!targetId) throw new Error("ID bài viết phải là số nguyên dương.");
+
+  const liveUserProfile = await readCurrentUserProfileFromTechHub();
+  const stored = await chrome.storage.local.get(["userProfile", "techhubCredentials"]);
+  const userProfile = liveUserProfile || stored.userProfile;
+  const username = userProfile?.username;
+  if (!username || !stored.techhubCredentials?.csrfToken) {
+    throw new Error("Thiếu phiên đăng nhập hoặc profile TechHub.");
+  }
+  if (liveUserProfile) {
+    await chrome.storage.local.set({ userProfile: liveUserProfile });
+  }
+
+  let post = await supabase.getPostByTechhubId(targetId);
+  if (
+    !post?.techhub_uuid ||
+    !post?.username ||
+    String(post?.status || "").toLowerCase() !== "open"
+  ) {
+    const article = await supabase.fetchTechHubArticleById(targetId);
+    if (!article) throw new Error(`Không tìm thấy bài TechHub #${targetId}.`);
+    post = await supabase.upsertExternalPost(article);
+  }
+
+  if (!post?.techhub_uuid || !post?.username) {
+    throw new Error(`Bài #${targetId} thiếu UUID hoặc tác giả.`);
+  }
+  // Detail endpoint là nguồn trạng thái mới nhất; merge lại DB trước khi kiểm tra.
+  const detail = await fetchArticleDetail(
+    post.techhub_uuid,
+    stored.techhubCredentials
+  );
+  post = await supabase.upsertExternalPost({
+    ...post,
+    ...detail,
+    id: targetId,
+    uuid: detail?.uuid || post.techhub_uuid,
+    username:
+      detail?.username ||
+      detail?.author?.username ||
+      detail?.user?.username ||
+      post.username,
+    title: detail?.title || post.title,
+    status: detail?.status || post.status,
+    published_at: detail?.published_at || post.published_at,
+    created_at: detail?.created_at || post.created_at,
+  });
+  if (post.username === username) {
+    throw new Error(
+      `Bài #${targetId} thuộc @${username}. Hãy dùng mục AI thảo luận cho bài của bạn.`
+    );
+  }
+  if (!post.published_at) {
+    console.log(`[Background] Bài #${targetId} chưa publish, vẫn cho phép thảo luận.`);
+  }
+  if (String(post.status || "").toLowerCase() !== "open") {
+    throw new Error(`Bài #${targetId} không còn mở để thảo luận.`);
+  }
+
+  return {
+    post,
+    detail,
+    actorUsername: username,
+  };
+}
+
+async function requireTechHubActor() {
+  const liveUserProfile = await readCurrentUserProfileFromTechHub();
+  const stored = await chrome.storage.local.get(["userProfile", "techhubCredentials"]);
+  const userProfile = liveUserProfile || stored.userProfile;
+  const username = userProfile?.username;
+  if (!username || !stored.techhubCredentials?.csrfToken) {
+    throw new Error("Thiếu phiên đăng nhập hoặc profile TechHub.");
+  }
+  if (liveUserProfile) {
+    await chrome.storage.local.set({ userProfile: liveUserProfile });
+  }
+  return username;
+}
+
+function toCommunityPostView(post, actorUsername, fallbackSlug) {
+  const slug = post?.community_slug || fallbackSlug;
+  return {
+    techhub_id: Number(post?.techhub_id),
+    techhub_uuid: post?.techhub_uuid || null,
+    title: post?.title || `Bài #${post?.techhub_id}`,
+    username: post?.username || null,
+    url: post?.url || "",
+    status: post?.status || "open",
+    published_at: post?.published_at || null,
+    created_at: post?.created_at || null,
+    votes_score: Number(post?.votes_score || 0),
+    comments_count: Number(post?.comments_count || 0),
+    medals_count: Number(post?.medals_count || 0),
+    community_slug: slug,
+    community_name: post?.community_name || slug,
+    last_seen_at: post?.last_seen_at || null,
+    is_own: !!post?.username && post.username === actorUsername,
+  };
+}
+
+function sortCommunityPosts(posts) {
+  return posts.sort(
+    (a, b) =>
+      new Date(b.created_at || b.published_at || 0).getTime() -
+      new Date(a.created_at || a.published_at || 0).getTime()
+  );
+}
+
+/**
+ * Đọc bài chuyên mục đã lưu trong Supabase, không gọi TechHub.
+ */
+async function getCachedCommunityPosts(communitySlug) {
+  const actorUsername = await requireTechHubActor();
+  const slug = String(communitySlug || "").trim().toLowerCase();
+  const rows = await supabase.getPostsByCommunity(slug, { limit: 1000 });
+  const posts = sortCommunityPosts(
+    rows.map((row) => toCommunityPostView(row, actorUsername, slug))
+  );
+  return {
+    posts,
+    communitySlug: slug,
+    fromCache: true,
+    lastSyncedAt: posts.reduce(
+      (latest, post) =>
+        post.last_seen_at && (!latest || post.last_seen_at > latest)
+          ? post.last_seen_at
+          : latest,
+      null
+    ),
+  };
+}
+
+/**
+ * Quét TechHub rồi lưu kết quả vào Supabase để các lần xem sau dùng cache.
+ */
+async function scanCommunityArticles(communitySlug, months = 1) {
+  const actorUsername = await requireTechHubActor();
+  const result = await supabase.fetchTechHubCommunityArticles(communitySlug, {
+    months,
+  });
+
+  let saved = 0;
+  let saveError = null;
+  let communityColumnsMissing = false;
+  try {
+    const stats = await supabase.upsertScannedPosts(result.articles);
+    saved = stats.saved;
+    communityColumnsMissing = stats.communityColumnsMissing;
+  } catch (error) {
+    saveError = error.message;
+    console.error("[Background] Không lưu được bài chuyên mục:", error);
+  }
+
+  // Ưu tiên đọc lại từ DB để danh sách hiển thị khớp đúng dữ liệu đã lưu.
+  let posts = null;
+  if (saved > 0 && !communityColumnsMissing) {
+    try {
+      const cached = await getCachedCommunityPosts(result.communitySlug);
+      if (cached.posts.length) posts = cached.posts;
+    } catch (error) {
+      console.warn("[Background] Không đọc lại được cache chuyên mục:", error);
+    }
+  }
+  if (!posts) {
+    // Feed danh sách đôi khi không kèm published_at; giữ lại bài và để bước tải bài
+    // xác thực trạng thái thật thay vì loại nhầm ở đây.
+    posts = sortCommunityPosts(
+      result.articles.map((article) =>
+        toCommunityPostView(
+          {
+            ...supabase.buildTechHubPostPayload(article),
+            techhub_id: Number(article?.id),
+            created_at: article?.created_at,
+            published_at: article?.published_at,
+          },
+          actorUsername,
+          result.communitySlug
+        )
+      )
+    );
+  }
+
+  return {
+    posts,
+    communitySlug: result.communitySlug,
+    refreshedCount: result.articles.length,
+    scannedPages: result.scannedPages,
+    scannedArticles: result.scannedArticles,
+    months: result.months,
+    stopBefore: result.stopBefore,
+    reachedWindowEnd: result.reachedWindowEnd,
+    hasMore: result.hasMore,
+    reportedTotal: result.reportedTotal,
+    filterMode: result.filterMode,
+    saved,
+    saveError,
+    communityColumnsMissing,
+    fromCache: false,
+  };
+}
+
+function getMonthWindow(monthOffset) {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  const end = new Date(now.getFullYear(), now.getMonth() + monthOffset + 1, 1);
+  return {
+    label: `${String(start.getMonth() + 1).padStart(2, "0")}/${start.getFullYear()}`,
+    start,
+    end,
+  };
+}
+
+function countArticlesInWindow(articles, { start, end }) {
+  const inWindow = (value) => {
+    if (!value) return false;
+    const time = new Date(value).getTime();
+    return Number.isFinite(time) && time >= start.getTime() && time < end.getTime();
+  };
+  const created = articles.filter((article) => inWindow(article?.created_at));
+  const published = articles.filter((article) => inWindow(article?.published_at));
+  return {
+    created: created.length,
+    published: published.length,
+    medals: published.reduce((sum, article) => sum + extractMedalsCount(article), 0),
+    comments: published.reduce(
+      (sum, article) => sum + (Number(article?.comments_count) || 0),
+      0
+    ),
+  };
+}
+
+/**
+ * Số liệu tháng hiện tại so với tháng trước, đọc từ dữ liệu đã lưu trong Supabase
+ * để không phải gọi lại TechHub mỗi lần xem.
+ */
+async function getMonthlyPostStats(scope, communitySlug) {
+  const username = await requireTechHubActor();
+  const current = getMonthWindow(0);
+  const previous = getMonthWindow(-1);
+  const isCommunity = scope === "community";
+
+  const rows = isCommunity
+    ? await supabase.getPostsByCommunity(communitySlug, { limit: 1000 })
+    : await supabase.getOwnPosts(username, { limit: 1000, includePublished: true });
+
+  if (rows.length === 0) {
+    throw new Error(
+      isCommunity
+        ? `Chưa có dữ liệu chuyên mục ${communitySlug} trong hệ thống. Hãy quét chuyên mục trước.`
+        : "Chưa có bài nào trong hệ thống. Hãy bấm Quét bài trước."
+    );
+  }
+
+  const lastSyncedAt = rows.reduce((latest, row) => {
+    const seen = row?.last_seen_at || row?.created_at || null;
+    return seen && (!latest || seen > latest) ? seen : latest;
+  }, null);
+
+  return {
+    scope: isCommunity ? "community" : "own",
+    communitySlug: isCommunity ? communitySlug : null,
+    username,
+    postCount: rows.length,
+    lastSyncedAt,
+    months: [
+      { ...countArticlesInWindow(rows, current), label: current.label },
+      { ...countArticlesInWindow(rows, previous), label: previous.label },
+    ],
+  };
 }
 
 // Lắng nghe sự kiện webRequest để bắt headers
@@ -419,6 +713,99 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  if (request.action === "getMonthlyPostStats") {
+    getMonthlyPostStats(request.scope, request.communitySlug)
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "scanCommunityArticles") {
+    scanCommunityArticles(request.communitySlug, request.months)
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "getCachedCommunityPosts") {
+    getCachedCommunityPosts(request.communitySlug)
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "resolveExternalDiscussionPost") {
+    resolveExternalDiscussionPost(request.techhubId)
+      .then(({ post }) => sendResponse({ success: true, post }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "getExternalDiscussionDrafts") {
+    getExternalDiscussionDraftsForUi(request.techhubId)
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "generateExternalDiscussionDrafts") {
+    generateExternalDiscussionDrafts(request.techhubId, request.count)
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "deletePendingExternalDiscussionDrafts") {
+    deletePendingExternalDiscussionDrafts(request.techhubId)
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "setAutoExternalDiscussionEnabled") {
+    autoExternalDiscussionRestorePromise
+      .then(() =>
+        setAutoExternalDiscussionEnabled(
+          !!request.enabled,
+          request.techhubId,
+          request.targetCount,
+          request.minIntervalMinutes,
+          request.maxIntervalMinutes
+        )
+      )
+      .then((state) => sendResponse({ success: true, state }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "runAutoExternalDiscussionOnce") {
+    runAutoExternalDiscussion({ manual: true, techhubId: request.techhubId })
+      .then((result) =>
+        sendResponse({
+          success: true,
+          ...result,
+          state: getAutoExternalDiscussionStatus(),
+        })
+      )
+      .catch((error) =>
+        sendResponse({
+          success: false,
+          error: error.message,
+          state: getAutoExternalDiscussionStatus(),
+        })
+      );
+    return true;
+  }
+
+  if (request.action === "getAutoExternalDiscussionStatus") {
+    autoExternalDiscussionRestorePromise
+      .then(() =>
+        sendResponse({ success: true, state: getAutoExternalDiscussionStatus() })
+      )
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
   if (request.action === "getMyPosts") {
     getMyPostsForUi()
       .then((posts) => sendResponse({ success: true, posts }))
@@ -490,6 +877,13 @@ function setupAlarms() {
       });
     }
   });
+  chrome.alarms.get(AUTO_EXTERNAL_DISCUSSION_ALARM, (alarm) => {
+    if (!alarm && autoExternalDiscussionState.enabled) {
+      scheduleNextAutoExternalDiscussion().catch((error) => {
+        console.error("[Background] Could not schedule external discussion:", error);
+      });
+    }
+  });
   chrome.alarms.get("scheduledDeleteSweep", (alarm) => {
     if (!alarm) {
       chrome.alarms.create("scheduledDeleteSweep", { periodInMinutes: 1 });
@@ -504,7 +898,11 @@ function setupAlarms() {
 }
 
 async function rearmAiJobAlarms() {
-  await Promise.all([autoReplyRestorePromise, autoDiscussionRestorePromise]);
+  await Promise.all([
+    autoReplyRestorePromise,
+    autoDiscussionRestorePromise,
+    autoExternalDiscussionRestorePromise,
+  ]);
   if (autoReplyState.enabled && !autoReplyRunning) {
     const alarm = await chrome.alarms.get(AUTO_REPLY_ALARM);
     if (!alarm) {
@@ -519,6 +917,13 @@ async function rearmAiJobAlarms() {
       await scheduleNextAutoDiscussion();
     }
   }
+  if (autoExternalDiscussionState.enabled && !autoExternalDiscussionRunning) {
+    const alarm = await chrome.alarms.get(AUTO_EXTERNAL_DISCUSSION_ALARM);
+    if (!alarm) {
+      console.warn("[Background] External discussion alarm missing, re-arming.");
+      await scheduleNextAutoExternalDiscussion();
+    }
+  }
 }
 
 // Bắt đầu setup Alarm cho Cross Interaction và Keep Alive
@@ -531,6 +936,7 @@ const autoCommentRestorePromise = restoreAutoComment().then(() =>
 );
 const autoReplyRestorePromise = restoreAutoReply();
 const autoDiscussionRestorePromise = restoreAutoDiscussion();
+const autoExternalDiscussionRestorePromise = restoreAutoExternalDiscussion();
 restoreScheduledDeletes().catch((err) => {
   console.error("[Background] Failed to restore scheduled deletes:", err);
 });
@@ -562,6 +968,12 @@ chrome.alarms.onAlarm.addListener((alarm) => {
       .then(() => runAutoDiscussion({ manual: false }))
       .catch((err) => {
         console.error("[Background] Auto discussion alarm failed:", err);
+      });
+  } else if (alarm.name === AUTO_EXTERNAL_DISCUSSION_ALARM) {
+    autoExternalDiscussionRestorePromise
+      .then(() => runAutoExternalDiscussion({ manual: false }))
+      .catch((err) => {
+        console.error("[Background] External discussion alarm failed:", err);
       });
   } else if (alarm.name === "scheduledDeleteSweep" || alarm.name.startsWith("deletePost-")) {
     processDueScheduledDeletes().catch((err) => {
@@ -887,7 +1299,7 @@ function scheduleAutoCommentTick(generation, delayMs = getRandomAutoCommentDelay
 }
 
 async function startAutoComment(techhubId, restoredState = null, targetCount = null) {
-  if (autoReplyRunning || autoDiscussionRunning) {
+  if (autoReplyRunning || autoDiscussionRunning || autoExternalDiscussionRunning) {
     throw new Error("Đang có job AI chạy. Hãy đợi xong trước.");
   }
 
@@ -1656,7 +2068,12 @@ async function generateReplyDrafts(techhubId, count, maxConsecutiveSelfReplies) 
   if (!Number.isInteger(requestedCount) || requestedCount < 1 || requestedCount > 50) {
     throw new Error("Số mẫu cần tạo phải từ 1 đến 50.");
   }
-  if (autoReplyRunning || autoDiscussionRunning || autoCommentState.active) {
+  if (
+    autoReplyRunning ||
+    autoDiscussionRunning ||
+    autoExternalDiscussionRunning ||
+    autoCommentState.active
+  ) {
     throw new Error("Đang có job AI/comment khác chạy. Hãy đợi xong trước.");
   }
 
@@ -1995,14 +2412,14 @@ async function runAutoReply({
     broadcastAutoReplyProgress(message, "info");
     return { replied: 0, skipped: true, message };
   }
-  if (autoDiscussionRunning) {
+  if (autoDiscussionRunning || autoExternalDiscussionRunning) {
     if (!manual && autoReplyState.enabled) {
       await scheduleNextAutoReply();
     }
     return {
       replied: 0,
       skipped: true,
-      message: "Bỏ qua auto-reply vì AI thảo luận đang chạy.",
+      message: "Bỏ qua auto-reply vì một job AI thảo luận đang chạy.",
     };
   }
 
@@ -2246,7 +2663,12 @@ async function generateDiscussionDrafts(techhubId, count) {
   if (!Number.isInteger(requestedCount) || requestedCount < 1 || requestedCount > 50) {
     throw new Error("Số mẫu cần tạo phải từ 1 đến 50.");
   }
-  if (autoDiscussionRunning || autoCommentState.active || autoReplyRunning) {
+  if (
+    autoDiscussionRunning ||
+    autoExternalDiscussionRunning ||
+    autoCommentState.active ||
+    autoReplyRunning
+  ) {
     throw new Error("Đang có job AI/comment khác chạy. Hãy đợi xong trước.");
   }
 
@@ -2553,7 +2975,7 @@ async function runAutoDiscussion({
   if (!manual && !autoDiscussionState.enabled) {
     return { discussed: 0, skipped: true, message: "AI thảo luận đang tắt." };
   }
-  if (autoCommentState.active || autoReplyRunning) {
+  if (autoCommentState.active || autoReplyRunning || autoExternalDiscussionRunning) {
     if (!manual && autoDiscussionState.enabled) {
       await scheduleNextAutoDiscussion();
     }
@@ -2725,6 +3147,427 @@ async function runAutoDiscussion({
           autoDiscussionState.nextRunAt
         ).toLocaleTimeString("vi-VN")}.`,
         autoDiscussionState.lastError ? "error" : "success"
+      );
+    }
+  }
+}
+
+function getAutoExternalDiscussionStatus() {
+  return { ...autoExternalDiscussionState };
+}
+
+async function saveAutoExternalDiscussionState() {
+  await chrome.storage.local.set({ autoExternalDiscussionState });
+}
+
+function broadcastAutoExternalDiscussionProgress(message, type = "info") {
+  chrome.runtime
+    .sendMessage({
+      action: "autoExternalDiscussionProgress",
+      message,
+      type,
+      state: getAutoExternalDiscussionStatus(),
+    })
+    .catch(() => {});
+}
+
+async function getExternalDiscussionDraftsForUi(techhubId) {
+  const { post, actorUsername } = await resolveExternalDiscussionPost(techhubId);
+  const drafts = await supabase.getDiscussionDrafts(actorUsername, post.techhub_id);
+  return {
+    post,
+    drafts,
+    pendingCount: drafts.filter((draft) => draft.status === "pending").length,
+    usedCount: drafts.filter((draft) => draft.status === "used").length,
+  };
+}
+
+async function deletePendingExternalDiscussionDrafts(techhubId) {
+  const { post, actorUsername } = await resolveExternalDiscussionPost(techhubId);
+  const deleted = await supabase.deletePendingDiscussionDrafts(
+    actorUsername,
+    post.techhub_id
+  );
+  const result = await getExternalDiscussionDraftsForUi(post.techhub_id);
+  return {
+    ...result,
+    deletedCount: deleted.length,
+    message: deleted.length
+      ? `Đã xóa ${deleted.length} mẫu thảo luận chưa dùng của bài #${post.techhub_id}.`
+      : `Bài #${post.techhub_id} không còn mẫu chưa dùng.`,
+  };
+}
+
+async function generateExternalDiscussionDrafts(techhubId, count) {
+  const requestedCount = Number(count);
+  if (!Number.isInteger(requestedCount) || requestedCount < 1 || requestedCount > 50) {
+    throw new Error("Số mẫu cần tạo phải từ 1 đến 50.");
+  }
+  if (
+    autoExternalDiscussionRunning ||
+    autoDiscussionRunning ||
+    autoReplyRunning ||
+    autoCommentState.active
+  ) {
+    throw new Error("Đang có job AI/comment khác chạy. Hãy đợi xong trước.");
+  }
+
+  autoExternalDiscussionRunning = true;
+  try {
+    const { post, detail, actorUsername } =
+      await resolveExternalDiscussionPost(techhubId);
+    const stored = await chrome.storage.local.get("techhubCredentials");
+    const credentials = stored.techhubCredentials;
+    const cfg = getNvidiaConfig();
+    if (!cfg.apiKey || cfg.apiKey === "YOUR_NVIDIA_API_KEY") {
+      throw new Error("Chưa cấu hình NVIDIA_CONFIG.apiKey trong config.js");
+    }
+    const [pageData, existingDrafts] = await Promise.all([
+      fetchArticleComments(post.techhub_uuid, credentials, { sort: "new", page: 1 }),
+      supabase.getDiscussionDrafts(actorUsername, post.techhub_id),
+    ]);
+    const previousTexts = flattenComments(pageData.comments || [])
+      .filter(
+        (comment) =>
+          !getCommentParentId(comment) &&
+          getCommentAuthorUsername(comment) === actorUsername &&
+          getCommentBody(comment)
+      )
+      .slice(0, 10)
+      .map((comment) => getCommentBody(comment));
+    previousTexts.push(
+      ...existingDrafts.map((draft) => draft.discussion_body).filter(Boolean)
+    );
+
+    const created = [];
+    for (let index = 0; index < requestedCount; index += 1) {
+      chrome.runtime
+        .sendMessage({
+          action: "externalDiscussionDraftProgress",
+          message: `Đang tạo mẫu ${index + 1}/${requestedCount} cho bài #${
+            post.techhub_id
+          }...`,
+          type: "info",
+        })
+        .catch(() => {});
+      const discussionBody = await nvidiaGenerateExternalDiscussion({
+        postTitle: post.title,
+        postAuthor: post.username,
+        articleBody: detail.body,
+        previousBodies: previousTexts,
+        discussionNumber: existingDrafts.length + index + 1,
+        discussionTarget: existingDrafts.length + requestedCount,
+        username: actorUsername,
+      });
+      const draft = await supabase.saveDiscussionDraft({
+        username: actorUsername,
+        techhubId: post.techhub_id,
+        sourceCommentId: null,
+        sourceCommentBody: previousTexts.join("\n") || null,
+        discussionBody,
+        model: cfg.model,
+        status: "pending",
+      });
+      if (!draft) {
+        throw new Error(`Không lưu được mẫu ${index + 1}: Supabase không trả dữ liệu.`);
+      }
+      created.push(draft);
+      previousTexts.push(discussionBody);
+    }
+    const result = await getExternalDiscussionDraftsForUi(post.techhub_id);
+    return {
+      ...result,
+      createdCount: created.length,
+      message: `Đã tạo ${created.length} mẫu cho bài #${post.techhub_id}. Còn ${result.pendingCount} mẫu chưa dùng.`,
+    };
+  } finally {
+    autoExternalDiscussionRunning = false;
+  }
+}
+
+function getRandomExternalDiscussionDelayMinutes() {
+  const min =
+    Number(autoExternalDiscussionState.minIntervalMinutes) ||
+    DEFAULT_DISCUSSION_MIN_INTERVAL_MINUTES;
+  const max =
+    Number(autoExternalDiscussionState.maxIntervalMinutes) ||
+    DEFAULT_DISCUSSION_MAX_INTERVAL_MINUTES;
+  return min + Math.random() * (max - min);
+}
+
+async function scheduleNextAutoExternalDiscussion() {
+  if (!autoExternalDiscussionState.enabled) {
+    autoExternalDiscussionState.nextRunAt = null;
+    await chrome.alarms.clear(AUTO_EXTERNAL_DISCUSSION_ALARM);
+    await saveAutoExternalDiscussionState();
+    return null;
+  }
+  const when =
+    Date.now() + getRandomExternalDiscussionDelayMinutes() * 60 * 1000;
+  await chrome.alarms.clear(AUTO_EXTERNAL_DISCUSSION_ALARM);
+  chrome.alarms.create(AUTO_EXTERNAL_DISCUSSION_ALARM, { when });
+  autoExternalDiscussionState.nextRunAt = new Date(when).toISOString();
+  await saveAutoExternalDiscussionState();
+  return when;
+}
+
+async function setAutoExternalDiscussionEnabled(
+  enabled,
+  techhubId,
+  targetCount,
+  minIntervalMinutes,
+  maxIntervalMinutes
+) {
+  const targetId = normalizeTechhubId(techhubId);
+  const parsedTarget = Number(targetCount);
+  const parsedMin = Number(minIntervalMinutes);
+  const parsedMax = Number(maxIntervalMinutes);
+  if (enabled && !targetId) throw new Error("Hãy tải bài người khác trước.");
+  if (
+    enabled &&
+    (!Number.isInteger(parsedTarget) || parsedTarget < 1 || parsedTarget > 100)
+  ) {
+    throw new Error("Số lượng đăng phải từ 1 đến 100.");
+  }
+  if (
+    enabled &&
+    (!Number.isFinite(parsedMin) ||
+      !Number.isFinite(parsedMax) ||
+      parsedMin < 1 ||
+      parsedMax < parsedMin ||
+      parsedMax > 1440)
+  ) {
+    throw new Error("Khoảng thời gian phải hợp lệ (1–1440 phút, từ ≤ đến).");
+  }
+  const { post, actorUsername } = await resolveExternalDiscussionPost(targetId);
+  if (enabled) {
+    const pending = await supabase.getDiscussionDrafts(
+      actorUsername,
+      post.techhub_id,
+      "pending"
+    );
+    if (pending.length < parsedTarget) {
+      throw new Error(
+        pending.length
+          ? `Chỉ còn ${pending.length} mẫu chưa dùng, không đủ đăng ${parsedTarget} mẫu.`
+          : "Đã hết mẫu thảo luận. Hãy nhờ AI tạo thêm mẫu."
+      );
+    }
+  }
+
+  const wasEnabled = autoExternalDiscussionState.enabled;
+  autoExternalDiscussionState.enabled = enabled;
+  autoExternalDiscussionState.username = actorUsername;
+  autoExternalDiscussionState.targetTechhubId = post.techhub_id;
+  if (Number.isInteger(parsedTarget) && parsedTarget >= 1) {
+    autoExternalDiscussionState.targetCount = parsedTarget;
+  }
+  if (Number.isFinite(parsedMin)) {
+    autoExternalDiscussionState.minIntervalMinutes = parsedMin;
+  }
+  if (Number.isFinite(parsedMax)) {
+    autoExternalDiscussionState.maxIntervalMinutes = parsedMax;
+  }
+  if (enabled && !wasEnabled) autoExternalDiscussionState.completedCount = 0;
+  autoExternalDiscussionState.lastError = null;
+  autoExternalDiscussionState.lastMessage = enabled
+    ? `Đã bật thảo luận bài người khác #${post.techhub_id} · đăng ${
+        autoExternalDiscussionState.targetCount
+      } mẫu · cách nhau ${autoExternalDiscussionState.minIntervalMinutes}–${
+        autoExternalDiscussionState.maxIntervalMinutes
+      } phút.`
+    : "Đã tắt thảo luận bài người khác.";
+  if (enabled) {
+    await scheduleNextAutoExternalDiscussion();
+  } else {
+    await chrome.alarms.clear(AUTO_EXTERNAL_DISCUSSION_ALARM);
+    autoExternalDiscussionState.nextRunAt = null;
+    await saveAutoExternalDiscussionState();
+  }
+  broadcastAutoExternalDiscussionProgress(
+    autoExternalDiscussionState.lastMessage,
+    enabled ? "success" : "muted"
+  );
+  return getAutoExternalDiscussionStatus();
+}
+
+async function restoreAutoExternalDiscussion() {
+  try {
+    const result = await chrome.storage.local.get("autoExternalDiscussionState");
+    if (result.autoExternalDiscussionState) {
+      autoExternalDiscussionState = {
+        ...autoExternalDiscussionState,
+        ...result.autoExternalDiscussionState,
+      };
+    }
+    if (
+      autoExternalDiscussionState.enabled &&
+      !normalizeTechhubId(autoExternalDiscussionState.targetTechhubId)
+    ) {
+      autoExternalDiscussionState.enabled = false;
+      autoExternalDiscussionState.lastMessage =
+        "Job thảo luận bài người khác cũ đã dừng vì thiếu ID bài.";
+    }
+    await saveAutoExternalDiscussionState();
+    if (autoExternalDiscussionState.enabled) {
+      const alarm = await chrome.alarms.get(AUTO_EXTERNAL_DISCUSSION_ALARM);
+      if (!alarm) await scheduleNextAutoExternalDiscussion();
+    }
+  } catch (error) {
+    console.error("[Background] Failed to restore external discussion:", error);
+  }
+}
+
+async function stopAutoExternalDiscussion(message, type = "success") {
+  autoExternalDiscussionState.enabled = false;
+  autoExternalDiscussionState.nextRunAt = null;
+  autoExternalDiscussionState.lastMessage = message;
+  await chrome.alarms.clear(AUTO_EXTERNAL_DISCUSSION_ALARM);
+  await saveAutoExternalDiscussionState();
+  broadcastAutoExternalDiscussionProgress(message, type);
+}
+
+async function runAutoExternalDiscussion({ manual = false, techhubId = null } = {}) {
+  if (autoExternalDiscussionRunning) {
+    if (!manual && autoExternalDiscussionState.enabled) {
+      await scheduleNextAutoExternalDiscussion();
+    }
+    return { discussed: 0, skipped: true, message: "Job đang chạy." };
+  }
+  if (!manual && !autoExternalDiscussionState.enabled) {
+    return { discussed: 0, skipped: true, message: "Job đang tắt." };
+  }
+  if (
+    autoCommentState.active ||
+    autoReplyRunning ||
+    autoDiscussionRunning
+  ) {
+    if (!manual && autoExternalDiscussionState.enabled) {
+      await scheduleNextAutoExternalDiscussion();
+    }
+    return {
+      discussed: 0,
+      skipped: true,
+      message: "Đang có job AI/comment khác chạy.",
+    };
+  }
+
+  autoExternalDiscussionRunning = true;
+  let discussed = 0;
+  try {
+    const targetId = manual
+      ? normalizeTechhubId(techhubId)
+      : autoExternalDiscussionState.targetTechhubId;
+    const { post, actorUsername } = await resolveExternalDiscussionPost(targetId);
+    if (
+      !manual &&
+      autoExternalDiscussionState.username &&
+      autoExternalDiscussionState.username !== actorUsername
+    ) {
+      const message = `Đã đổi tài khoản từ @${autoExternalDiscussionState.username} sang @${actorUsername}. Job đã tự dừng.`;
+      await stopAutoExternalDiscussion(message, "error");
+      return { discussed: 0, message };
+    }
+    const stored = await chrome.storage.local.get("techhubCredentials");
+    const credentials = stored.techhubCredentials;
+    if (
+      !manual &&
+      Number(autoExternalDiscussionState.completedCount) >=
+        Number(autoExternalDiscussionState.targetCount)
+    ) {
+      const message = `Đã đăng đủ ${autoExternalDiscussionState.targetCount} mẫu trên bài #${post.techhub_id}. Đã tự dừng.`;
+      await stopAutoExternalDiscussion(message);
+      return { discussed: 0, message };
+    }
+
+    await reclaimStuckDiscussionDrafts(actorUsername, post.techhub_id);
+    const pending = await supabase.getDiscussionDrafts(
+      actorUsername,
+      post.techhub_id,
+      "pending"
+    );
+    const draft = pending[0];
+    if (!draft) {
+      const message = `Đã hết mẫu cho bài #${post.techhub_id}. Hãy nhờ AI tạo thêm mẫu.${
+        manual ? "" : " Đã tự dừng."
+      }`;
+      if (!manual) await stopAutoExternalDiscussion(message, "muted");
+      return { discussed: 0, message };
+    }
+
+    const nextNumber = manual
+      ? 1
+      : Number(autoExternalDiscussionState.completedCount || 0) + 1;
+    broadcastAutoExternalDiscussionProgress(
+      `Đang đăng mẫu vào bài #${post.techhub_id}${
+        manual ? "" : ` · ${nextNumber}/${autoExternalDiscussionState.targetCount}`
+      }...`,
+      "info"
+    );
+    await supabase.updateDiscussionDraftStatus(draft.id, "posting");
+    try {
+      const response = await interactWithTechHub(
+        { techhub_id: post.techhub_id },
+        "comment",
+        draft.discussion_body,
+        credentials
+      );
+      if (!response?.ok) {
+        throw new Error(`TechHub HTTP ${response?.status || "unknown"} khi đăng comment.`);
+      }
+    } catch (error) {
+      await supabase.updateDiscussionDraftStatus(draft.id, "pending");
+      throw error;
+    }
+
+    await supabase.updateDiscussionDraftStatus(draft.id, "used");
+    await supabase.recordInteraction(
+      actorUsername,
+      post.techhub_id,
+      "external_discussion"
+    );
+    discussed = 1;
+    if (!manual) autoExternalDiscussionState.completedCount = nextNumber;
+    const reachedTarget =
+      !manual &&
+      Number(autoExternalDiscussionState.completedCount) >=
+        Number(autoExternalDiscussionState.targetCount);
+    if (reachedTarget) {
+      autoExternalDiscussionState.enabled = false;
+      autoExternalDiscussionState.nextRunAt = null;
+      await chrome.alarms.clear(AUTO_EXTERNAL_DISCUSSION_ALARM);
+    }
+    const message = manual
+      ? `Đã đăng 1 mẫu vào bài #${post.techhub_id} của @${post.username}.`
+      : `Đã đăng ${autoExternalDiscussionState.completedCount}/${autoExternalDiscussionState.targetCount} mẫu vào bài #${post.techhub_id}.${
+          reachedTarget ? " Đã tự dừng." : ""
+        }`;
+    autoExternalDiscussionState.lastRunAt = new Date().toISOString();
+    autoExternalDiscussionState.lastDiscussionCount = discussed;
+    autoExternalDiscussionState.lastError = null;
+    autoExternalDiscussionState.lastMessage = message;
+    await saveAutoExternalDiscussionState();
+    broadcastAutoExternalDiscussionProgress(message, "success");
+    return { discussed, message };
+  } catch (error) {
+    autoExternalDiscussionState.lastError = error.message;
+    autoExternalDiscussionState.lastMessage = error.message;
+    autoExternalDiscussionState.lastRunAt = new Date().toISOString();
+    await saveAutoExternalDiscussionState();
+    broadcastAutoExternalDiscussionProgress(
+      `Lỗi thảo luận bài người khác: ${error.message}`,
+      "error"
+    );
+    throw error;
+  } finally {
+    autoExternalDiscussionRunning = false;
+    if (!manual && autoExternalDiscussionState.enabled) {
+      await scheduleNextAutoExternalDiscussion();
+      broadcastAutoExternalDiscussionProgress(
+        `${autoExternalDiscussionState.lastMessage} Lượt kế tiếp lúc ${new Date(
+          autoExternalDiscussionState.nextRunAt
+        ).toLocaleTimeString("vi-VN")}.`,
+        autoExternalDiscussionState.lastError ? "error" : "success"
       );
     }
   }

@@ -356,10 +356,91 @@ async function nvidiaGenerateDiscussion(input) {
   return retry;
 }
 
+/**
+ * Sinh comment gốc trên bài của người khác, đúng vai người đọc đang tham gia thảo luận.
+ */
+async function nvidiaGenerateExternalDiscussion(input) {
+  const articleBody = stripHtml(input.articleBody || "").slice(0, 5000);
+  const previousBodies = (Array.isArray(input.previousBodies) ? input.previousBodies : [])
+    .map((body) => stripHtml(body))
+    .filter(Boolean)
+    .slice(-12);
+  if (!articleBody) throw new Error("Không lấy được nội dung bài để thảo luận.");
+
+  const bannedOpenings = [
+    ...new Set(previousBodies.map((body) => getOpeningKey(body, 6)).filter(Boolean)),
+  ].slice(0, 12);
+  const angle =
+    DISCUSSION_ANGLES[
+      (Math.max(1, Number(input.discussionNumber) || 1) - 1) % DISCUSSION_ANGLES.length
+    ];
+  const systemPrompt =
+    `Bạn là người đọc @${input.username || "user"} đang tham gia thảo luận dưới bài của @${
+      input.postAuthor || "author"
+    } trên TechHub. ` +
+    "Bạn đăng một COMMENT GỐC trực tiếp dưới bài, không giả làm tác giả và không reply ai. " +
+    "Bình luận phải liên quan chặt chẽ tới bài, có một ý cụ thể, trải nghiệm, góc nhìn, " +
+    "lưu ý thực tế hoặc câu hỏi mở. Không chỉ khen chung chung, không tâng bốc, không bịa " +
+    "chức danh, dự án hay trải nghiệm cá nhân mà đề bài không cung cấp. " +
+    "CHỈ dùng tiếng Việt phổ thông, không chèn chữ Trung/Nhật/Hàn hay từ tiếng Anh. " +
+    "Viết 1-3 câu hoàn chỉnh, luôn kết thúc bằng dấu câu, không markdown, hashtag hoặc lời chào. " +
+    "Chỉ trả về đúng nội dung bình luận.";
+  const userPrompt =
+    `Tiêu đề: ${input.postTitle || "(không tiêu đề)"}\n` +
+    `Tác giả bài: @${input.postAuthor || "author"}\n` +
+    `Nội dung bài:\n${articleBody}\n\n` +
+    `Các comment trước của bạn dưới bài này (không được lặp ý):\n${
+      previousBodies.join("\n") || "(chưa có)"
+    }\n\n` +
+    (bannedOpenings.length
+      ? `Các cách mở đầu đã dùng, phải mở đầu khác:\n- ${bannedOpenings.join("\n- ")}\n\n`
+      : "") +
+    `Góc tiếp cận: ${angle}\n` +
+    `Hãy viết mẫu thảo luận số ${input.discussionNumber || 1}/${
+      input.discussionTarget || "?"
+    } với tư cách người đọc.`;
+  const options = {
+    maxTokens: 420,
+    maxLength: 500,
+    temperature: 0.95,
+    topP: 0.92,
+    presencePenalty: 0.6,
+    frequencyPenalty: 0.5,
+  };
+  const messages = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userPrompt },
+  ];
+  const first = await nvidiaChat(messages, options);
+  const praiseOnly =
+    looksLikeThanksOrPraise(first) &&
+    stripHtml(first).split(/\s+/).length < 24;
+  const problems = [];
+  if (praiseOnly) problems.push("chỉ khen/cảm ơn chung chung mà chưa có ý thảo luận");
+  if (hasForeignScript(first)) problems.push("có lẫn chữ nước ngoài");
+  if (sharesOpeningWith(first, previousBodies)) problems.push("mở đầu trùng mẫu trước");
+  if (!problems.length) return first;
+
+  return nvidiaChat(
+    [
+      ...messages,
+      { role: "assistant", content: first },
+      {
+        role: "user",
+        content:
+          `Mẫu trên ${problems.join("; ")}. ` +
+          "Viết lại khác hoàn toàn, thuần tiếng Việt, có ý cụ thể và không giả làm tác giả.",
+      },
+    ],
+    options
+  );
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     nvidiaGenerateReply,
     nvidiaGenerateDiscussion,
+    nvidiaGenerateExternalDiscussion,
     getNvidiaConfig,
     cleanAiReplyText,
     stripHtml,

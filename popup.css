@@ -807,6 +807,27 @@ code {
   color: #dbe2ff;
 }
 
+.delta {
+  font-weight: 700;
+}
+
+.delta.up {
+  color: var(--green);
+}
+
+.delta.down {
+  color: var(--red);
+}
+
+.delta.flat {
+  color: var(--text-mute);
+}
+
+.mini-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .mini-btn.is-selected {
   background: var(--accent-soft);
   border-color: var(--accent);
@@ -845,6 +866,30 @@ code {
 .draft-clear-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.external-post-preview {
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 11px;
+  background: rgba(91, 124, 250, 0.08);
+}
+
+.external-post-preview strong,
+.external-post-preview span {
+  display: block;
+}
+
+.external-post-preview strong {
+  color: var(--text);
+  font-size: 12px;
+  margin-bottom: 5px;
+}
+
+.external-post-preview span {
+  color: var(--text-mute);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .draft-stats span {

@@ -35,6 +35,21 @@
             </svg>
             <span class="nav-label">Bài viết</span>
           </button>
+          <button
+            class="nav-item"
+            type="button"
+            data-panel="dashboard"
+            data-title="Thống kê theo tháng"
+            data-subtitle="So sánh tháng hiện tại với tháng trước"
+          >
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true">
+              <path
+                d="M4 20h16v2H2V2h2v18zm3-3V9h3v8H7zm5 0V4h3v13h-3zm5 0v-6h3v6h-3z"
+                fill="currentColor"
+              />
+            </svg>
+            <span class="nav-label">Thống kê</span>
+          </button>
 
           <span class="nav-group">Tự động hóa</span>
           <button
@@ -84,6 +99,39 @@
             </svg>
             <span class="nav-label">Auto comment</span>
             <span id="commentDot" class="nav-dot hidden"></span>
+          </button>
+
+          <span class="nav-group">Bài người khác</span>
+          <button
+            class="nav-item"
+            type="button"
+            data-panel="community"
+            data-title="Quét chuyên mục"
+            data-subtitle="Làm mới dữ liệu chuyên mục và chọn bài để thảo luận"
+          >
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true">
+              <path
+                d="M10 4a6 6 0 014.47 10l4.27 4.26-1.42 1.42-4.26-4.27A6 6 0 1110 4zm0 2a4 4 0 100 8 4 4 0 000-8z"
+                fill="currentColor"
+              />
+            </svg>
+            <span class="nav-label">Quét chuyên mục</span>
+          </button>
+          <button
+            class="nav-item"
+            type="button"
+            data-panel="external-discussion"
+            data-title="Thảo luận bài người khác"
+            data-subtitle="Chọn bài từ chuyên mục hoặc nhập ID, duyệt mẫu rồi đăng"
+          >
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true">
+              <path
+                d="M4 3h16a2 2 0 012 2v10a2 2 0 01-2 2h-5l-3 4-3-4H4a2 2 0 01-2-2V5a2 2 0 012-2zm3 5h10V6H7v2zm0 4h7v-2H7v2z"
+                fill="currentColor"
+              />
+            </svg>
+            <span class="nav-label">AI thảo luận</span>
+            <span id="externalDiscussionDot" class="nav-dot hidden"></span>
           </button>
 
           <span class="nav-group">Nguy hiểm</span>
@@ -192,6 +240,58 @@
                 </div>
                 <div id="myPostsList" class="table-wrap"></div>
                 <div id="postsMessage" class="msg hidden"></div>
+              </div>
+            </section>
+
+            <section class="panel hidden" data-panel="dashboard">
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>So sánh tháng này với tháng trước</h2>
+                    <p>Tính trên dữ liệu đã lưu, không gọi lại TechHub</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="refreshDashboardBtn" class="btn btn-primary" type="button">
+                      Xem thống kê
+                    </button>
+                  </div>
+                </div>
+
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="dashboardScope">Phạm vi</label>
+                      <span>Bài của bạn hoặc toàn bộ bài trong chuyên mục</span>
+                    </div>
+                    <select id="dashboardScope">
+                      <option value="own">Bài của tôi</option>
+                      <option value="community">Chuyên mục</option>
+                    </select>
+                  </div>
+                  <div class="field hidden" id="dashboardCommunityField">
+                    <div class="field-text">
+                      <label for="dashboardCommunitySlug">Slug chuyên mục</label>
+                      <span>Dùng chung với mục quét bài người khác</span>
+                    </div>
+                    <input
+                      id="dashboardCommunitySlug"
+                      type="text"
+                      value="cai-tien-moi-ngay"
+                      placeholder="cai-tien-moi-ngay"
+                      spellcheck="false"
+                    />
+                  </div>
+                </div>
+
+                <div id="dashboardCards" class="stat-grid"></div>
+                <div id="dashboardTable" class="table-wrap">
+                  <div class="empty">Bấm Xem thống kê để tải số liệu.</div>
+                </div>
+                <div id="dashboardMessage" class="msg hidden"></div>
+                <p class="hint">
+                  Bài tạo tính theo ngày tạo, bài publish tính theo ngày publish trong đúng
+                  tháng đó. Muốn số liệu mới hơn thì quét bài hoặc làm mới chuyên mục trước.
+                </p>
               </div>
             </section>
 
@@ -422,6 +522,220 @@
                 <p class="hint">
                   Nếu đăng thất bại, mẫu vẫn được giữ để thử lại. Khi hết mẫu, hãy quay lại bước 1
                   để nhờ AI tạo thêm.
+                </p>
+              </div>
+            </section>
+
+            <section class="panel hidden" data-panel="community">
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Bài theo chuyên mục</h2>
+                    <p>Đọc từ dữ liệu đã lưu · chỉ gọi TechHub khi bấm Làm mới</p>
+                  </div>
+                  <div class="card-actions">
+                    <label class="search" for="communityPostsSearch">
+                      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                        <path
+                          d="M10 4a6 6 0 014.47 10l4.27 4.26-1.42 1.42-4.26-4.27A6 6 0 1110 4zm0 2a4 4 0 100 8 4 4 0 000-8z"
+                          fill="currentColor"
+                        />
+                      </svg>
+                      <input
+                        id="communityPostsSearch"
+                        type="search"
+                        placeholder="Lọc tiêu đề, tác giả hoặc ID…"
+                        autocomplete="off"
+                      />
+                    </label>
+                    <button id="loadCachedCommunityBtn" class="btn btn-secondary" type="button">
+                      Xem dữ liệu đã lưu
+                    </button>
+                    <button id="scanCommunityBtn" class="btn btn-primary" type="button">
+                      Làm mới từ TechHub
+                    </button>
+                  </div>
+                </div>
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="communitySlug">Slug chuyên mục</label>
+                      <span>Phần nằm sau /c/ trên đường dẫn TechHub</span>
+                    </div>
+                    <input
+                      id="communitySlug"
+                      type="text"
+                      value="cai-tien-moi-ngay"
+                      placeholder="cai-tien-moi-ngay"
+                      spellcheck="false"
+                    />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="communityScanMonths">Khoảng thời gian</label>
+                      <span>Chỉ gọi TechHub cho bài trong khoảng này, rồi lưu lại</span>
+                    </div>
+                    <select id="communityScanMonths">
+                      <option value="1" selected>1 tháng gần nhất</option>
+                      <option value="2">2 tháng gần nhất</option>
+                    </select>
+                  </div>
+                </div>
+                <div id="communityPostsList" class="table-wrap">
+                  <div class="empty">Bấm Xem dữ liệu đã lưu hoặc Làm mới từ TechHub.</div>
+                </div>
+                <div id="communityPostsMessage" class="msg hidden"></div>
+                <p class="hint">
+                  Bấm Chọn thảo luận để chuyển bài sang mục AI thảo luận bài người khác.
+                </p>
+              </div>
+            </section>
+
+            <section class="panel hidden" data-panel="external-discussion">
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Bước 1 · Chọn bài và chuẩn bị mẫu</h2>
+                    <p>Nhận bài đang mở của người khác, kể cả bài chưa publish</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="loadExternalPostBtn" class="btn btn-secondary" type="button">
+                      Tải bài
+                    </button>
+                    <button
+                      id="generateExternalDiscussionDraftsBtn"
+                      class="btn btn-primary"
+                      type="button"
+                      disabled
+                    >
+                      AI tạo mẫu
+                    </button>
+                  </div>
+                </div>
+
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="externalDiscussionPostId">ID bài TechHub</label>
+                      <span>Nhập ID số của bài người khác cần thảo luận</span>
+                    </div>
+                    <input
+                      id="externalDiscussionPostId"
+                      type="number"
+                      min="1"
+                      placeholder="Ví dụ: 4010"
+                    />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="externalDiscussionGenerateCount">Số mẫu cần tạo</label>
+                      <span>AI viết theo vai người đọc, không giả làm tác giả bài</span>
+                    </div>
+                    <input
+                      id="externalDiscussionGenerateCount"
+                      type="number"
+                      min="1"
+                      max="50"
+                      value="5"
+                    />
+                  </div>
+                </div>
+
+                <div id="externalPostPreview" class="external-post-preview hidden"></div>
+                <div class="draft-toolbar">
+                  <div id="externalDiscussionDraftStats" class="draft-stats">
+                    <span>Tổng <strong>0</strong></span>
+                    <span class="pending">Chưa dùng <strong>0</strong></span>
+                    <span class="used">Đã dùng <strong>0</strong></span>
+                  </div>
+                  <button
+                    id="clearPendingExternalDiscussionDraftsBtn"
+                    class="btn btn-ghost draft-clear-btn"
+                    type="button"
+                    disabled
+                  >
+                    Xóa hết chưa dùng
+                  </button>
+                </div>
+                <div id="externalDiscussionDraftsList" class="draft-list">
+                  <div class="empty">Nhập ID và tải bài để xem kho mẫu.</div>
+                </div>
+                <div id="externalDiscussionDraftMessage" class="msg hidden"></div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Bước 2 · Đăng thảo luận</h2>
+                    <p>Comment sẽ được đăng bằng tài khoản TechHub hiện tại</p>
+                  </div>
+                  <div class="card-actions">
+                    <button
+                      id="runAutoExternalDiscussionBtn"
+                      class="btn btn-secondary"
+                      type="button"
+                      disabled
+                    >
+                      Đăng 1 mẫu ngay
+                    </button>
+                  </div>
+                </div>
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="autoExternalDiscussionEnabled">Tự đăng theo lịch</label>
+                      <span>Hết mẫu hoặc đủ số lượng sẽ tự tắt</span>
+                    </div>
+                    <input
+                      id="autoExternalDiscussionEnabled"
+                      class="switch"
+                      type="checkbox"
+                      disabled
+                    />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="externalDiscussionTargetCount">Số lượng muốn đăng</label>
+                      <span>Không được vượt số mẫu chưa dùng</span>
+                    </div>
+                    <input
+                      id="externalDiscussionTargetCount"
+                      type="number"
+                      min="1"
+                      max="100"
+                      value="5"
+                    />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label>Khoảng cách ngẫu nhiên</label>
+                      <span>Thời gian giữa hai lượt đăng, tính bằng phút</span>
+                    </div>
+                    <div class="inline-inputs">
+                      <input
+                        id="externalDiscussionMinInterval"
+                        type="number"
+                        min="1"
+                        max="1440"
+                        value="1"
+                        aria-label="Từ phút"
+                      />
+                      <span>đến</span>
+                      <input
+                        id="externalDiscussionMaxInterval"
+                        type="number"
+                        min="1"
+                        max="1440"
+                        value="5"
+                        aria-label="Đến phút"
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div id="autoExternalDiscussionMessage" class="msg hidden"></div>
+                <p class="hint">
+                  Hãy đọc và chỉnh nội dung trước khi bật. Mục này không có quyền xóa hoặc sửa bài
+                  của người khác.
                 </p>
               </div>
             </section>
