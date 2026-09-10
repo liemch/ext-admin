@@ -581,6 +581,17 @@
                       <input id="communityScanToMonth" type="month" aria-label="Đến tháng" />
                     </div>
                   </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="crossInteractionEnabled">Tự động tương tác chéo</label>
+                      <span>Mỗi 15 phút tự bình luận và thích bài người khác</span>
+                    </div>
+                    <input
+                      id="crossInteractionEnabled"
+                      class="switch"
+                      type="checkbox"
+                    />
+                  </div>
                 </div>
                 <div id="communityPostsList" class="table-wrap">
                   <div class="empty">Bấm Xem dữ liệu đã lưu hoặc Làm mới từ TechHub.</div>
@@ -747,7 +758,7 @@
                 <div class="card-head">
                   <div>
                     <h2>Auto comment 1 bài</h2>
-                    <p>Mỗi comment cách nhau ngẫu nhiên 2–5 giây</p>
+                    <p>Tự chia nhịp để hoàn thành đủ số comment trong thời gian đã chọn</p>
                   </div>
                   <div class="card-actions">
                     <button id="startAutoCommentBtn" class="btn btn-primary" type="button">
@@ -762,6 +773,18 @@
                 <div id="selectedPostLabel" class="msg muted">Chưa chọn bài</div>
 
                 <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="autoCommentExternalPostId">ID bài thành viên khác</label>
+                      <span>Không nhập thì dùng bài của anh đã chọn; có nhập thì ưu tiên ID này</span>
+                    </div>
+                    <input
+                      id="autoCommentExternalPostId"
+                      type="number"
+                      min="1"
+                      placeholder="vd: 4097"
+                    />
+                  </div>
                   <div class="field">
                     <div class="field-text">
                       <label for="autoCommentTargetCount">Số lượng comment</label>
@@ -782,6 +805,39 @@
                     </div>
                     <input id="autoCommentStartAt" type="datetime-local" />
                   </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="autoCommentAutoDelete">Tự xóa comment</label>
+                      <span>Xóa cuốn chiếu từng comment do job này tạo</span>
+                    </div>
+                    <input id="autoCommentAutoDelete" class="switch" type="checkbox" checked />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="autoCommentDeleteAfterMinutes">Xóa sau (phút)</label>
+                      <span>Tính riêng từ lúc mỗi comment được đăng thành công</span>
+                    </div>
+                    <input
+                      id="autoCommentDeleteAfterMinutes"
+                      type="number"
+                      min="1"
+                      max="1440"
+                      value="1"
+                    />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="autoCommentCompletionMinutes">Hoàn thành trong (phút)</label>
+                      <span>Ví dụ: 20 comment trong khoảng 1 phút</span>
+                    </div>
+                    <input
+                      id="autoCommentCompletionMinutes"
+                      type="number"
+                      min="1"
+                      max="1440"
+                      value="1"
+                    />
+                  </div>
                 </div>
 
                 <div class="card-actions">
@@ -799,6 +855,10 @@
 
                 <div id="autoCommentScheduleInfo" class="msg muted">Chưa có lịch hẹn.</div>
                 <div id="autoCommentMessage" class="msg hidden"></div>
+                <div class="list-label">Nhật ký tự xóa comment</div>
+                <div id="autoCommentDeleteLog" class="schedule-list">
+                  <div class="empty">Chưa có comment nào trong hàng đợi tự xóa.</div>
+                </div>
                 <p class="hint">
                   Chọn bài ở tab Bài viết. Lịch hẹn vẫn chạy sau khi đóng side panel; nếu máy
                   tắt qua giờ hẹn, job sẽ chạy ngay khi Chrome mở lại.

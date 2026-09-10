@@ -20,14 +20,29 @@ let autoCommentState = {
   targetCount: 0,
   lastCommentAt: null,
   lastError: null,
+  autoDeleteEnabled: false,
+  deleteAfterMinutes: 1,
+  completionMinutes: 1,
+  startedAt: null,
 };
 const AUTO_COMMENT_START_ALARM = "autoCommentStartAlarm";
+const AUTO_COMMENT_DELETE_ALARM = "autoCommentDeleteAlarm";
+const AUTO_COMMENT_DELETE_QUEUE_KEY = "autoCommentDeleteQueue";
+const DEFAULT_AUTO_COMMENT_DELETE_AFTER_MINUTES = 1;
+const AUTO_COMMENT_DELETE_MIN_GAP_MS = 500;
+const AUTO_COMMENT_DELETE_MAX_GAP_MS = 1500;
+let autoCommentDeleteRunning = false;
+let autoCommentDeleteSummary = { pending: 0, done: 0, error: 0 };
+let autoCommentDeleteQueueMutation = Promise.resolve();
 let autoCommentSchedule = {
   techhubId: null,
   targetCount: null,
   startAt: null,
   createdAt: null,
   lastError: null,
+  autoDeleteEnabled: false,
+  deleteAfterMinutes: DEFAULT_AUTO_COMMENT_DELETE_AFTER_MINUTES,
+  completionMinutes: 1,
 };
 const AUTO_REPLY_ALARM = "autoReplyAlarm";
 const DEFAULT_REPLY_MIN_INTERVAL_MINUTES = 1;
@@ -35,6 +50,8 @@ const DEFAULT_REPLY_MAX_INTERVAL_MINUTES = 5;
 const AUTO_DISCUSSION_ALARM = "autoDiscussionAlarm";
 const AUTO_EXTERNAL_DISCUSSION_ALARM = "autoExternalDiscussionAlarm";
 const AI_JOB_WATCHDOG_ALARM = "aiJobWatchdogAlarm";
+const CROSS_INTERACTION_ALARM = "crossInteractAlarm";
+const CROSS_INTERACTION_ENABLED_KEY = "crossInteractionEnabled";
 const DEFAULT_DISCUSSION_MIN_INTERVAL_MINUTES = 1;
 const DEFAULT_DISCUSSION_MAX_INTERVAL_MINUTES = 5;
 let autoReplyRunning = false;
@@ -440,16 +457,21 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
           
           // Kiểm tra xem đã qua 15 phút kể từ lần tương tác trước chưa
           const now = Date.now();
-          chrome.storage.local.get(['lastAutoInteractionTime'], (res) => {
-            const lastTime = res.lastAutoInteractionTime || lastMemoryInteractionTime || 0;
-            if (now - lastTime > 15 * 60 * 1000) {
-              console.log("[Background] Detected new credentials and > 15 minutes since last interaction. Running immediately!");
-              lastMemoryInteractionTime = now;
-              chrome.storage.local.set({ lastAutoInteractionTime: now }, () => {
-                runCrossInteraction(false);
-              });
+          chrome.storage.local.get(
+            ['lastAutoInteractionTime', CROSS_INTERACTION_ENABLED_KEY],
+            (res) => {
+              if (res[CROSS_INTERACTION_ENABLED_KEY] !== true) return;
+              const lastTime =
+                res.lastAutoInteractionTime || lastMemoryInteractionTime || 0;
+              if (now - lastTime > 15 * 60 * 1000) {
+                console.log("[Background] Detected new credentials and > 15 minutes since last interaction. Running immediately!");
+                lastMemoryInteractionTime = now;
+                chrome.storage.local.set({ lastAutoInteractionTime: now }, () => {
+                  runCrossInteraction(false);
+                });
+              }
             }
-          });
+          );
         }
       );
     } else {
@@ -523,9 +545,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return false;
   }
 
+  if (request.action === "getCrossInteractionStatus") {
+    getCrossInteractionEnabled()
+      .then((enabled) => sendResponse({ success: true, enabled }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "setCrossInteractionEnabled") {
+    setCrossInteractionEnabled(!!request.enabled)
+      .then((enabled) => sendResponse({ success: true, enabled }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
   if (request.action === "startAutoComment") {
     autoCommentRestorePromise
-      .then(() => startAutoComment(request.techhubId, null, request.targetCount))
+      .then(() =>
+        startAutoComment(request.techhubId, null, request.targetCount, {
+          autoDeleteEnabled: request.autoDeleteEnabled,
+          deleteAfterMinutes: request.deleteAfterMinutes,
+          completionMinutes: request.completionMinutes,
+          isExternalTarget: request.isExternalTarget,
+        })
+      )
       .then((state) => sendResponse({ success: true, state }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;
@@ -533,10 +576,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === "stopAutoComment") {
     autoCommentRestorePromise
-      .then(() => {
-        stopAutoComment("Đã dừng theo yêu cầu.");
-        sendResponse({ success: true, state: getAutoCommentStatus() });
-      })
+      .then(() => cancelAutoCommentCompletely())
+      .then((state) => sendResponse({ success: true, state }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;
   }
@@ -544,7 +585,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "scheduleAutoComment") {
     autoCommentRestorePromise
       .then(() =>
-        scheduleAutoCommentStart(request.techhubId, request.targetCount, request.startAt)
+        scheduleAutoCommentStart(request.techhubId, request.targetCount, request.startAt, {
+          autoDeleteEnabled: request.autoDeleteEnabled,
+          deleteAfterMinutes: request.deleteAfterMinutes,
+          completionMinutes: request.completionMinutes,
+          isExternalTarget: request.isExternalTarget,
+        })
       )
       .then((state) => sendResponse({ success: true, state }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
@@ -560,7 +606,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === "getAutoCommentStatus") {
     autoCommentRestorePromise
+      .then(() => loadAutoCommentDeleteQueue())
       .then(() => sendResponse({ success: true, state: getAutoCommentStatus() }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "getAutoCommentDeleteLog") {
+    loadAutoCommentDeleteQueue()
+      .then((items) =>
+        sendResponse({
+          success: true,
+          items: items.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
+        })
+      )
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;
   }
@@ -854,11 +913,8 @@ chrome.sidePanel
   .catch((error) => console.error(error));
 
 function setupAlarms() {
-  chrome.alarms.get("crossInteractAlarm", (alarm) => {
-    if (!alarm) {
-      console.log("[Background] Creating crossInteractAlarm (15m)");
-      chrome.alarms.create("crossInteractAlarm", { periodInMinutes: 15 });
-    }
+  syncCrossInteractionAlarm().catch((error) => {
+    console.error("[Background] Could not sync cross interaction alarm:", error);
   });
   chrome.alarms.get("keepAliveAlarm", (alarm) => {
     if (!alarm) {
@@ -892,6 +948,9 @@ function setupAlarms() {
     if (!alarm) {
       chrome.alarms.create("scheduledDeleteSweep", { periodInMinutes: 1 });
     }
+  });
+  ensureAutoCommentDeleteAlarm().catch((error) => {
+    console.error("[Background] Could not restore auto-comment delete alarm:", error);
   });
   // Alarm one-shot có thể bị mất khi service worker khởi động lại, cần watchdog gắn lại.
   chrome.alarms.get(AI_JOB_WATCHDOG_ALARM, (alarm) => {
@@ -946,8 +1005,10 @@ restoreScheduledDeletes().catch((err) => {
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "crossInteractAlarm") {
-    runCrossInteraction();
+  if (alarm.name === CROSS_INTERACTION_ALARM) {
+    getCrossInteractionEnabled().then((enabled) => {
+      if (enabled) runCrossInteraction();
+    });
   } else if (alarm.name === "keepAliveAlarm") {
     pingTechHubToKeepAlive();
   } else if (alarm.name === AUTO_REPLY_ALARM) {
@@ -967,6 +1028,10 @@ chrome.alarms.onAlarm.addListener((alarm) => {
       .catch((err) => {
         console.error("[Background] Scheduled auto comment failed:", err);
       });
+  } else if (alarm.name === AUTO_COMMENT_DELETE_ALARM) {
+    processDueAutoCommentDeletes().catch((err) => {
+      console.error("[Background] Auto-comment delete failed:", err);
+    });
   } else if (alarm.name === AUTO_DISCUSSION_ALARM) {
     autoDiscussionRestorePromise
       .then(() => runAutoDiscussion({ manual: false }))
@@ -1166,6 +1231,7 @@ function getAutoCommentStatus() {
     schedule: { ...autoCommentSchedule },
     intervalMinMs: AUTO_COMMENT_MIN_INTERVAL_MS,
     intervalMaxMs: AUTO_COMMENT_MAX_INTERVAL_MS,
+    deleteQueue: { ...autoCommentDeleteSummary },
   };
 }
 
@@ -1186,7 +1252,35 @@ async function saveAutoCommentSchedule() {
   await chrome.storage.local.set({ autoCommentSchedule });
 }
 
-async function scheduleAutoCommentStart(techhubId, targetCount, startAt) {
+function normalizeAutoCommentDeleteOptions(options = {}) {
+  const enabled = options.autoDeleteEnabled === true;
+  const minutes = Number(options.deleteAfterMinutes);
+  if (enabled && (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440)) {
+    throw new Error("Thời gian tự xóa comment phải từ 1 đến 1440 phút.");
+  }
+  return {
+    autoDeleteEnabled: enabled,
+    deleteAfterMinutes: enabled
+      ? minutes
+      : DEFAULT_AUTO_COMMENT_DELETE_AFTER_MINUTES,
+  };
+}
+
+function normalizeAutoCommentCompletionMinutes(value, targetCount) {
+  const minutes = Number(value ?? 1);
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
+    throw new Error("Thời gian hoàn thành phải từ 1 đến 1440 phút.");
+  }
+  if (targetCount > 1) {
+    const averageGap = (minutes * 60 * 1000) / (targetCount - 1);
+    if (averageGap < 500) {
+      throw new Error("Thời gian hoàn thành quá ngắn; mỗi comment cần cách nhau ít nhất 0,5 giây.");
+    }
+  }
+  return minutes;
+}
+
+async function scheduleAutoCommentStart(techhubId, targetCount, startAt, options = {}) {
   const parsedTechhubId = Number(techhubId);
   if (!Number.isInteger(parsedTechhubId) || parsedTechhubId < 1) {
     throw new Error("techhub_id phải là số nguyên >= 1.");
@@ -1202,10 +1296,20 @@ async function scheduleAutoCommentStart(techhubId, targetCount, startAt) {
   if (when.getTime() <= Date.now() - 5000) {
     throw new Error("Thời gian bắt đầu phải ở tương lai.");
   }
+  const deleteOptions = normalizeAutoCommentDeleteOptions(options);
+  const completionMinutes = normalizeAutoCommentCompletionMinutes(
+    options.completionMinutes,
+    parsedTarget
+  );
 
-  const post = await supabase.getPostByTechhubId(parsedTechhubId);
-  if (!post) {
-    throw new Error(`Không tìm thấy bài #${parsedTechhubId} trong DB. Hãy Quét bài trước.`);
+  const isExternalTarget = options.isExternalTarget === true;
+  if (isExternalTarget) {
+    await resolveExternalDiscussionPost(parsedTechhubId);
+  } else {
+    const post = await supabase.getPostByTechhubId(parsedTechhubId);
+    if (!post) {
+      throw new Error(`Không tìm thấy bài #${parsedTechhubId} trong DB. Hãy Quét bài trước.`);
+    }
   }
 
   autoCommentSchedule = {
@@ -1214,10 +1318,29 @@ async function scheduleAutoCommentStart(techhubId, targetCount, startAt) {
     startAt: when.toISOString(),
     createdAt: new Date().toISOString(),
     lastError: null,
+    ...deleteOptions,
+    completionMinutes,
+    isExternalTarget,
   };
+  // Lịch mới không được mang theo tiến độ của job đã dừng trên bài trước.
+  if (!autoCommentState.active) {
+    autoCommentState = {
+      active: false,
+      techhubId: null,
+      username: null,
+      commentCount: 0,
+      targetCount: 0,
+      lastCommentAt: null,
+      lastError: null,
+      autoDeleteEnabled: false,
+      deleteAfterMinutes: DEFAULT_AUTO_COMMENT_DELETE_AFTER_MINUTES,
+      completionMinutes: 1,
+      startedAt: null,
+    };
+  }
   await chrome.alarms.clear(AUTO_COMMENT_START_ALARM);
   chrome.alarms.create(AUTO_COMMENT_START_ALARM, { when: when.getTime() });
-  await saveAutoCommentSchedule();
+  await Promise.all([saveAutoCommentSchedule(), saveAutoCommentState()]);
 
   broadcastAutoCommentProgress(
     `Đã hẹn auto comment bài #${parsedTechhubId} lúc ${when.toLocaleString("vi-VN")} · mục tiêu ${parsedTarget} cmt.`,
@@ -1234,6 +1357,10 @@ async function cancelAutoCommentSchedule() {
     startAt: null,
     createdAt: null,
     lastError: null,
+    autoDeleteEnabled: false,
+    deleteAfterMinutes: DEFAULT_AUTO_COMMENT_DELETE_AFTER_MINUTES,
+    completionMinutes: 1,
+    isExternalTarget: false,
   };
   await saveAutoCommentSchedule();
   broadcastAutoCommentProgress("Đã hủy lịch auto comment.", "muted");
@@ -1250,12 +1377,16 @@ async function runScheduledAutoCommentStart() {
     startAt: null,
     createdAt: null,
     lastError: null,
+    autoDeleteEnabled: false,
+    deleteAfterMinutes: DEFAULT_AUTO_COMMENT_DELETE_AFTER_MINUTES,
+    completionMinutes: 1,
+    isExternalTarget: false,
   };
   await chrome.alarms.clear(AUTO_COMMENT_START_ALARM);
   await saveAutoCommentSchedule();
 
   try {
-    await startAutoComment(pending.techhubId, null, pending.targetCount);
+    await startAutoComment(pending.techhubId, null, pending.targetCount, pending);
     broadcastAutoCommentProgress(
       `Đến giờ hẹn: bắt đầu auto comment bài #${pending.techhubId}.`,
       "success"
@@ -1296,13 +1427,31 @@ function getRandomAutoCommentDelay() {
   ) + AUTO_COMMENT_MIN_INTERVAL_MS;
 }
 
-function scheduleAutoCommentTick(generation, delayMs = getRandomAutoCommentDelay()) {
-  if (!autoCommentState.active || generation !== autoCommentGeneration) return;
-  if (autoCommentTimerId) clearTimeout(autoCommentTimerId);
-  autoCommentTimerId = setTimeout(() => runAutoCommentTick(generation), delayMs);
+function getNextAutoCommentDelay() {
+  const startedAt = new Date(autoCommentState.startedAt || 0).getTime();
+  const completionMinutes = Number(autoCommentState.completionMinutes);
+  const remainingCount = autoCommentState.targetCount - autoCommentState.commentCount;
+  if (!Number.isFinite(startedAt) || startedAt <= 0 || !completionMinutes || remainingCount <= 0) {
+    return getRandomAutoCommentDelay();
+  }
+  const deadline = startedAt + completionMinutes * 60 * 1000;
+  const remainingMs = Math.max(0, deadline - Date.now());
+  return Math.max(500, Math.floor(remainingMs / remainingCount));
 }
 
-async function startAutoComment(techhubId, restoredState = null, targetCount = null) {
+function scheduleAutoCommentTick(generation, delayMs = null) {
+  if (!autoCommentState.active || generation !== autoCommentGeneration) return;
+  if (autoCommentTimerId) clearTimeout(autoCommentTimerId);
+  const actualDelay = delayMs == null ? getNextAutoCommentDelay() : delayMs;
+  autoCommentTimerId = setTimeout(() => runAutoCommentTick(generation), actualDelay);
+}
+
+async function startAutoComment(
+  techhubId,
+  restoredState = null,
+  targetCount = null,
+  options = {}
+) {
   if (autoReplyRunning || autoDiscussionRunning || autoExternalDiscussionRunning) {
     throw new Error("Đang có job AI chạy. Hãy đợi xong trước.");
   }
@@ -1318,6 +1467,24 @@ async function startAutoComment(techhubId, restoredState = null, targetCount = n
       : Number(targetCount);
   if (!Number.isInteger(parsedTarget) || parsedTarget < 1) {
     throw new Error("Số lượng comment mục tiêu phải là số nguyên >= 1.");
+  }
+  const deleteOptions = normalizeAutoCommentDeleteOptions(
+    restoredState && restoredState.techhubId === parsedTechhubId
+      ? restoredState
+      : options
+  );
+  const completionMinutes = normalizeAutoCommentCompletionMinutes(
+    restoredState && restoredState.techhubId === parsedTechhubId
+      ? restoredState.completionMinutes || 1
+      : options.completionMinutes,
+    parsedTarget
+  );
+  const isExternalTarget =
+    restoredState && restoredState.techhubId === parsedTechhubId
+      ? restoredState.isExternalTarget === true
+      : options.isExternalTarget === true;
+  if (isExternalTarget) {
+    await resolveExternalDiscussionPost(parsedTechhubId);
   }
 
   const result = await chrome.storage.local.get(["techhubCredentials", "userProfile"]);
@@ -1370,6 +1537,13 @@ async function startAutoComment(techhubId, restoredState = null, targetCount = n
         ? restoredState.lastCommentAt || null
         : null,
     lastError: null,
+    ...deleteOptions,
+    completionMinutes,
+    startedAt:
+      restoredState && restoredState.techhubId === parsedTechhubId
+        ? restoredState.startedAt || new Date().toISOString()
+        : new Date().toISOString(),
+    isExternalTarget,
   };
   await saveAutoCommentState();
 
@@ -1392,6 +1566,52 @@ function stopAutoComment(reason = "Đã dừng auto comment.", type = "info") {
   autoCommentState.lastError = type === "error" ? reason : null;
   saveAutoCommentState();
   broadcastAutoCommentProgress(reason, type);
+}
+
+/**
+ * Hủy thủ công: dừng request/timer hiện tại, xóa bài cũ và hủy luôn lịch chờ.
+ * Các lần tự dừng do hoàn tất/lỗi vẫn giữ lịch sử để hiển thị kết quả.
+ */
+async function cancelAutoCommentCompletely() {
+  autoCommentGeneration++;
+  if (autoCommentTimerId) clearTimeout(autoCommentTimerId);
+  if (autoCommentAbortController) autoCommentAbortController.abort();
+  autoCommentTimerId = null;
+  autoCommentAbortController = null;
+  autoCommentTemplates = [];
+  autoCommentState = {
+    active: false,
+    techhubId: null,
+    username: null,
+    commentCount: 0,
+    targetCount: 0,
+    lastCommentAt: null,
+    lastError: null,
+    autoDeleteEnabled: false,
+    deleteAfterMinutes: DEFAULT_AUTO_COMMENT_DELETE_AFTER_MINUTES,
+    completionMinutes: 1,
+    startedAt: null,
+    isExternalTarget: false,
+  };
+
+  await chrome.alarms.clear(AUTO_COMMENT_START_ALARM);
+  autoCommentSchedule = {
+    techhubId: null,
+    targetCount: null,
+    startAt: null,
+    createdAt: null,
+    lastError: null,
+    autoDeleteEnabled: false,
+    deleteAfterMinutes: DEFAULT_AUTO_COMMENT_DELETE_AFTER_MINUTES,
+    completionMinutes: 1,
+    isExternalTarget: false,
+  };
+  await Promise.all([saveAutoCommentState(), saveAutoCommentSchedule()]);
+  broadcastAutoCommentProgress(
+    "Đã hủy auto comment, lịch hẹn và bài mục tiêu cũ.",
+    "muted"
+  );
+  return getAutoCommentStatus();
 }
 
 async function runAutoCommentTick(generation) {
@@ -1455,6 +1675,27 @@ async function runAutoCommentTick(generation) {
       throw new Error(`TechHub trả về HTTP ${status}`);
     }
 
+    let autoDeleteWarning = null;
+    if (autoCommentState.autoDeleteEnabled) {
+      const commentId = await getCreatedCommentId(response);
+      if (commentId) {
+        try {
+          await enqueueAutoCommentDelete({
+            commentId,
+            techhubId: autoCommentState.techhubId,
+            username,
+            createdAt: new Date().toISOString(),
+            deleteAfterMinutes: autoCommentState.deleteAfterMinutes,
+          });
+        } catch (error) {
+          autoDeleteWarning = `Không lưu được lịch xóa comment #${commentId}: ${error.message}`;
+        }
+      } else {
+        autoDeleteWarning =
+          "TechHub không trả về comment ID nên comment vừa đăng không thể hẹn tự xóa.";
+      }
+    }
+
     autoCommentState.username = username;
     autoCommentState.commentCount += 1;
     autoCommentState.lastCommentAt = new Date().toISOString();
@@ -1476,6 +1717,9 @@ async function runAutoCommentTick(generation) {
         : `Đã comment ${autoCommentState.commentCount}/${autoCommentState.targetCount || "?"} vào bài #${autoCommentState.techhubId}.`,
       "success"
     );
+    if (autoDeleteWarning) {
+      broadcastAutoCommentProgress(autoDeleteWarning, "error");
+    }
 
     if (reached) {
       stopAutoComment(
@@ -1486,6 +1730,7 @@ async function runAutoCommentTick(generation) {
     }
   } catch (error) {
     if (error.name === "AbortError") return;
+    if (generation !== autoCommentGeneration) return;
     console.error("[Background] Auto comment tick failed:", error);
     autoCommentState.lastError = error.message;
     await saveAutoCommentState();
@@ -1496,6 +1741,206 @@ async function runAutoCommentTick(generation) {
     }
     autoCommentTickRunning = false;
     scheduleAutoCommentTick(generation);
+  }
+}
+
+async function getCreatedCommentId(response) {
+  try {
+    const payload = await response.clone().json();
+    const rawId =
+      payload?.id ?? payload?.comment_id ?? payload?.comment?.id ?? payload?.data?.id;
+    const id = Number(rawId);
+    if (Number.isInteger(id) && id > 0) return id;
+  } catch (_) {
+    // Một số response thành công không có JSON; thử lấy ID từ Location header.
+  }
+  const location = response.headers?.get("Location") || "";
+  const match = location.match(/\/comments\/(\d+)\/?$/i);
+  return match ? Number(match[1]) : null;
+}
+
+async function loadAutoCommentDeleteQueue() {
+  const stored = await chrome.storage.local.get(AUTO_COMMENT_DELETE_QUEUE_KEY);
+  const queue = stored[AUTO_COMMENT_DELETE_QUEUE_KEY];
+  const items = Array.isArray(queue) ? queue : [];
+  autoCommentDeleteSummary = {
+    pending: items.filter((item) => item.status === "pending").length,
+    done: items.filter((item) => item.status === "done").length,
+    error: items.filter((item) => item.status === "error").length,
+  };
+  return items;
+}
+
+async function saveAutoCommentDeleteQueue(queue) {
+  autoCommentDeleteSummary = {
+    pending: queue.filter((item) => item.status === "pending").length,
+    done: queue.filter((item) => item.status === "done").length,
+    error: queue.filter((item) => item.status === "error").length,
+  };
+  await chrome.storage.local.set({ [AUTO_COMMENT_DELETE_QUEUE_KEY]: queue });
+}
+
+function mutateAutoCommentDeleteQueue(mutator) {
+  const task = autoCommentDeleteQueueMutation.then(async () => {
+    const current = await loadAutoCommentDeleteQueue();
+    const next = (await mutator(current)) || current;
+    await saveAutoCommentDeleteQueue(next);
+    return next;
+  });
+  autoCommentDeleteQueueMutation = task.catch(() => {});
+  return task;
+}
+
+async function enqueueAutoCommentDelete({
+  commentId,
+  techhubId,
+  username,
+  createdAt,
+  deleteAfterMinutes,
+}) {
+  const createdTime = new Date(createdAt).getTime();
+  const deleteAt = new Date(createdTime + deleteAfterMinutes * 60 * 1000).toISOString();
+  const queue = await mutateAutoCommentDeleteQueue((items) => {
+    const next = items.filter((item) => Number(item.commentId) !== Number(commentId));
+    next.push({
+      commentId: Number(commentId),
+      techhubId: Number(techhubId),
+      username: username || null,
+      createdAt,
+      deleteAt,
+      status: "pending",
+      attempts: 0,
+      lastError: null,
+    });
+    return next;
+  });
+  await ensureAutoCommentDeleteAlarm(queue);
+}
+
+async function ensureAutoCommentDeleteAlarm(queue = null) {
+  const items = queue || (await loadAutoCommentDeleteQueue());
+  const pending = items
+    .filter((item) => item.status === "pending" && item.deleteAt)
+    .sort((a, b) => new Date(a.deleteAt) - new Date(b.deleteAt));
+  await chrome.alarms.clear(AUTO_COMMENT_DELETE_ALARM);
+  if (!pending.length) return;
+  const dueAt = new Date(pending[0].deleteAt).getTime();
+  chrome.alarms.create(AUTO_COMMENT_DELETE_ALARM, {
+    when: Math.max(Date.now() + 1000, dueAt),
+  });
+}
+
+function getRetryAfterMs(response, attempts) {
+  const raw = response?.headers?.get("Retry-After");
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
+  const dateMs = raw ? new Date(raw).getTime() - Date.now() : NaN;
+  if (Number.isFinite(dateMs) && dateMs > 0) return dateMs;
+  return Math.min(5 * 60 * 1000, 15 * 1000 * Math.pow(2, Math.max(0, attempts - 1)));
+}
+
+async function deleteAutoCommentOnTechHub(commentId, credentials) {
+  return fetch(
+    `https://techhub.fpt.net/api/v1/comments/${encodeURIComponent(commentId)}/`,
+    {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": credentials.csrfToken,
+      },
+      credentials: "include",
+    }
+  );
+}
+
+async function processDueAutoCommentDeletes() {
+  if (autoCommentDeleteRunning) return;
+  autoCommentDeleteRunning = true;
+  let queue = await loadAutoCommentDeleteQueue();
+  try {
+    const stored = await chrome.storage.local.get("techhubCredentials");
+    const credentials = stored.techhubCredentials;
+    if (!credentials?.csrfToken) {
+      throw new Error("Thiếu phiên TechHub khi đến giờ xóa comment.");
+    }
+    const freshCsrf = await refreshCSRFToken();
+    if (freshCsrf) {
+      credentials.csrfToken = freshCsrf;
+      await chrome.storage.local.set({ techhubCredentials: credentials });
+    }
+
+    const due = queue
+      .filter(
+        (item) =>
+          item.status === "pending" && new Date(item.deleteAt).getTime() <= Date.now()
+      )
+      .sort((a, b) => new Date(a.deleteAt) - new Date(b.deleteAt));
+
+    for (let index = 0; index < due.length; index++) {
+      const item = due[index];
+      const response = await deleteAutoCommentOnTechHub(item.commentId, credentials);
+      item.attempts = Number(item.attempts || 0) + 1;
+      if (response.ok || response.status === 404) {
+        item.status = "done";
+        item.completedAt = new Date().toISOString();
+        item.lastError = null;
+        broadcastAutoCommentProgress(`Đã tự xóa comment #${item.commentId}.`, "success");
+      } else if (response.status === 429 && item.attempts <= 5) {
+        const retryMs = getRetryAfterMs(response, item.attempts);
+        item.deleteAt = new Date(Date.now() + retryMs).toISOString();
+        item.lastError = `HTTP 429, thử lại sau ${Math.ceil(retryMs / 1000)} giây`;
+      } else {
+        let detail = "";
+        try {
+          detail = (await response.text()).slice(0, 300);
+        } catch (_) {}
+        item.status = "error";
+        item.completedAt = new Date().toISOString();
+        item.lastError = `HTTP ${response.status}${detail ? `: ${detail}` : ""}`;
+        broadcastAutoCommentProgress(
+          `Không xóa được comment #${item.commentId}: ${item.lastError}`,
+          "error"
+        );
+      }
+
+      queue = await mutateAutoCommentDeleteQueue((items) =>
+        items.map((queued) =>
+          Number(queued.commentId) === Number(item.commentId) ? item : queued
+        )
+      );
+
+      if (index < due.length - 1) {
+        const gap =
+          Math.floor(
+            Math.random() *
+              (AUTO_COMMENT_DELETE_MAX_GAP_MS - AUTO_COMMENT_DELETE_MIN_GAP_MS + 1)
+          ) + AUTO_COMMENT_DELETE_MIN_GAP_MS;
+        await new Promise((resolve) => setTimeout(resolve, gap));
+      }
+    }
+
+    queue = await mutateAutoCommentDeleteQueue((items) => {
+      const pending = items.filter((item) => item.status === "pending");
+      const history = items
+        .filter((item) => item.status !== "pending")
+        .sort((a, b) => new Date(b.completedAt || 0) - new Date(a.completedAt || 0))
+        .slice(0, 100);
+      return [...pending, ...history];
+    });
+    await ensureAutoCommentDeleteAlarm(queue);
+  } catch (error) {
+    const retryAt = new Date(Date.now() + 60 * 1000).toISOString();
+    queue = await mutateAutoCommentDeleteQueue((items) =>
+      items.map((item) =>
+        item.status === "pending" && new Date(item.deleteAt).getTime() <= Date.now()
+          ? { ...item, deleteAt: retryAt, lastError: error.message }
+          : item
+      )
+    );
+    await ensureAutoCommentDeleteAlarm(queue);
+    broadcastAutoCommentProgress(`Tạm hoãn tự xóa comment: ${error.message}`, "error");
+  } finally {
+    autoCommentDeleteRunning = false;
   }
 }
 
@@ -3577,7 +4022,33 @@ async function runAutoExternalDiscussion({ manual = false, techhubId = null } = 
   }
 }
 
+async function getCrossInteractionEnabled() {
+  const stored = await chrome.storage.local.get(CROSS_INTERACTION_ENABLED_KEY);
+  return stored[CROSS_INTERACTION_ENABLED_KEY] === true;
+}
+
+async function syncCrossInteractionAlarm() {
+  const enabled = await getCrossInteractionEnabled();
+  const alarm = await chrome.alarms.get(CROSS_INTERACTION_ALARM);
+  if (enabled && !alarm) {
+    chrome.alarms.create(CROSS_INTERACTION_ALARM, { periodInMinutes: 15 });
+  } else if (!enabled && alarm) {
+    await chrome.alarms.clear(CROSS_INTERACTION_ALARM);
+  }
+  return enabled;
+}
+
+async function setCrossInteractionEnabled(enabled) {
+  await chrome.storage.local.set({ [CROSS_INTERACTION_ENABLED_KEY]: enabled });
+  await syncCrossInteractionAlarm();
+  return enabled;
+}
+
 async function runCrossInteraction(isManual = false) {
+  if (!isManual && !(await getCrossInteractionEnabled())) {
+    console.log("[Background] Skipping disabled automatic cross interaction");
+    return;
+  }
   if (autoCommentState.active) {
     console.log("[Background] Skipping cross interaction while auto comment is active");
     broadcastProgress("Bỏ qua tương tác chéo vì auto comment đang chạy.", "info");

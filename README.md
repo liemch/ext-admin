@@ -10,7 +10,7 @@ Chrome Extension (MV3) hỗ trợ quản lý bài viết trên [TechHub](https:/
 - **AI trả lời comment**: đọc nội dung bài + chuỗi hội thoại → NVIDIA gen → lưu `reply_drafts` → reply
 - **AI tự thảo luận**: gen comment gốc trên chính bài viết, đếm mục tiêu từng bài,
   chạy ngẫu nhiên mỗi 1–5 phút → lưu `discussion_drafts`
-- **Auto comment** 1 bài (random 2–5 giây, đủ số lượng thì dừng), chạy ngay hoặc hẹn giờ bắt đầu
+- **Auto comment** trên bài của mình hoặc nhập ID bài thành viên khác, tự chia nhịp để hoàn thành đủ số lượng trong thời gian đã chọn, chạy ngay hoặc hẹn giờ; có thể tự xóa cuốn chiếu và xem nhật ký xóa từng comment
 - **Hẹn xóa bài** qua `DELETE /api/v1/articles/{uuid}/`
 - UI dashboard: sidebar tính năng, bảng bài viết có tìm kiếm, tự co gọn trong side panel;
   mở full tab bằng nút "Mở dạng tab"

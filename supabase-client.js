@@ -705,6 +705,31 @@ class SupabaseClient {
   }
 
   /**
+   * Xóa các bài của user còn trong DB nhưng không còn trong lần quét đầy đủ từ TechHub.
+   */
+  async deleteOwnPostsMissingFromTechHub(username, liveTechhubIds) {
+    const liveIds = new Set(
+      Array.from(liveTechhubIds || [], (id) => Number(id)).filter(Number.isInteger)
+    );
+    const listUrl =
+      `${this.restUrl}/posts?username=eq.${encodeURIComponent(username)}` +
+      `&select=techhub_id&limit=5000`;
+    const response = await fetch(listUrl, { headers: this.getHeaders() });
+    if (!response.ok) {
+      throw new Error(`Failed to list posts for reconciliation: ${response.status}`);
+    }
+    const storedPosts = await response.json();
+    const staleIds = storedPosts
+      .map((post) => Number(post.techhub_id))
+      .filter((id) => Number.isInteger(id) && !liveIds.has(id));
+
+    for (const techhubId of staleIds) {
+      await this.deletePostByTechhubId(techhubId);
+    }
+    return staleIds.length;
+  }
+
+  /**
    * Cập nhật flag bài viết (vd: is_ultra)
    * @param {number|string} techhubId
    * @param {Object} updates
@@ -1169,13 +1194,15 @@ class SupabaseClient {
         page++;
       }
 
-      if (allArticles.length === 0) {
-        return {
-          created: 0,
-          updated: 0,
-          skipped: 0,
-          message: "Không tìm thấy bài viết nào trên TechHub",
-        };
+      // Chỉ đối chiếu xóa khi đã tới trang cuối. Nếu chạm giới hạn trang thì
+      // danh sách chưa đầy đủ, không thể kết luận các bài còn lại đã bị xóa.
+      let removed = 0;
+      if (!hasNext) {
+        if (onProgress) onProgress("Đang đối chiếu bài đã xóa...");
+        removed = await this.deleteOwnPostsMissingFromTechHub(
+          username,
+          allArticles.map((article) => article.id)
+        );
       }
 
       // Bài chưa publish: tạo mới / cập nhật thống kê.
@@ -1255,10 +1282,12 @@ class SupabaseClient {
       return {
         created,
         updated,
+        removed,
         skipped: published.length,
         markedPublished,
         message:
           `Đã quét ${allArticles.length} bài · ${created} mới · ${updated} cập nhật` +
+          ` · xóa ${removed} bài không còn trên TechHub` +
           ` · đánh dấu publish ${markedPublished}/${published.length}`,
       };
     } catch (error) {

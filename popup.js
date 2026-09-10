@@ -24,10 +24,19 @@ const elements = {
   autoCommentMessage: document.getElementById("autoCommentMessage"),
   selectedPostLabel: document.getElementById("selectedPostLabel"),
   autoCommentTargetCount: document.getElementById("autoCommentTargetCount"),
+  autoCommentExternalPostId: document.getElementById("autoCommentExternalPostId"),
+  autoCommentCompletionMinutes: document.getElementById(
+    "autoCommentCompletionMinutes"
+  ),
   autoCommentStartAt: document.getElementById("autoCommentStartAt"),
+  autoCommentAutoDelete: document.getElementById("autoCommentAutoDelete"),
+  autoCommentDeleteAfterMinutes: document.getElementById(
+    "autoCommentDeleteAfterMinutes"
+  ),
   scheduleAutoCommentBtn: document.getElementById("scheduleAutoCommentBtn"),
   cancelAutoCommentScheduleBtn: document.getElementById("cancelAutoCommentScheduleBtn"),
   autoCommentScheduleInfo: document.getElementById("autoCommentScheduleInfo"),
+  autoCommentDeleteLog: document.getElementById("autoCommentDeleteLog"),
   syncMyPostsBtn: document.getElementById("syncMyPostsBtn"),
   runAutoReplyBtn: document.getElementById("runAutoReplyBtn"),
   generateReplyDraftsBtn: document.getElementById("generateReplyDraftsBtn"),
@@ -76,6 +85,7 @@ const elements = {
   loadCachedCommunityBtn: document.getElementById("loadCachedCommunityBtn"),
   communityPostsList: document.getElementById("communityPostsList"),
   communityPostsMessage: document.getElementById("communityPostsMessage"),
+  crossInteractionEnabled: document.getElementById("crossInteractionEnabled"),
   externalDiscussionPostId: document.getElementById("externalDiscussionPostId"),
   loadExternalPostBtn: document.getElementById("loadExternalPostBtn"),
   externalPostPreview: document.getElementById("externalPostPreview"),
@@ -134,6 +144,8 @@ const isTabView = new URLSearchParams(location.search).get("view") === "tab";
 
 let currentUserProfile = null;
 let selectedTechhubId = null;
+let autoCommentSelectedTechhubId = null;
+let currentAutoCommentState = null;
 let cachedPosts = [];
 let postsFilter = "";
 let pendingReplyDraftCount = 0;
@@ -156,6 +168,7 @@ document.addEventListener("DOMContentLoaded", init);
 chrome.runtime.onMessage.addListener((request) => {
   if (request.action === "autoCommentProgress") {
     renderAutoCommentStatus(request.state, request.message, request.type);
+    setTimeout(() => loadAutoCommentDeleteLog(), 100);
   }
   if (request.action === "autoReplyProgress") {
     renderAutoReplyStatus(request.state, request.message, request.type);
@@ -438,6 +451,12 @@ function setupEventListeners() {
   if (elements.scanCommunityBtn) {
     elements.scanCommunityBtn.addEventListener("click", scanCommunityArticles);
   }
+  if (elements.crossInteractionEnabled) {
+    elements.crossInteractionEnabled.addEventListener(
+      "change",
+      toggleCrossInteraction
+    );
+  }
   if (elements.loadCachedCommunityBtn) {
     elements.loadCachedCommunityBtn.addEventListener("click", () =>
       loadCachedCommunityPosts(true)
@@ -507,7 +526,7 @@ function setupEventListeners() {
     elements.replyScope.addEventListener("change", () => {
       const id = Number(elements.replyScope.value);
       if (Number.isInteger(id) && id > 0) {
-        selectPost(id, { updateAiSelectors: false });
+        selectPost(id, { updateAiSelectors: false, updateAutoCommentTarget: false });
         loadReplyDrafts();
       } else {
         selectedTechhubId = null;
@@ -520,7 +539,7 @@ function setupEventListeners() {
     elements.discussionScope.addEventListener("change", () => {
       const id = Number(elements.discussionScope.value);
       if (Number.isInteger(id) && id > 0) {
-        selectPost(id, { updateAiSelectors: false });
+        selectPost(id, { updateAiSelectors: false, updateAutoCommentTarget: false });
         loadDiscussionDrafts();
       } else {
         selectedTechhubId = null;
@@ -682,18 +701,56 @@ async function loadAdminGate() {
     setDefaultDeleteAt();
     setDefaultAutoCommentStartAt();
     await loadAutoCommentStatus();
+    await loadAutoCommentDeleteLog();
     await loadMyPosts();
     await loadAutoReplyStatus();
     await loadReplyDrafts();
     await loadAutoDiscussionStatus();
     await loadDiscussionDrafts();
     await loadAutoExternalDiscussionStatus();
+    await loadCrossInteractionStatus();
     if (Number(elements.externalDiscussionPostId?.value) > 0) {
       await loadExternalDiscussionPost();
     }
     await loadScheduledDeletes();
   } catch (error) {
     showError("Lỗi: " + error.message);
+  }
+}
+
+async function loadCrossInteractionStatus() {
+  const response = await sendMessage({ action: "getCrossInteractionStatus" });
+  if (!response?.success) {
+    throw new Error(response?.error || "Không đọc được trạng thái tương tác chéo");
+  }
+  if (elements.crossInteractionEnabled) {
+    elements.crossInteractionEnabled.checked = !!response.enabled;
+  }
+}
+
+async function toggleCrossInteraction() {
+  const enabled = !!elements.crossInteractionEnabled?.checked;
+  if (elements.crossInteractionEnabled) elements.crossInteractionEnabled.disabled = true;
+  try {
+    const response = await sendMessage({
+      action: "setCrossInteractionEnabled",
+      enabled,
+    });
+    if (!response?.success) throw new Error(response?.error || "Không cập nhật được");
+    showAdminMsg(
+      elements.communityPostsMessage,
+      enabled
+        ? "Đã bật tự động tương tác chéo mỗi 15 phút."
+        : "Đã tắt tự động tương tác chéo.",
+      enabled ? "success" : "muted"
+    );
+  } catch (error) {
+    if (elements.crossInteractionEnabled) {
+      elements.crossInteractionEnabled.checked = !enabled;
+    }
+    showAdminMsg(elements.communityPostsMessage, `Lỗi: ${error.message}`, "error");
+  } finally {
+    if (elements.crossInteractionEnabled) elements.crossInteractionEnabled.disabled = false;
   }
 }
 
@@ -706,9 +763,26 @@ function showAdminMsg(el, text, type = "info") {
   el.textContent = text;
 }
 
-function selectPost(techhubId, { updateAiSelectors = true } = {}) {
+function selectPost(
+  techhubId,
+  { updateAiSelectors = true, updateAutoCommentTarget = true } = {}
+) {
   if (!Number.isInteger(techhubId) || techhubId < 1) return;
   selectedTechhubId = techhubId;
+  const lockedAutoCommentId = Number(
+    currentAutoCommentState?.active
+      ? currentAutoCommentState.techhubId
+      : currentAutoCommentState?.schedule?.techhubId
+  );
+  if (
+    updateAutoCommentTarget &&
+    (!Number.isInteger(lockedAutoCommentId) || lockedAutoCommentId < 1)
+  ) {
+    autoCommentSelectedTechhubId = techhubId;
+    if (elements.autoCommentExternalPostId) {
+      elements.autoCommentExternalPostId.value = "";
+    }
+  }
   if (updateAiSelectors) {
     if (elements.replyScope && !elements.replyScope.disabled) {
       elements.replyScope.value = String(techhubId);
@@ -721,7 +795,23 @@ function selectPost(techhubId, { updateAiSelectors = true } = {}) {
     elements.deleteTechhubId.value = String(techhubId);
   }
   renderMyPosts(cachedPosts);
-  updateSelectedPostLabel(true);
+  updateSelectedPostLabel(updateAutoCommentTarget);
+  // Bộ đếm thuộc về job/bài đã chạy, không được mang sang bài vừa chọn.
+  // Nếu job đang chạy thì vẫn giữ nguyên trạng thái thật của job hiện tại.
+  if (
+    !currentAutoCommentState?.active &&
+    !currentAutoCommentState?.schedule?.techhubId &&
+    updateAutoCommentTarget
+  ) {
+    const targetCount = Number(elements.autoCommentTargetCount?.value);
+    showAdminMsg(
+      elements.autoCommentMessage,
+      `Sẵn sàng · bài #${techhubId} · 0/${
+        Number.isInteger(targetCount) && targetCount > 0 ? targetCount : "?"
+      } cmt`,
+      "muted"
+    );
+  }
   updateScopeLabels();
   loadReplyDrafts();
   loadDiscussionDrafts();
@@ -787,7 +877,7 @@ function populateAiPostSelectors() {
 }
 
 function openPostAction(techhubId, action) {
-  selectPost(techhubId);
+  selectPost(techhubId, { updateAutoCommentTarget: false });
   if (action === "reply" && elements.replyScope && !elements.replyScope.disabled) {
     elements.replyScope.value = String(techhubId);
     showPanel("reply");
@@ -809,6 +899,9 @@ function openPostAction(techhubId, action) {
 
 function updateSelectedPostLabel(notify = false) {
   const post = cachedPosts.find((p) => Number(p.techhub_id) === selectedTechhubId);
+  const autoCommentPost = cachedPosts.find(
+    (p) => Number(p.techhub_id) === Number(autoCommentSelectedTechhubId)
+  );
   if (elements.statSelected) {
     elements.statSelected.textContent = post ? `#${post.techhub_id}` : "—";
   }
@@ -818,15 +911,17 @@ function updateSelectedPostLabel(notify = false) {
       : "Chưa chọn bài nào";
   }
 
-  if (!post) {
+  if (!autoCommentPost) {
     showAdminMsg(elements.selectedPostLabel, "Chưa chọn bài", "muted");
     return;
   }
-  const detail = `#${post.techhub_id} · ${post.status || "-"} · cmt=${
-    post.comments_count ?? 0
-  } · vote=${post.votes_score ?? 0} · medal=${post.medals_count ?? 0} · điểm=${formatPostScore(
-    calcPostScore(post)
-  )} · ${post.title || ""}`;
+  const detail = `#${autoCommentPost.techhub_id} · ${autoCommentPost.status || "-"} · cmt=${
+    autoCommentPost.comments_count ?? 0
+  } · vote=${autoCommentPost.votes_score ?? 0} · medal=${
+    autoCommentPost.medals_count ?? 0
+  } · điểm=${formatPostScore(calcPostScore(autoCommentPost))} · ${
+    autoCommentPost.title || ""
+  }`;
   showAdminMsg(elements.selectedPostLabel, `Đã chọn ${detail}`, "info");
   if (notify) {
     showAdminMsg(
@@ -849,7 +944,10 @@ function renderAutoCommentSchedule(schedule) {
   }
   const base =
     `Đã hẹn bài #${schedule.techhubId} lúc ${formatDateTime(schedule.startAt)}` +
-    ` · mục tiêu ${schedule.targetCount || "?"} cmt`;
+    ` · mục tiêu ${schedule.targetCount || "?"} cmt/${schedule.completionMinutes || 1} phút` +
+    (schedule.autoDeleteEnabled
+      ? ` · tự xóa từng cmt sau ${schedule.deleteAfterMinutes || 1} phút`
+      : "");
   showAdminMsg(
     elements.autoCommentScheduleInfo,
     schedule.lastError ? `${base} · lỗi lần trước: ${schedule.lastError}` : base,
@@ -859,29 +957,72 @@ function renderAutoCommentSchedule(schedule) {
 
 function renderAutoCommentStatus(state, message = "", type = "info") {
   if (!state) return;
+  currentAutoCommentState = { ...state };
+  const lockedTechhubId = Number(state.active ? state.techhubId : state.schedule?.techhubId);
+  if (Number.isInteger(lockedTechhubId) && lockedTechhubId > 0) {
+    autoCommentSelectedTechhubId = lockedTechhubId;
+  }
   elements.startAutoCommentBtn.disabled = !!state.active;
   elements.stopAutoCommentBtn.disabled = !state.active;
   setJobFlag("comment", !!state.active);
   renderAutoCommentSchedule(state.schedule);
-
-  if (state.techhubId) {
-    selectedTechhubId = Number(state.techhubId);
-    renderMyPosts(cachedPosts);
-    updateSelectedPostLabel();
+  updateSelectedPostLabel();
+  const targetState = state.active ? state : state.schedule;
+  if (targetState?.isExternalTarget && targetState.techhubId) {
+    if (elements.autoCommentExternalPostId) {
+      elements.autoCommentExternalPostId.value = String(targetState.techhubId);
+    }
+    showAdminMsg(
+      elements.selectedPostLabel,
+      `Đang dùng bài thành viên khác #${targetState.techhubId}`,
+      "info"
+    );
   }
 
-  const statusText = state.active ? "Đang chạy" : "Đã dừng";
-  const detail = state.techhubId
+  const waitingSchedule = !state.active && state.schedule?.techhubId;
+  const statusText = state.active ? "Đang chạy" : waitingSchedule ? "Đang chờ" : "Đã dừng";
+  const detail = state.active && state.techhubId
     ? `${statusText} · bài #${state.techhubId} · ${state.commentCount || 0}/${
         state.targetCount || "?"
       } cmt · @${state.username || "-"}`
-    : statusText;
-  if (state.targetCount && elements.autoCommentTargetCount) {
-    elements.autoCommentTargetCount.value = String(state.targetCount);
+    : waitingSchedule
+      ? `${statusText} · bài #${state.schedule.techhubId} · 0/${
+          state.schedule.targetCount || "?"
+        } cmt`
+      : statusText;
+  const displayedTarget = state.active
+    ? state.targetCount
+    : state.schedule?.targetCount || state.targetCount;
+  if (displayedTarget && elements.autoCommentTargetCount) {
+    elements.autoCommentTargetCount.value = String(displayedTarget);
   }
+  const completionMinutes = state.active
+    ? state.completionMinutes
+    : state.schedule?.completionMinutes;
+  if (completionMinutes && elements.autoCommentCompletionMinutes) {
+    elements.autoCommentCompletionMinutes.value = String(completionMinutes);
+  }
+  const deleteSettings = state.active
+    ? state
+    : state.schedule?.techhubId
+      ? state.schedule
+      : null;
+  if (elements.autoCommentAutoDelete && deleteSettings) {
+    elements.autoCommentAutoDelete.checked = !!deleteSettings.autoDeleteEnabled;
+  }
+  if (elements.autoCommentDeleteAfterMinutes && deleteSettings?.deleteAfterMinutes) {
+    elements.autoCommentDeleteAfterMinutes.value = String(deleteSettings.deleteAfterMinutes);
+  }
+  const deleteQueueText = [
+    state.deleteQueue?.pending ? `chờ xóa ${state.deleteQueue.pending} cmt` : null,
+    state.deleteQueue?.error ? `xóa lỗi ${state.deleteQueue.error} cmt` : null,
+  ]
+    .filter(Boolean)
+    .map((part) => ` · ${part}`)
+    .join("");
   showAdminMsg(
     elements.autoCommentMessage,
-    message ? `${message} ${detail}` : detail,
+    message ? `${message} ${detail}${deleteQueueText}` : `${detail}${deleteQueueText}`,
     state.lastError ? "error" : type
   );
 }
@@ -902,20 +1043,118 @@ async function loadAutoCommentStatus() {
   }
 }
 
-async function startAutoComment() {
-  const techhubId = Number(selectedTechhubId);
-  if (!Number.isInteger(techhubId) || techhubId < 1) {
-    showAdminMsg(elements.autoCommentMessage, "Bấm Chọn trên 1 bài trước", "error");
+function renderAutoCommentDeleteLog(items) {
+  if (!elements.autoCommentDeleteLog) return;
+  const list = Array.isArray(items) ? items.slice(0, 50) : [];
+  if (!list.length) {
+    elements.autoCommentDeleteLog.innerHTML =
+      '<div class="empty">Chưa có comment nào trong hàng đợi tự xóa.</div>';
     return;
   }
+  elements.autoCommentDeleteLog.innerHTML = list
+    .map((item) => {
+      const status = ["pending", "done", "error"].includes(item.status)
+        ? item.status
+        : "error";
+      const statusText =
+        status === "pending" ? "Chờ xóa" : status === "done" ? "Đã xóa" : "Xóa lỗi";
+      const timing =
+        status === "pending"
+          ? `Dự kiến: ${formatDateTime(item.deleteAt)}`
+          : `Hoàn tất: ${formatDateTime(item.completedAt)}`;
+      const error = item.lastError
+        ? `<div class="schedule-meta">${escapeHtml(item.lastError)}</div>`
+        : "";
+      return (
+        `<div class="schedule-item ${status}">` +
+        `<div class="schedule-main">` +
+        `<div class="schedule-title">#${Number(item.commentId)} · bài #${Number(
+          item.techhubId
+        )} · ${statusText}</div>` +
+        `<div class="schedule-meta">Tạo: ${escapeHtml(
+          formatDateTime(item.createdAt)
+        )} · ${escapeHtml(timing)} · thử ${Number(item.attempts || 0)} lần</div>` +
+        error +
+        `</div></div>`
+      );
+    })
+    .join("");
+}
+
+async function loadAutoCommentDeleteLog() {
+  try {
+    const response = await sendMessage({ action: "getAutoCommentDeleteLog" });
+    if (!response?.success) throw new Error(response?.error || "Không đọc được nhật ký");
+    renderAutoCommentDeleteLog(response.items || []);
+  } catch (error) {
+    if (elements.autoCommentDeleteLog) {
+      elements.autoCommentDeleteLog.innerHTML =
+        `<div class="empty">Lỗi đọc nhật ký: ${escapeHtml(error.message)}</div>`;
+    }
+  }
+}
+
+function readAutoCommentDeleteOptions() {
+  const autoDeleteEnabled = !!elements.autoCommentAutoDelete?.checked;
+  const deleteAfterMinutes = Number(elements.autoCommentDeleteAfterMinutes?.value);
+  if (
+    autoDeleteEnabled &&
+    (!Number.isFinite(deleteAfterMinutes) ||
+      deleteAfterMinutes < 1 ||
+      deleteAfterMinutes > 1440)
+  ) {
+    throw new Error("Thời gian tự xóa phải từ 1 đến 1440 phút.");
+  }
+  const completionMinutes = Number(elements.autoCommentCompletionMinutes?.value);
+  if (!Number.isInteger(completionMinutes) || completionMinutes < 1 || completionMinutes > 1440) {
+    throw new Error("Thời gian hoàn thành phải từ 1 đến 1440 phút.");
+  }
+  return { autoDeleteEnabled, deleteAfterMinutes, completionMinutes };
+}
+
+function getAutoCommentTarget() {
+  const rawExternalId = elements.autoCommentExternalPostId?.value?.trim() || "";
+  if (rawExternalId) {
+    const techhubId = Number(rawExternalId);
+    if (!Number.isInteger(techhubId) || techhubId < 1) {
+      throw new Error("ID bài thành viên khác phải là số nguyên dương.");
+    }
+    return { techhubId, isExternalTarget: true };
+  }
+  const techhubId = Number(autoCommentSelectedTechhubId);
+  if (!Number.isInteger(techhubId) || techhubId < 1) {
+    throw new Error("Hãy chọn bài của anh hoặc nhập ID bài thành viên khác.");
+  }
+  return { techhubId, isExternalTarget: false };
+}
+
+async function startAutoComment() {
+  let target;
+  try {
+    target = getAutoCommentTarget();
+  } catch (error) {
+    showAdminMsg(elements.autoCommentMessage, error.message, "error");
+    return;
+  }
+  const { techhubId, isExternalTarget } = target;
   const targetCount = Number(elements.autoCommentTargetCount?.value);
   if (!Number.isInteger(targetCount) || targetCount < 1) {
     showAdminMsg(elements.autoCommentMessage, "Nhập số lượng cmt mong muốn (>= 1)", "error");
     return;
   }
+  let deleteOptions;
+  try {
+    deleteOptions = readAutoCommentDeleteOptions();
+  } catch (error) {
+    showAdminMsg(elements.autoCommentMessage, error.message, "error");
+    return;
+  }
 
   const confirmed = window.confirm(
-    `Bắt đầu comment vào bài #${techhubId}, tối đa ${targetCount} cmt (random 2–5 giây)?\n\n` +
+    `Bắt đầu comment vào bài #${techhubId}, ${targetCount} cmt trong khoảng ${deleteOptions.completionMinutes} phút?\n\n` +
+      (deleteOptions.autoDeleteEnabled
+        ? `Mỗi comment sẽ tự xóa sau ${deleteOptions.deleteAfterMinutes} phút.\n\n`
+        : "") +
       "Tần suất này có thể khiến TechHub giới hạn tài khoản."
   );
   if (!confirmed) return;
@@ -927,6 +1166,8 @@ async function startAutoComment() {
       action: "startAutoComment",
       techhubId,
       targetCount,
+      isExternalTarget,
+      ...deleteOptions,
     });
     if (!response?.success) {
       throw new Error(response?.error || "Không thể bắt đầu auto comment");
@@ -944,14 +1185,24 @@ function setDefaultAutoCommentStartAt() {
 }
 
 async function scheduleAutoComment() {
-  const techhubId = Number(selectedTechhubId);
-  if (!Number.isInteger(techhubId) || techhubId < 1) {
-    showAdminMsg(elements.autoCommentMessage, "Bấm Chọn trên 1 bài trước", "error");
+  let target;
+  try {
+    target = getAutoCommentTarget();
+  } catch (error) {
+    showAdminMsg(elements.autoCommentMessage, error.message, "error");
     return;
   }
+  const { techhubId, isExternalTarget } = target;
   const targetCount = Number(elements.autoCommentTargetCount?.value);
   if (!Number.isInteger(targetCount) || targetCount < 1) {
     showAdminMsg(elements.autoCommentMessage, "Nhập số lượng cmt mong muốn (>= 1)", "error");
+    return;
+  }
+  let deleteOptions;
+  try {
+    deleteOptions = readAutoCommentDeleteOptions();
+  } catch (error) {
+    showAdminMsg(elements.autoCommentMessage, error.message, "error");
     return;
   }
   const startAtValue = elements.autoCommentStartAt?.value;
@@ -972,6 +1223,8 @@ async function scheduleAutoComment() {
       techhubId,
       targetCount,
       startAt: startAt.toISOString(),
+      isExternalTarget,
+      ...deleteOptions,
     });
     if (!response?.success) throw new Error(response?.error || "Không hẹn được");
     renderAutoCommentStatus(
@@ -1040,6 +1293,24 @@ function formatPostScore(score) {
 
 function renderMyPosts(posts) {
   cachedPosts = Array.isArray(posts) ? posts : [];
+  // Job auto-comment cũ không được giữ một lựa chọn không còn trong danh sách.
+  if (
+    Number.isInteger(selectedTechhubId) &&
+    !cachedPosts.some((post) => Number(post.techhub_id) === selectedTechhubId)
+  ) {
+    selectedTechhubId = null;
+    if (elements.deleteTechhubId) elements.deleteTechhubId.value = "";
+  }
+  if (
+    Number.isInteger(autoCommentSelectedTechhubId) &&
+    !cachedPosts.some(
+      (post) => Number(post.techhub_id) === autoCommentSelectedTechhubId
+    ) &&
+    !currentAutoCommentState?.active &&
+    !currentAutoCommentState?.schedule?.techhubId
+  ) {
+    autoCommentSelectedTechhubId = null;
+  }
   populateAiPostSelectors();
   if (!elements.myPostsList) return;
 
