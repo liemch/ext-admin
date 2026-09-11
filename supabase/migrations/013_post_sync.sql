@@ -339,15 +339,15 @@ GRANT SELECT ON public.post_sync_runs TO anon, authenticated;
 
 -- ==================== Seed settings ====================
 INSERT INTO public.settings (key, value, description) VALUES
-  ('post_sync_feed_interval_minutes', '60', 'Chu kỳ quét feed discovery (phút)'),
-  ('post_sync_reconcile_interval_minutes', '1440', 'Chu kỳ đối soát theo username (phút, mặc định 24 giờ)'),
-  ('post_sync_lease_seconds', '600', 'Thời gian lease một job sync (giây, tối thiểu 60)'),
-  ('post_sync_max_requests_per_run', '50', 'Số request tối đa cho một run'),
-  ('post_sync_max_pages_per_source', '5', 'Số trang tối đa quét trong một run'),
-  ('post_sync_max_concurrency', '3', 'Số user reconcile đồng thời tối đa'),
-  ('post_sync_request_delay_ms', '1500', 'Delay giữa các request (ms)'),
-  ('post_sync_manual_user_cooldown_minutes', '10', 'Cooldown quét tay một user (phút)'),
-  ('post_sync_default_community', 'cai-tien-moi-ngay', 'Community mặc định cho feed discovery')
+  ('post_sync_feed_interval_minutes', '60'::jsonb, 'Chu kỳ quét feed discovery (phút)'),
+  ('post_sync_reconcile_interval_minutes', '1440'::jsonb, 'Chu kỳ đối soát theo username (phút, mặc định 24 giờ)'),
+  ('post_sync_lease_seconds', '600'::jsonb, 'Thời gian lease một job sync (giây, tối thiểu 60)'),
+  ('post_sync_max_requests_per_run', '50'::jsonb, 'Số request tối đa cho một run'),
+  ('post_sync_max_pages_per_source', '5'::jsonb, 'Số trang tối đa quét trong một run'),
+  ('post_sync_max_concurrency', '3'::jsonb, 'Số user reconcile đồng thời tối đa'),
+  ('post_sync_request_delay_ms', '1500'::jsonb, 'Delay giữa các request (ms)'),
+  ('post_sync_manual_user_cooldown_minutes', '10'::jsonb, 'Cooldown quét tay một user (phút)'),
+  ('post_sync_default_community', '"cai-tien-moi-ngay"'::jsonb, 'Community mặc định cho feed discovery')
 ON CONFLICT (key) DO NOTHING;
 
 COMMIT;
