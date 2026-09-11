@@ -6,10 +6,11 @@
 #    1. Đăng nhập + link project (lấy ref tự động từ config.js nếu có)
 #    2. Sinh PROXY_TOKEN (cho nvidia-proxy) và ADMIN_TOKEN (cho admin-api + engagement-api)
 #    3. Set secrets: NVIDIA_API_KEY (key MỚI), PROXY_TOKEN, ADMIN_TOKEN
-#    4. Deploy 3 edge functions: nvidia-proxy, admin-api, engagement-api
-#    5. Áp migration 011 (chặn anon tự cấp is_admin / xóa user) và
-#       migration 012 (hàng đợi tương tác giữa các user)
-#    6. Test 3 function bằng curl
+#    4. Deploy 4 edge functions: nvidia-proxy, admin-api, engagement-api, post-sync-api
+#    5. Áp migration 011 (chặn anon tự cấp is_admin / xóa user),
+#       012 (hàng đợi tương tác giữa các user),
+#       013 (đồng bộ bài viết — hints/feed/reconcile)
+#    6. Test 4 function bằng curl
 #    7. In sẵn 2 khối config.js: một cho máy admin, một cho user thường
 #
 #  Yêu cầu: Supabase CLI
@@ -96,7 +97,8 @@ step "Deploy edge functions"
 supabase functions deploy nvidia-proxy   --no-verify-jwt
 supabase functions deploy admin-api     --no-verify-jwt
 supabase functions deploy engagement-api --no-verify-jwt
-ok "Đã deploy nvidia-proxy + admin-api + engagement-api"
+supabase functions deploy post-sync-api --no-verify-jwt
+ok "Đã deploy nvidia-proxy + admin-api + engagement-api + post-sync-api"
 
 # ---------- 7. Migration 011 + 012 ----------
 step "Áp migration 011 (chặn anon sửa is_admin / xóa user)"
@@ -115,6 +117,8 @@ apply_migration() {
 apply_migration "supabase/migrations/011_restrict_users_writes.sql"
 step "Áp migration 012 (hàng đợi tương tác giữa các user)"
 apply_migration "supabase/migrations/012_cross_user_engagement.sql"
+step "Áp migration 013 (đồng bộ bài viết — post-sync)"
+apply_migration "supabase/migrations/013_post_sync.sql"
 
 # ---------- 8. Test ----------
 BASE="https://${PROJECT_REF}.supabase.co/functions/v1"
@@ -129,6 +133,9 @@ if command -v curl >/dev/null 2>&1; then
   CODE3="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/engagement-api" \
     -H 'Content-Type: application/json' -d '{"action":"getStatus"}')"
   info "engagement-api không token → HTTP $CODE3 (mong đợi 401)"
+  CODE4="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/post-sync-api" \
+    -H 'Content-Type: application/json' -d '{"action":"getStatus"}')"
+  info "post-sync-api không token  → HTTP $CODE4 (mong đợi 401)"
   info "admin-api có ADMIN_TOKEN → kết quả (cắt 120 ký tự đầu):"
   curl -s -X POST "$BASE/admin-api" \
     -H "Authorization: Bearer $ADMIN_TOKEN" \
@@ -153,6 +160,13 @@ const ADMIN_API_CONFIG = {
 
 const ENGAGEMENT_API_CONFIG = {
   url: "$BASE/engagement-api",
+  adminToken: "$ADMIN_TOKEN",
+};
+
+// Post-sync: máy này làm leader (quét feed, verify hint, đối soát bài).
+// User thường KHÔNG điền adminToken.
+const POST_SYNC_API_CONFIG = {
+  url: "$BASE/post-sync-api",
   adminToken: "$ADMIN_TOKEN",
 };
 
@@ -182,6 +196,13 @@ const ADMIN_API_CONFIG = { url: "", token: "" };
 // server lưu hash token để thu hồi; KHÔNG gửi adminToken cho user):
 const ENGAGEMENT_API_CONFIG = {
   url: "$BASE/engagement-api",
+  adminToken: "",
+};
+
+// Đồng bộ bài viết — máy user chỉ cần url để gửi hint khi mở bài;
+// KHÔNG điền adminToken (chỉ máy admin làm leader).
+const POST_SYNC_API_CONFIG = {
+  url: "$BASE/post-sync-api",
   adminToken: "",
 };
 
