@@ -21,7 +21,16 @@ Chrome Extension (MV3) hỗ trợ quản lý bài viết trên [TechHub](https:/
 
 ### 1. Cấu hình
 
-Copy `config.example.js` → `config.js` (nếu chưa có) và điền:
+Copy `config.example.js` → `config.js` (nếu chưa có) và điền.
+`config.js` đã nằm trong `.gitignore` — **không bao giờ commit key lên repo**.
+
+NVIDIA có 2 chế độ:
+
+- **`mode: "proxy"` (khuyên dùng)** — extension gọi qua Supabase Edge Function,
+  key NVIDIA nằm trong Supabase secret, người cài extension không đọc được key.
+  Deploy theo [`supabase/functions/nvidia-proxy/README.md`](supabase/functions/nvidia-proxy/README.md).
+- **`mode: "direct"`** — key nằm thẳng trong `config.js`. Ai cài extension cũng đọc được
+  (chrome://extensions → xem nguồn). Chỉ dùng khi extension chạy trên máy của riêng mình.
 
 ```javascript
 const SUPABASE_CONFIG = {
@@ -31,7 +40,10 @@ const SUPABASE_CONFIG = {
 };
 
 const NVIDIA_CONFIG = {
-  apiKey: "nvapi-...",
+  mode: "proxy", // "proxy" | "direct"
+  proxyUrl: "https://<project-ref>.supabase.co/functions/v1/nvidia-proxy",
+  proxyToken: "your-proxy-token",
+  apiKey: "", // chỉ điền khi mode: "direct"
   baseUrl: "https://integrate.api.nvidia.com/v1",
   model: "nvidia/nemotron-3.5-lightning-30b-a3b",
   maxTokens: 256,
@@ -42,6 +54,9 @@ const NVIDIA_CONFIG = {
 ```
 
 API key NVIDIA: https://build.nvidia.com/settings/api-keys
+
+> ⚠️ **Nếu key từng bị commit lên repo (kể cả repo private): coi như key đã lộ —
+> revoke ngay và tạo key mới.** Key cũ vẫn nằm trong git history dù đã xóa file.
 
 ### 2. Setup Supabase
 

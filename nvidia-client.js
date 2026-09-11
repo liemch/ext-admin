@@ -13,6 +13,11 @@ const NVIDIA_DEFAULTS = {
 function getNvidiaConfig() {
   const cfg = typeof NVIDIA_CONFIG !== "undefined" ? NVIDIA_CONFIG : {};
   return {
+    // "proxy": gọi qua Supabase Edge Function — key NVIDIA không nằm trong extension (khuyên dùng)
+    // "direct": gọi thẳng NVIDIA bằng apiKey trong config.js (chỉ dùng khi extension của riêng mình)
+    mode: cfg.mode === "proxy" ? "proxy" : "direct",
+    proxyUrl: (cfg.proxyUrl || "").trim().replace(/\/+$/, ""),
+    proxyToken: cfg.proxyToken || "",
     apiKey: cfg.apiKey || "",
     baseUrl: (cfg.baseUrl || NVIDIA_DEFAULTS.baseUrl).replace(/\/$/, ""),
     model: cfg.model || NVIDIA_DEFAULTS.model,
@@ -123,6 +128,18 @@ function sharesOpeningWith(text, previousTexts = []) {
 }
 
 function postChatCompletion(cfg, payload) {
+  if (cfg.mode === "proxy") {
+    const headers = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    };
+    if (cfg.proxyToken) headers.Authorization = `Bearer ${cfg.proxyToken}`;
+    return fetch(cfg.proxyUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    });
+  }
   return fetch(`${cfg.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -136,8 +153,14 @@ function postChatCompletion(cfg, payload) {
 
 async function nvidiaChat(messages, options = {}) {
   const cfg = getNvidiaConfig();
-  if (!cfg.apiKey || cfg.apiKey === "YOUR_NVIDIA_API_KEY") {
-    throw new Error("Chưa cấu hình NVIDIA_CONFIG.apiKey trong config.js");
+  if (cfg.mode === "proxy") {
+    if (!cfg.proxyUrl || cfg.proxyUrl === "YOUR_EDGE_FUNCTION_URL") {
+      throw new Error('Chưa cấu hình NVIDIA_CONFIG.proxyUrl khi dùng mode: "proxy"');
+    }
+  } else if (!cfg.apiKey || cfg.apiKey === "YOUR_NVIDIA_API_KEY") {
+    throw new Error(
+      'Chưa cấu hình NVIDIA_CONFIG.apiKey trong config.js (hoặc chuyển mode: "proxy" để key không nằm trong extension)'
+    );
   }
 
   const enableThinking = options.enableThinking ?? cfg.enableThinking;

@@ -1,0 +1,17 @@
+# Secrets — không bao giờ commit
+config.js
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+*.swp
+.idea/
+.vscode/
+*.sublime-*
+
+# Node (nếu thêm tooling phía sau)
+node_modules/
+npm-debug.log*
