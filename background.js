@@ -486,6 +486,74 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
 
 // Lắng nghe message từ popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (ADMIN_ONLY_ACTIONS.has(request.action)) {
+    ensureActionAllowed()
+      .then(() => handlePopupMessage(request, sendResponse))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  return handlePopupMessage(request, sendResponse);
+});
+
+// Action chỉ quản trị viên được dùng
+// (menu Tự động hóa / Bài người khác / Nguy hiểm / Người dùng)
+const ADMIN_ONLY_ACTIONS = new Set([
+  "runInteractions",
+  "setCrossInteractionEnabled",
+  "startAutoComment",
+  "stopAutoComment",
+  "scheduleAutoComment",
+  "cancelAutoCommentSchedule",
+  "setAutoReplyEnabled",
+  "runAutoReplyOnce",
+  "generateReplyDrafts",
+  "updateReplyDraft",
+  "deleteReplyDraft",
+  "deletePendingReplyDrafts",
+  "setAutoDiscussionEnabled",
+  "runAutoDiscussionOnce",
+  "generateDiscussionDrafts",
+  "updateDiscussionDraft",
+  "deleteDiscussionDraft",
+  "deletePendingDiscussionDrafts",
+  "scanCommunityArticles",
+  "resolveExternalDiscussionPost",
+  "generateExternalDiscussionDrafts",
+  "deletePendingExternalDiscussionDrafts",
+  "setAutoExternalDiscussionEnabled",
+  "runAutoExternalDiscussionOnce",
+  "scheduleDeletePost",
+  "cancelScheduledDelete",
+  "deletePostNow",
+  "getUsersOverview",
+  "updateUserStatus",
+  "deleteUser",
+]);
+
+/**
+ * Kiểm tra user hiện tại (từ storage + Supabase) có quyền admin và không bị khóa.
+ * Ném lỗi nếu không được phép dùng action quản trị.
+ */
+async function ensureActionAllowed() {
+  const profile = await new Promise((resolve) => {
+    chrome.storage.local.get("userProfile", (result) => resolve(result.userProfile || null));
+  });
+  if (!profile?.username) {
+    throw new Error("Không tìm thấy phiên TechHub. Mở TechHub và đăng nhập trước.");
+  }
+  const user = await supabase.findUserByUsername(profile.username);
+  if (!user) {
+    throw new Error("Tài khoản chưa được đăng ký trong hệ thống.");
+  }
+  if (user.is_locked) {
+    throw new Error("Tài khoản đã bị khóa khỏi extension.");
+  }
+  if (!user.is_admin) {
+    throw new Error("Chức năng này chỉ dành cho quản trị viên.");
+  }
+}
+
+function handlePopupMessage(request, sendResponse) {
   if (request.action === "getCredentials") {
     // Trả về credentials đã capture
     chrome.storage.local.get("techhubCredentials", (result) => {
@@ -935,7 +1003,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;
   }
-});
+}
 
 console.log("TechHub Profile Sync - Background script loaded");
 

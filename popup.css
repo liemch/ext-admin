@@ -1503,6 +1503,11 @@ input[type="search"]::-webkit-search-cancel-button {
   margin-top: 3px;
 }
 
+/* Phân quyền: user thường không thấy menu admin */
+body.not-admin .admin-only {
+  display: none !important;
+}
+
 /* ============ Users panel ============ */
 
 .cell-user {

@@ -52,7 +52,7 @@
             <span class="nav-label">Thống kê</span>
           </button>
           <button
-            class="nav-item"
+            class="nav-item admin-only"
             type="button"
             data-panel="users"
             data-title="Người dùng"
@@ -67,9 +67,9 @@
             <span class="nav-label">Người dùng</span>
           </button>
 
-          <span class="nav-group">Tự động hóa</span>
+          <span class="nav-group admin-only">Tự động hóa</span>
           <button
-            class="nav-item"
+            class="nav-item admin-only"
             type="button"
             data-panel="reply"
             data-title="AI trả lời comment"
@@ -85,7 +85,7 @@
             <span id="replyDot" class="nav-dot hidden"></span>
           </button>
           <button
-            class="nav-item"
+            class="nav-item admin-only"
             type="button"
             data-panel="discussion"
             data-title="AI tự thảo luận"
@@ -101,7 +101,7 @@
             <span id="discussionDot" class="nav-dot hidden"></span>
           </button>
           <button
-            class="nav-item"
+            class="nav-item admin-only"
             type="button"
             data-panel="comment"
             data-title="Auto comment"
@@ -117,9 +117,9 @@
             <span id="commentDot" class="nav-dot hidden"></span>
           </button>
 
-          <span class="nav-group">Bài người khác</span>
+          <span class="nav-group admin-only">Bài người khác</span>
           <button
-            class="nav-item"
+            class="nav-item admin-only"
             type="button"
             data-panel="community"
             data-title="Quét chuyên mục"
@@ -134,7 +134,7 @@
             <span class="nav-label">Quét chuyên mục</span>
           </button>
           <button
-            class="nav-item"
+            class="nav-item admin-only"
             type="button"
             data-panel="external-discussion"
             data-title="Thảo luận bài người khác"
@@ -150,9 +150,9 @@
             <span id="externalDiscussionDot" class="nav-dot hidden"></span>
           </button>
 
-          <span class="nav-group">Nguy hiểm</span>
+          <span class="nav-group admin-only">Nguy hiểm</span>
           <button
-            class="nav-item"
+            class="nav-item admin-only"
             type="button"
             data-panel="delete"
             data-title="Hẹn xóa bài"
@@ -194,7 +194,7 @@
             <p id="pageSubtitle">Danh sách bài đã đồng bộ từ TechHub</p>
           </div>
           <div class="topbar-badges">
-            <span id="jobBadge" class="pill pill-muted">Chưa có job chạy</span>
+            <span id="jobBadge" class="pill pill-muted admin-only">Chưa có job chạy</span>
           </div>
         </header>
 
@@ -205,7 +205,7 @@
           </div>
 
           <div id="deniedSection" class="notice hidden">
-            <p>Tài khoản hiện tại không có quyền admin.</p>
+            <p>Tài khoản hiện tại không có quyền truy cập.</p>
           </div>
 
           <div id="adminSection" class="hidden">
@@ -311,7 +311,7 @@
               </div>
             </section>
 
-            <section class="panel hidden" data-panel="users">
+            <section class="panel hidden admin-only" data-panel="users">
               <div class="stat-grid">
                 <div class="stat-card">
                   <span class="stat-label">Tổng người dùng</span>
@@ -371,7 +371,7 @@
               </div>
             </section>
 
-            <section class="panel hidden" data-panel="reply">
+            <section class="panel hidden admin-only" data-panel="reply">
               <div class="card">
                 <div class="card-head">
                   <div>
@@ -492,7 +492,7 @@
               </div>
             </section>
 
-            <section class="panel hidden" data-panel="discussion">
+            <section class="panel hidden admin-only" data-panel="discussion">
               <div class="card">
                 <div class="card-head">
                   <div>
@@ -602,7 +602,7 @@
               </div>
             </section>
 
-            <section class="panel hidden" data-panel="community">
+            <section class="panel hidden admin-only" data-panel="community">
               <div class="card">
                 <div class="card-head">
                   <div>
@@ -680,7 +680,7 @@
               </div>
             </section>
 
-            <section class="panel hidden" data-panel="external-discussion">
+            <section class="panel hidden admin-only" data-panel="external-discussion">
               <div class="card">
                 <div class="card-head">
                   <div>
@@ -829,7 +829,7 @@
               </div>
             </section>
 
-            <section class="panel hidden" data-panel="comment">
+            <section class="panel hidden admin-only" data-panel="comment">
               <div class="card">
                 <div class="card-head">
                   <div>
@@ -942,7 +942,7 @@
               </div>
             </section>
 
-            <section class="panel hidden" data-panel="delete">
+            <section class="panel hidden admin-only" data-panel="delete">
               <div class="card">
                 <div class="card-head">
                   <div>

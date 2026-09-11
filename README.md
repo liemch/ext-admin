@@ -62,7 +62,11 @@ Chi tiết bảng / kiểm tra: xem [`supabase/README.md`](supabase/README.md).
 3. **Load unpacked** → chọn thư mục project này
 4. Đăng nhập https://techhub.fpt.net rồi mở **My Angel** (side panel hoặc tab)
 
-User trong DB cần `is_admin = true` mới vào được panel admin.
+Phân quyền theo bảng `users`:
+
+- `is_admin = true`: thấy toàn bộ menu (Tự động hóa, Bài người khác, Nguy hiểm, Người dùng)
+- `is_admin = false`: chỉ thấy Bài viết + Thống kê
+- `is_locked = true`: bị chặn khỏi extension
 
 ## Cách dùng
 

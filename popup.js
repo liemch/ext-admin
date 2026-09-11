@@ -148,9 +148,21 @@ const elements = {
 const ACTIVE_PANEL_KEY = "activePanel";
 const COMMUNITY_BROWSER_KEY = "communityBrowserPreferences";
 
+// Menu chỉ quản trị viên: Tự động hóa / Bài người khác / Nguy hiểm / Người dùng
+const ADMIN_ONLY_PANELS = new Set([
+  "reply",
+  "discussion",
+  "comment",
+  "community",
+  "external-discussion",
+  "delete",
+  "users",
+]);
+
 const isTabView = new URLSearchParams(location.search).get("view") === "tab";
 
 let currentUserProfile = null;
+let isAdminUser = false;
 let selectedTechhubId = null;
 let autoCommentSelectedTechhubId = null;
 let currentAutoCommentState = null;
@@ -232,7 +244,7 @@ chrome.runtime.onMessage.addListener((request) => {
 async function init() {
   applyViewMode();
   setupEventListeners();
-  await Promise.all([restoreActivePanel(), restoreCommunityBrowserPreferences()]);
+  await restoreCommunityBrowserPreferences();
   syncDashboardScopeFields();
 
   if (
@@ -244,6 +256,7 @@ async function init() {
   }
 
   await loadAdminGate();
+  await restoreActivePanel();
 }
 
 function applyViewMode() {
@@ -323,6 +336,9 @@ async function openInTab() {
 }
 
 function showPanel(name, persist = true) {
+  if (!isAdminUser && ADMIN_ONLY_PANELS.has(name)) {
+    name = "posts";
+  }
   const panels = document.querySelectorAll(".panel");
   const target = Array.from(panels).find((panel) => panel.dataset.panel === name);
   if (!target) return;
@@ -736,8 +752,10 @@ async function loadAdminGate() {
     }
 
     const dbUser = await supabase.findUserByUsername(username);
-    if (!dbUser || !dbUser.is_admin) {
-      showDenied();
+    if (!dbUser) {
+      showDenied(
+        `Tài khoản @${username} chưa được đăng ký. Liên hệ quản trị viên để được thêm vào hệ thống.`
+      );
       return;
     }
     if (dbUser.is_locked) {
@@ -747,22 +765,28 @@ async function loadAdminGate() {
       return;
     }
 
+    // Admin thấy toàn bộ menu; user thường chỉ thấy Bài viết + Thống kê
+    isAdminUser = !!dbUser.is_admin;
+    document.body.classList.toggle("not-admin", !isAdminUser);
+
     showAdmin();
-    setDefaultDeleteAt();
-    setDefaultAutoCommentStartAt();
-    await loadAutoCommentStatus();
-    await loadAutoCommentDeleteLog();
     await loadMyPosts();
-    await loadAutoReplyStatus();
-    await loadReplyDrafts();
-    await loadAutoDiscussionStatus();
-    await loadDiscussionDrafts();
-    await loadAutoExternalDiscussionStatus();
-    await loadCrossInteractionStatus();
-    if (Number(elements.externalDiscussionPostId?.value) > 0) {
-      await loadExternalDiscussionPost();
+    if (isAdminUser) {
+      setDefaultDeleteAt();
+      setDefaultAutoCommentStartAt();
+      await loadAutoCommentStatus();
+      await loadAutoCommentDeleteLog();
+      await loadAutoReplyStatus();
+      await loadReplyDrafts();
+      await loadAutoDiscussionStatus();
+      await loadDiscussionDrafts();
+      await loadAutoExternalDiscussionStatus();
+      await loadCrossInteractionStatus();
+      if (Number(elements.externalDiscussionPostId?.value) > 0) {
+        await loadExternalDiscussionPost();
+      }
+      await loadScheduledDeletes();
     }
-    await loadScheduledDeletes();
   } catch (error) {
     showError("Lỗi: " + error.message);
   }
@@ -1689,8 +1713,10 @@ function renderMyPosts(posts) {
         `<button type="button" class="mini-btn${
           selected ? " is-selected" : ""
         }" data-select-id="${id}">${selected ? "Đang chọn" : "Chọn"}</button>` +
-        `<button type="button" class="mini-btn" data-post-action="reply" data-post-id="${id}">AI trả lời</button>` +
-        `<button type="button" class="mini-btn" data-post-action="discussion" data-post-id="${id}">AI thảo luận</button>` +
+        (isAdminUser
+          ? `<button type="button" class="mini-btn" data-post-action="reply" data-post-id="${id}">AI trả lời</button>` +
+            `<button type="button" class="mini-btn" data-post-action="discussion" data-post-id="${id}">AI thảo luận</button>`
+          : "") +
         `</div>` +
         `</td>` +
         `</tr>`
