@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>My Angel — UI Preview</title>
+    <link rel="stylesheet" href="popup.css" />
+    <style>
+      /* Chỉ dùng cho trang preview, không ảnh hưởng extension */
+      .preview-tag {
+        position: fixed;
+        right: 14px;
+        bottom: 14px;
+        z-index: 99;
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-size: 10.5px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        color: #c7d2fe;
+        background: rgba(13, 17, 38, 0.85);
+        border: 1px solid rgba(129, 140, 248, 0.35);
+        backdrop-filter: blur(8px);
+        pointer-events: none;
+      }
+      body.sidepanel {
+        max-width: 420px;
+        margin: 0 auto;
+        border-left: 1px solid rgba(151, 168, 224, 0.12);
+        border-right: 1px solid rgba(151, 168, 224, 0.12);
+        min-height: 100vh;
+      }
+      body.sidepanel .preview-tag {
+        right: 6px;
+        bottom: 6px;
+      }
+      .mode-toggle {
+        position: fixed;
+        left: 14px;
+        bottom: 14px;
+        z-index: 99;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 6px;
+        border-radius: 999px;
+        font-size: 10.5px;
+        font-weight: 700;
+        color: #a6b0d4;
+        background: rgba(13, 17, 38, 0.85);
+        border: 1px solid rgba(151, 168, 224, 0.2);
+        backdrop-filter: blur(8px);
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .mode-toggle b {
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-weight: 700;
+      }
+      .mode-toggle .on {
+        background: var(--grad-accent, linear-gradient(135deg, #6366f1, #8b5cf6));
+        color: #fff;
+      }
+      .mode-toggle .off {
+        color: #6f7899;
+      }
+    </style>
+  </head>
+  <body>
+    <span class="preview-tag">✦ Bản xem trước UI · dữ liệu mẫu</span>
+    <button class="mode-toggle" id="modeToggle" type="button">
+      Xem dạng:
+      <b class="on" id="modeAdmin">Admin</b>
+      <b class="off" id="modeBasic">User thường</b>
+    </button>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="sidebar-brand">
+          <img class="brand-logo" src="icons/angel.png" alt="My Angel" />
+          <div class="brand-text">
+            <strong>My Angel</strong>
+            <span>TechHub Assistant</span>
+          </div>
+        </div>
+
+        <nav id="sideMenu" class="nav" aria-label="Menu tính năng">
+          <span class="nav-group">Quản lý</span>
+          <button class="nav-item active" type="button" data-panel="posts" data-title="Bài viết" data-subtitle="Danh sách bài đã đồng bộ từ TechHub">
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true"><path d="M5 3h11l3 3v15H5V3zm2 6h10v2H7V9zm0 4h10v2H7v-2zm0 4h7v2H7v-2z" fill="currentColor" /></svg>
+            <span class="nav-label">Bài viết</span>
+          </button>
+          <button class="nav-item" type="button" data-panel="dashboard" data-title="Thống kê theo tháng" data-subtitle="So sánh tháng hiện tại với tháng trước">
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true"><path d="M4 20h16v2H2V2h2v18zm3-3V9h3v8H7zm5 0V4h3v13h-3zm5 0v-6h3v6h-3z" fill="currentColor" /></svg>
+            <span class="nav-label">Thống kê</span>
+          </button>
+          <button class="nav-item admin-only" type="button" data-panel="users" data-title="Người dùng" data-subtitle="Quản lý tài khoản đang dùng extension">
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true"><path d="M16 11c1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 3-1.34 3-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" fill="currentColor" /></svg>
+            <span class="nav-label">Người dùng</span>
+          </button>
+
+          <span class="nav-group admin-only">Tự động hóa</span>
+          <button class="nav-item admin-only" type="button" data-panel="reply" data-title="AI trả lời comment" data-subtitle="Tạo mẫu reply trước rồi đăng theo mục tiêu">
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 7.5 1.6 9 5.1.5-5-1.5-10-9-11z" fill="currentColor" /></svg>
+            <span class="nav-label">AI trả lời</span>
+            <span class="nav-dot"></span>
+          </button>
+          <button class="nav-item admin-only" type="button" data-panel="discussion" data-title="AI tự thảo luận" data-subtitle="Tự đăng comment gốc trên bài của bạn theo mục tiêu">
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true"><path d="M20 2H4a2 2 0 00-2 2v12a2 2 0 002 2h4l4 4 4-4h4a2 2 0 002-2V4a2 2 0 00-2-2zM7 9h10v2H7V9zm0-3h10v2H7V6z" fill="currentColor" /></svg>
+            <span class="nav-label">AI thảo luận</span>
+          </button>
+          <button class="nav-item admin-only" type="button" data-panel="comment" data-title="Auto comment" data-subtitle="Comment liên tục vào 1 bài, chạy ngay hoặc hẹn giờ">
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm1 5v5.6l4.2 2.5-.9 1.5L11 13.5V7h2z" fill="currentColor" /></svg>
+            <span class="nav-label">Auto comment</span>
+            <span class="nav-dot"></span>
+          </button>
+
+          <span class="nav-group admin-only">Bài người khác</span>
+          <button class="nav-item admin-only" type="button" data-panel="community" data-title="Quét chuyên mục" data-subtitle="Làm mới dữ liệu chuyên mục và chọn bài để thảo luận">
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true"><path d="M10 4a6 6 0 014.47 10l4.27 4.26-1.42 1.42-4.26-4.27A6 6 0 1110 4zm0 2a4 4 0 100 8 4 4 0 000-8z" fill="currentColor" /></svg>
+            <span class="nav-label">Quét chuyên mục</span>
+          </button>
+          <button class="nav-item admin-only" type="button" data-panel="external-discussion" data-title="Thảo luận bài người khác" data-subtitle="Chọn bài từ chuyên mục hoặc nhập ID, duyệt mẫu rồi đăng">
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true"><path d="M4 3h16a2 2 0 012 2v10a2 2 0 01-2 2h-5l-3 4-3-4H4a2 2 0 01-2-2V5a2 2 0 012-2zm3 5h10V6H7v2zm0 4h7v-2H7v2z" fill="currentColor" /></svg>
+            <span class="nav-label">AI thảo luận</span>
+          </button>
+
+          <span class="nav-group admin-only">Nguy hiểm</span>
+          <button class="nav-item admin-only" type="button" data-panel="delete" data-title="Hẹn xóa bài" data-subtitle="Xóa bài trên TechHub ngay hoặc theo giờ đã hẹn">
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true"><path d="M6 7h12l-1 14H7L6 7zm3-4h6l1 2H8l1-2z" fill="currentColor" /></svg>
+            <span class="nav-label">Hẹn xóa bài</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="user-chip">
+            <span class="user-avatar">li</span>
+            <span class="user-name">liemch2</span>
+          </div>
+          <button class="ghost-btn" type="button" title="Mở dạng tab toàn màn hình">
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M14 3h7v7h-2V6.41l-8.29 8.3-1.42-1.42 8.3-8.29H14V3zM5 5h5V3H3v18h18v-7h-2v5H5V5z" fill="currentColor" /></svg>
+            <span>Mở dạng tab</span>
+          </button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="topbar-text">
+            <h1 id="pageTitle">Bài viết</h1>
+            <p id="pageSubtitle">Danh sách bài đã đồng bộ từ TechHub</p>
+          </div>
+          <div class="topbar-badges">
+            <span class="pill pill-live admin-only">2 job đang chạy</span>
+          </div>
+        </header>
+
+        <div class="content">
+          <div class="panel" data-panel="posts">
+            <div class="stat-grid">
+              <div class="stat-card">
+                <span class="stat-label">Tổng bài</span>
+                <strong class="stat-value">12</strong>
+                <span class="stat-hint">chưa publish</span>
+              </div>
+              <div class="stat-card">
+                <span class="stat-label">Tổng điểm</span>
+                <strong class="stat-value accent">46.8</strong>
+                <span class="stat-hint">1 cmt = 0.2 · 1 vote = 0.1 · 1 medal = 6</span>
+              </div>
+              <div class="stat-card">
+                <span class="stat-label">Bài đang chọn</span>
+                <strong class="stat-value">#4097</strong>
+                <span class="stat-hint">Kinh nghiệm xử lý incident lúc 2h sáng</span>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <div>
+                  <h2>Danh sách bài</h2>
+                  <p>Click tiêu đề để mở TechHub · nút Chọn để dùng cho các job khác</p>
+                </div>
+                <div class="card-actions">
+                  <label class="search" for="postsSearch">
+                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M10 4a6 6 0 014.47 10l4.27 4.26-1.42 1.42-4.26-4.27A6 6 0 1110 4zm0 2a4 4 0 100 8 4 4 0 000-8z" fill="currentColor" /></svg>
+                    <input id="postsSearch" type="search" placeholder="Tìm tiêu đề hoặc ID…" autocomplete="off" />
+                  </label>
+                  <button class="btn btn-primary" type="button">Quét bài</button>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table class="data-table">
+                  <thead><tr><th>Tiêu đề</th><th>Điểm</th><th>Medal</th><th>Vote</th><th>Cmt</th><th>Trạng thái</th><th>Ngày tạo</th><th></th></tr></thead>
+                  <tbody>
+                    <tr class="selected">
+                      <td class="cell-title">
+                        <a class="post-link" href="#" onclick="return false;">Kinh nghiệm xử lý incident lúc 2h sáng và bài học về monitoring</a>
+                        <div class="post-sub"><span>#4097</span><span>@liemch2</span></div>
+                      </td>
+                      <td data-label="Điểm"><span class="score">18.4</span></td>
+                      <td data-label="Medal"><span class="num">2</span></td>
+                      <td data-label="Vote"><span class="num">21</span></td>
+                      <td data-label="Cmt"><span class="num">34</span></td>
+                      <td data-label="Trạng thái"><span class="badge open">open</span></td>
+                      <td class="cell-date" data-label="Ngày tạo">2 ngày trước</td>
+                      <td class="cell-action">
+                        <div class="row-actions">
+                          <button type="button" class="mini-btn is-selected">Đang chọn</button>
+                          <button type="button" class="mini-btn">AI trả lời</button>
+                          <button type="button" class="mini-btn">AI thảo luận</button>
+                        </div>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td class="cell-title">
+                        <a class="post-link" href="#" onclick="return false;">Tổng hợp tool tăng năng suất cho dev: từ terminal đến AI assistant</a>
+                        <div class="post-sub"><span>#3988</span><span>@liemch2</span></div>
+                      </td>
+                      <td data-label="Điểm"><span class="score">12.2</span></td>
+                      <td data-label="Medal"><span class="num">1</span></td>
+                      <td data-label="Vote"><span class="num">14</span></td>
+                      <td data-label="Cmt"><span class="num">18</span></td>
+                      <td data-label="Trạng thái"><span class="badge open">open</span></td>
+                      <td class="cell-date" data-label="Ngày tạo">5 ngày trước</td>
+                      <td class="cell-action">
+                        <div class="row-actions">
+                          <button type="button" class="mini-btn">Chọn</button>
+                          <button type="button" class="mini-btn">AI trả lời</button>
+                          <button type="button" class="mini-btn">AI thảo luận</button>
+                        </div>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td class="cell-title">
+                        <a class="post-link" href="#" onclick="return false;">Notes ngắn: cách mình tổ chức Notion cho team 10 người</a>
+                        <div class="post-sub"><span>#3841</span><span>@liemch2</span></div>
+                      </td>
+                      <td data-label="Điểm"><span class="score">8.6</span></td>
+                      <td data-label="Medal"><span class="num">0</span></td>
+                      <td data-label="Vote"><span class="num">9</span></td>
+                      <td data-label="Cmt"><span class="num">25</span></td>
+                      <td data-label="Trạng thái"><span class="badge other">draft</span></td>
+                      <td class="cell-date" data-label="Ngày tạo">1 tuần trước</td>
+                      <td class="cell-action">
+                        <div class="row-actions">
+                          <button type="button" class="mini-btn">Chọn</button>
+                          <button type="button" class="mini-btn">AI trả lời</button>
+                          <button type="button" class="mini-btn">AI thảo luận</button>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="msg ok">Đã đồng bộ 12 bài từ TechHub lúc 09:42.</div>
+            </div>
+          </div>
+
+          <div class="panel hidden" data-panel="dashboard">
+            <div class="card">
+              <div class="card-head">
+                <div>
+                  <h2>So sánh tháng này với tháng trước</h2>
+                  <p>Tính trên dữ liệu đã lưu, không gọi lại TechHub</p>
+                </div>
+                <div class="card-actions">
+                  <button class="btn btn-primary" type="button">Xem thống kê</button>
+                </div>
+              </div>
+              <div class="stat-grid">
+                <div class="stat-card"><span class="stat-label">Bài tạo · tháng này</span><strong class="stat-value">9</strong><span class="stat-hint"><span class="delta up">▲ +3</span> so với tháng trước</span></div>
+                <div class="stat-card"><span class="stat-label">Comment</span><strong class="stat-value accent">142</strong><span class="stat-hint"><span class="delta up">▲ +38</span> so với tháng trước</span></div>
+                <div class="stat-card"><span class="stat-label">Điểm ước tính</span><strong class="stat-value">61.5</strong><span class="stat-hint"><span class="delta down">▼ -2.1</span> so với tháng trước</span></div>
+              </div>
+              <div class="table-wrap">
+                <table class="data-table">
+                  <thead><tr><th>Chỉ số</th><th>Tháng này</th><th>Tháng trước</th><th>Chênh lệch</th></tr></thead>
+                  <tbody>
+                    <tr><td>Bài tạo</td><td><span class="num">9</span></td><td><span class="num">6</span></td><td><span class="delta up">+3</span></td></tr>
+                    <tr><td>Bài publish</td><td><span class="num">7</span></td><td><span class="num">5</span></td><td><span class="delta up">+2</span></td></tr>
+                    <tr><td>Comment</td><td><span class="num">142</span></td><td><span class="num">104</span></td><td><span class="delta up">+38</span></td></tr>
+                    <tr><td>Medal</td><td><span class="num">3</span></td><td><span class="num">4</span></td><td><span class="delta down">-1</span></td></tr>
+                    <tr><td>Điểm</td><td><span class="num">61.5</span></td><td><span class="num">63.6</span></td><td><span class="delta down">-2.1</span></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel hidden admin-only" data-panel="users">
+            <div class="stat-grid">
+              <div class="stat-card"><span class="stat-label">Tổng người dùng</span><strong class="stat-value">24</strong><span class="stat-hint">đã lưu trong bảng users</span></div>
+              <div class="stat-card"><span class="stat-label">Quản trị viên</span><strong class="stat-value accent">3</strong><span class="stat-hint">is_admin = true</span></div>
+              <div class="stat-card"><span class="stat-label">Đang khóa</span><strong class="stat-value">1</strong><span class="stat-hint">is_locked = true</span></div>
+              <div class="stat-card"><span class="stat-label">Cmt hôm nay</span><strong class="stat-value">46</strong><span class="stat-hint">do extension đăng trong hôm nay</span></div>
+            </div>
+            <div class="card">
+              <div class="card-head">
+                <div>
+                  <h2>Danh sách người dùng</h2>
+                  <p>Cấp quyền admin để cho phép mở panel · khóa để chặn dùng extension</p>
+                </div>
+                <div class="card-actions">
+                  <label class="search" for="usersSearch">
+                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M10 4a6 6 0 014.47 10l4.27 4.26-1.42 1.42-4.26-4.27A6 6 0 1110 4zm0 2a4 4 0 100 8 4 4 0 000-8z" fill="currentColor" /></svg>
+                    <input id="usersSearch" type="search" placeholder="Tìm username, tên, email…" autocomplete="off" />
+                  </label>
+                  <button class="btn btn-primary" type="button">Làm mới</button>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table class="data-table">
+                  <thead><tr><th>Người dùng</th><th>Bài</th><th>Cmt hôm nay</th><th>Trạng thái</th><th>Hoạt động</th><th></th></tr></thead>
+                  <tbody>
+                    <tr class="selected">
+                      <td class="cell-user"><div class="user-cell"><span class="u-avatar">li</span><div class="user-cell-text"><span class="user-cell-name">@liemch2 <span class="badge self">Bạn</span></span><div class="user-cell-sub">Nguyễn Chí Liêm</div></div></div></td>
+                      <td data-label="Bài"><span class="num">12</span></td>
+                      <td data-label="Cmt hôm nay"><span class="num">18</span></td>
+                      <td data-label="Trạng thái"><span class="badge admin">Admin</span></td>
+                      <td class="cell-date" data-label="Hoạt động">vừa xong</td>
+                      <td class="cell-action"><div class="row-actions"><button type="button" class="mini-btn" disabled title="Không thể thao tác trên tài khoản của chính mình">Thu quyền</button><button type="button" class="mini-btn" disabled>Khóa</button><button type="button" class="mini-btn danger" disabled>Xóa</button></div></td>
+                    </tr>
+                    <tr>
+                      <td class="cell-user"><div class="user-cell"><span class="u-avatar">ng</span><div class="user-cell-text"><span class="user-cell-name">@nguyenvt</span><div class="user-cell-sub">Vũ Thái Nguyên</div></div></div></td>
+                      <td data-label="Bài"><span class="num">8</span></td>
+                      <td data-label="Cmt hôm nay"><span class="num">12</span></td>
+                      <td data-label="Trạng thái"><span class="badge admin">Admin</span></td>
+                      <td class="cell-date" data-label="Hoạt động">2 giờ trước</td>
+                      <td class="cell-action"><div class="row-actions"><button type="button" class="mini-btn">Thu quyền</button><button type="button" class="mini-btn">Khóa</button><button type="button" class="mini-btn danger">Xóa</button></div></td>
+                    </tr>
+                    <tr>
+                      <td class="cell-user"><div class="user-cell"><span class="u-avatar locked">tr</span><div class="user-cell-text"><span class="user-cell-name">@trant</span><div class="user-cell-sub">Trần Tuấn</div></div></div></td>
+                      <td data-label="Bài"><span class="num">5</span></td>
+                      <td data-label="Cmt hôm nay"><span class="num">0</span></td>
+                      <td data-label="Trạng thái"><span class="badge locked">Khóa</span></td>
+                      <td class="cell-date" data-label="Hoạt động">3 ngày trước</td>
+                      <td class="cell-action"><div class="row-actions"><button type="button" class="mini-btn">Cấp quyền</button><button type="button" class="mini-btn">Mở khóa</button><button type="button" class="mini-btn danger">Xóa</button></div></td>
+                    </tr>
+                    <tr>
+                      <td class="cell-user"><div class="user-cell"><span class="u-avatar">ph</span><div class="user-cell-text"><span class="user-cell-name">@phamh</span><div class="user-cell-sub">Phạm Hoàng</div></div></div></td>
+                      <td data-label="Bài"><span class="num">2</span></td>
+                      <td data-label="Cmt hôm nay"><span class="num">6</span></td>
+                      <td data-label="Trạng thái"><span class="badge other">Thường</span></td>
+                      <td class="cell-date" data-label="Hoạt động">5 giờ trước</td>
+                      <td class="cell-action"><div class="row-actions"><button type="button" class="mini-btn">Cấp quyền</button><button type="button" class="mini-btn">Khóa</button><button type="button" class="mini-btn danger">Xóa</button></div></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="msg ok">Đã làm mới 24 người dùng.</div>
+              <p class="hint">Người dùng bị khóa không mở được panel extension và bị loại khỏi mục tiêu tự động tương tác. Xóa người dùng chỉ xóa dòng trong bảng users, bài viết và tương tác đã lưu vẫn được giữ.</p>
+            </div>
+          </div>
+
+          <div class="panel hidden admin-only" data-panel="reply">
+            <div class="card">
+              <div class="card-head">
+                <div>
+                  <h2>Bước 1 · Chuẩn bị mẫu</h2>
+                  <p>Chọn bài, AI quét comment chưa reply để tạo kho mẫu</p>
+                </div>
+                <div class="card-actions">
+                  <button class="btn btn-primary" type="button">AI tạo mẫu</button>
+                </div>
+              </div>
+              <div class="field-list">
+                <div class="field">
+                  <div class="field-text"><label for="replyScope">Bài cần trả lời</label><span>Kho mẫu được tải riêng theo từng bài</span></div>
+                  <select id="replyScope"><option>#4097 · Kinh nghiệm xử lý incident…</option><option>#3988 · Tổng hợp tool tăng năng suất…</option></select>
+                </div>
+                <div class="field">
+                  <div class="field-text"><label for="replyGenerateCount">Số mẫu cần tạo</label><span>Quét comment chưa reply rồi nhờ AI gen trước</span></div>
+                  <input id="replyGenerateCount" type="number" min="1" max="50" value="5" />
+                </div>
+              </div>
+              <div class="draft-toolbar">
+                <div class="draft-stats">
+                  <span>Tổng <strong>4</strong></span>
+                  <span class="pending">Chưa dùng <strong>2</strong></span>
+                  <span class="used">Đã dùng <strong>2</strong></span>
+                </div>
+                <button class="btn btn-ghost draft-clear-btn" type="button">Xóa hết chưa dùng</button>
+              </div>
+              <div class="draft-list">
+                <article class="draft-item">
+                  <div class="draft-head"><strong>Mẫu 1 · cmt #8812</strong><div class="draft-status-actions"><span>Chưa dùng</span><button type="button" class="draft-edit-btn">Chỉnh sửa</button><button type="button" class="draft-delete-btn">Xóa</button></div></div>
+                  <p class="draft-source">Cảm ơn anh đã chia sẻ, em cũng đang gặp tình huống alert lúc 2h sáng</p>
+                  <p>Chào anh, cảm ơn anh đã đọc bài ạ. Nhóm em cũng từng bị wake-up call kiểu này nên giờ ưu tiên setup on-call rotation và runbook sẵn, đỡ phải "võ đoán" lúc nửa đêm ạ.</p>
+                </article>
+                <article class="draft-item posting">
+                  <div class="draft-head"><strong>Mẫu 2 · cmt #8815</strong><div class="draft-status-actions"><span>Đang đăng</span></div></div>
+                  <p>Quả thật monitoring tốt thì đêm ngủ ngon hơn anh nhỉ, bài này em note lại runbook ạ.</p>
+                </article>
+                <article class="draft-item used">
+                  <div class="draft-head"><strong>Mẫu 3 · cmt #8790</strong><div class="draft-status-actions"><span>Đã dùng</span></div></div>
+                  <p>Hóng phần 2 về cách setup dashboard Grafana cho service ạ.</p>
+                </article>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <div>
+                  <h2>Bước 2 · Tự động đăng</h2>
+                  <p>Dùng lần lượt các mẫu chưa dùng của bài đang chọn</p>
+                </div>
+                <div class="card-actions">
+                  <button class="btn btn-secondary" type="button">Đăng 1 mẫu ngay</button>
+                </div>
+              </div>
+              <div class="field-list">
+                <div class="field">
+                  <div class="field-text"><label for="autoReplyEnabled">Tự trả lời</label><span>Hết mẫu hoặc đủ số lượng sẽ tự tắt</span></div>
+                  <input id="autoReplyEnabled" class="switch" type="checkbox" checked />
+                </div>
+                <div class="field">
+                  <div class="field-text"><label for="replyTargetCount">Số lượng muốn đăng</label><span>Không được vượt số mẫu chưa dùng</span></div>
+                  <input id="replyTargetCount" type="number" min="1" max="100" value="5" />
+                </div>
+                <div class="field">
+                  <div class="field-text"><label>Khoảng cách ngẫu nhiên</label><span>Thời gian giữa hai lượt đăng, tính bằng phút</span></div>
+                  <div class="inline-inputs"><input type="number" min="1" max="1440" value="2" aria-label="Từ phút" /><span>đến</span><input type="number" min="1" max="1440" value="6" aria-label="Đến phút" /></div>
+                </div>
+              </div>
+              <div class="msg">Job đang chạy: mẫu tiếp theo sẽ đăng sau 3 phút.</div>
+            </div>
+          </div>
+
+          <div class="panel hidden admin-only" data-panel="discussion">
+            <div class="card">
+              <div class="card-head">
+                <div>
+                  <h2>Bước 1 · Chuẩn bị mẫu</h2>
+                  <p>Chọn bài, xem kho mẫu hoặc nhờ AI tạo thêm</p>
+                </div>
+                <div class="card-actions"><button class="btn btn-primary" type="button">AI tạo mẫu</button></div>
+              </div>
+              <div class="field-list">
+                <div class="field">
+                  <div class="field-text"><label for="discussionScope">Bài cần thảo luận</label><span>Kho mẫu được tải riêng theo từng bài</span></div>
+                  <select id="discussionScope"><option>#3988 · Tổng hợp tool tăng năng suất…</option></select>
+                </div>
+                <div class="field">
+                  <div class="field-text"><label for="discussionGenerateCount">Số mẫu cần tạo</label><span>AI tạo trước và lưu vào kho chờ sử dụng</span></div>
+                  <input id="discussionGenerateCount" type="number" min="1" max="50" value="5" />
+                </div>
+              </div>
+              <div class="draft-list"><div class="empty">Chọn bài để tải các mẫu đã tạo.</div></div>
+            </div>
+          </div>
+
+          <div class="panel hidden admin-only" data-panel="community">
+            <div class="card">
+              <div class="card-head">
+                <div>
+                  <h2>Bài theo chuyên mục</h2>
+                  <p>Luôn đọc từ dữ liệu đã lưu · chỉ gọi TechHub khi bấm Làm mới</p>
+                </div>
+                <div class="card-actions">
+                  <label class="search" for="communityPostsSearch">
+                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M10 4a6 6 0 014.47 10l4.27 4.26-1.42 1.42-4.26-4.27A6 6 0 1110 4zm0 2a4 4 0 100 8 4 4 0 000-8z" fill="currentColor" /></svg>
+                    <input id="communityPostsSearch" type="search" placeholder="Lọc tiêu đề, tác giả hoặc ID…" autocomplete="off" />
+                  </label>
+                  <button class="btn btn-secondary" type="button">Xem dữ liệu đã lưu</button>
+                  <button class="btn btn-primary" type="button">Làm mới từ TechHub</button>
+                </div>
+              </div>
+              <div class="field-list">
+                <div class="field">
+                  <div class="field-text"><label for="communitySlug">Slug chuyên mục</label><span>Phần nằm sau /c/ trên đường dẫn TechHub</span></div>
+                  <input id="communitySlug" type="text" value="cai-tien-moi-ngay" spellcheck="false" />
+                </div>
+                <div class="field">
+                  <div class="field-text"><label>Từ tháng đến tháng</label><span>Tháng lịch, tối đa 2 tháng. Chỉ dùng khi bấm Làm mới</span></div>
+                  <div class="inline-inputs"><input type="month" value="2026-08" aria-label="Từ tháng" /><span>đến</span><input type="month" value="2026-09" aria-label="Đến tháng" /></div>
+                </div>
+                <div class="field">
+                  <div class="field-text"><label for="crossInteractionEnabled">Tự động tương tác chéo</label><span>Mỗi 15 phút tự bình luận và thích bài người khác</span></div>
+                  <input id="crossInteractionEnabled" class="switch" type="checkbox" />
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table class="data-table">
+                  <thead><tr><th>Tiêu đề</th><th>Điểm</th><th>Cmt</th><th>Tác giả</th><th>Ngày</th><th></th></tr></thead>
+                  <tbody>
+                    <tr>
+                      <td class="cell-title"><a class="post-link" href="#" onclick="return false;">Retrospective sprint 27: cái gì giữ, cái gì bỏ</a><div class="post-sub"><span>#4102</span><span>@nguyenvt</span></div></td>
+                      <td data-label="Điểm"><span class="score">6.8</span></td>
+                      <td data-label="Cmt"><span class="num">12</span></td>
+                      <td data-label="Tác giả">@nguyenvt</td>
+                      <td class="cell-date" data-label="Ngày">hôm qua</td>
+                      <td class="cell-action"><div class="row-actions"><button type="button" class="mini-btn">Chọn thảo luận</button></div></td>
+                    </tr>
+                    <tr>
+                      <td class="cell-title"><a class="post-link" href="#" onclick="return false;">Mình đã giảm 40% thời gian build CI bằng cache thông minh</a><div class="post-sub"><span>#4093</span><span>@trant</span></div></td>
+                      <td data-label="Điểm"><span class="score">9.4</span></td>
+                      <td data-label="Cmt"><span class="num">17</span></td>
+                      <td data-label="Tác giả">@trant</td>
+                      <td class="cell-date" data-label="Ngày">2 ngày trước</td>
+                      <td class="cell-action"><div class="row-actions"><button type="button" class="mini-btn">Chọn thảo luận</button></div></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p class="hint">Danh sách luôn hiện toàn bộ bài đã lưu. Bấm Làm mới từ TechHub chỉ quét lại đúng khoảng tháng đã chọn.</p>
+            </div>
+          </div>
+
+          <div class="panel hidden admin-only" data-panel="external-discussion">
+            <div class="card">
+              <div class="card-head">
+                <div>
+                  <h2>Bước 1 · Chọn bài và chuẩn bị mẫu</h2>
+                  <p>Nhận bài đang mở của người khác, kể cả bài chưa publish</p>
+                </div>
+                <div class="card-actions">
+                  <button class="btn btn-secondary" type="button">Tải bài</button>
+                  <button class="btn btn-primary" type="button">AI tạo mẫu</button>
+                </div>
+              </div>
+              <div class="field-list">
+                <div class="field">
+                  <div class="field-text"><label for="externalDiscussionPostId">ID bài TechHub</label><span>Nhập ID số của bài người khác cần thảo luận</span></div>
+                  <input id="externalDiscussionPostId" type="number" min="1" placeholder="Ví dụ: 4010" value="4102" />
+                </div>
+              </div>
+              <div class="external-post-preview">
+                <strong>Retrospective sprint 27: cái gì giữ, cái gì bỏ</strong>
+                <span>@nguyenvt · #4102 · 12 comment · tạo 1 ngày trước</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel hidden admin-only" data-panel="comment">
+            <div class="card">
+              <div class="card-head">
+                <div>
+                  <h2>Auto comment 1 bài</h2>
+                  <p>Tự chia nhịp để hoàn thành đủ số comment trong thời gian đã chọn</p>
+                </div>
+                <div class="card-actions">
+                  <button class="btn btn-primary" type="button">Bắt đầu ngay</button>
+                  <button class="btn btn-danger" type="button">Dừng</button>
+                </div>
+              </div>
+              <div class="msg muted">Đã chọn: #4097 · Kinh nghiệm xử lý incident lúc 2h sáng</div>
+              <div class="field-list">
+                <div class="field">
+                  <div class="field-text"><label for="autoCommentExternalPostId">ID bài thành viên khác</label><span>Không nhập thì dùng bài của anh đã chọn; có nhập thì ưu tiên ID này</span></div>
+                  <input id="autoCommentExternalPostId" type="number" min="1" placeholder="vd: 4097" />
+                </div>
+                <div class="field">
+                  <div class="field-text"><label for="autoCommentTargetCount">Số lượng comment</label><span>Đạt đủ số này sẽ tự dừng</span></div>
+                  <input id="autoCommentTargetCount" type="number" min="1" max="500" value="10" />
+                </div>
+                <div class="field">
+                  <div class="field-text"><label for="autoCommentStartAt">Giờ bắt đầu</label><span>Để hẹn giờ chạy tự động sau này</span></div>
+                  <input id="autoCommentStartAt" type="datetime-local" value="2026-09-11T14:30" />
+                </div>
+                <div class="field">
+                  <div class="field-text"><label for="autoCommentAutoDelete">Tự xóa comment</label><span>Xóa cuốn chiếu từng comment do job này tạo</span></div>
+                  <input id="autoCommentAutoDelete" class="switch" type="checkbox" checked />
+                </div>
+                <div class="field">
+                  <div class="field-text"><label for="autoCommentDeleteAfterMinutes">Xóa sau (phút)</label><span>Tính riêng từ lúc mỗi comment được đăng thành công</span></div>
+                  <input id="autoCommentDeleteAfterMinutes" type="number" min="1" max="1440" value="1" />
+                </div>
+              </div>
+              <div class="card-actions">
+                <button class="btn btn-secondary" type="button">Hẹn giờ chạy</button>
+                <button class="btn btn-ghost" type="button">Hủy lịch</button>
+              </div>
+              <div class="msg muted">Chưa có lịch hẹn.</div>
+              <div class="list-label">Nhật ký tự xóa comment</div>
+              <div class="schedule-list">
+                <div class="schedule-item pending">
+                  <div class="schedule-main"><div class="schedule-title">Comment #10231 · bài #4097</div><div class="schedule-meta">sẽ xóa lúc 14:36 · còn 2 phút</div></div>
+                </div>
+                <div class="schedule-item pending">
+                  <div class="schedule-main"><div class="schedule-title">Comment #10230 · bài #4097</div><div class="schedule-meta">sẽ xóa lúc 14:35 · còn 1 phút</div></div>
+                </div>
+                <div class="schedule-item done">
+                  <div class="schedule-main"><div class="schedule-title">Comment #10229 · bài #4097</div><div class="schedule-meta">đã xóa lúc 14:33</div></div>
+                </div>
+                <div class="schedule-item error">
+                  <div class="schedule-main"><div class="schedule-title">Comment #10221 · bài #4097</div><div class="schedule-meta">xóa lỗi: 403 Forbidden · 14:29</div></div>
+                </div>
+              </div>
+              <p class="hint">Chọn bài ở tab Bài viết. Lịch hẹn vẫn chạy sau khi đóng side panel.</p>
+            </div>
+          </div>
+
+          <div class="panel hidden admin-only" data-panel="delete">
+            <div class="card">
+              <div class="card-head">
+                <div>
+                  <h2>Xóa bài TechHub</h2>
+                  <p>Gọi DELETE /api/v1/articles/{uuid}/</p>
+                </div>
+                <div class="card-actions">
+                  <button class="btn btn-danger" type="button">Hẹn xóa</button>
+                  <button class="btn btn-secondary" type="button">Xóa ngay</button>
+                </div>
+              </div>
+              <div class="field-list">
+                <div class="field">
+                  <div class="field-text"><label for="deleteTechhubId">techhub_id</label><span>Chọn bài ở tab Bài viết để tự điền</span></div>
+                  <input id="deleteTechhubId" type="number" min="1" value="3841" />
+                </div>
+                <div class="field">
+                  <div class="field-text"><label for="deleteAtInput">Thời gian xóa</label><span>Theo giờ máy của bạn</span></div>
+                  <input id="deleteAtInput" type="datetime-local" value="2026-09-12T09:00" />
+                </div>
+              </div>
+              <div class="schedule-list">
+                <div class="schedule-item pending">
+                  <div class="schedule-main"><div class="schedule-title">#3841 · Notes ngắn: cách mình tổ chức Notion</div><div class="schedule-meta">sẽ xóa ngày 12/09 lúc 09:00</div></div>
+                </div>
+              </div>
+              <div class="msg err">Xóa bài không hoàn tác được, hãy kiểm tra kỹ ID trước khi bấm.</div>
+              <p class="hint">Cần quét bài trước để có uuid. Xóa bài không hoàn tác được.</p>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script>
+      // Logic preview: giống popup.js — chỉ đổi panel active
+      const navItems = document.querySelectorAll(".nav-item");
+      const panels = document.querySelectorAll(".panel");
+      const pageTitle = document.getElementById("pageTitle");
+      const pageSubtitle = document.getElementById("pageSubtitle");
+
+      navItems.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          navItems.forEach((b) => b.classList.toggle("active", b === btn));
+          panels.forEach((p) => p.classList.toggle("hidden", p.dataset.panel !== btn.dataset.panel));
+          pageTitle.textContent = btn.dataset.title;
+          pageSubtitle.textContent = btn.dataset.subtitle;
+        });
+      });
+
+      // Chuyển chế độ Admin / User thường (mô phỏng phân quyền menu)
+      const modeToggle = document.getElementById("modeToggle");
+      if (modeToggle) {
+        modeToggle.addEventListener("click", () => {
+          const isBasic = document.body.classList.toggle("not-admin");
+          document.getElementById("modeAdmin").className = isBasic ? "off" : "on";
+          document.getElementById("modeBasic").className = isBasic ? "on" : "off";
+          // rơi về panel được phép nếu đang mở panel admin
+          if (isBasic) {
+            const active = document.querySelector(".nav-item.active");
+            if (active && active.classList.contains("admin-only")) {
+              document.querySelector('.nav-item[data-panel="posts"]').click();
+            }
+          }
+        });
+      }
+
+      // Mock search cho bảng người dùng (giống renderUsers trong popup.js)
+      const usersSearch = document.getElementById("usersSearch");
+      const usersTable = document.querySelector('.panel[data-panel="users"] .data-table tbody');
+      if (usersSearch && usersTable) {
+        usersSearch.addEventListener("input", () => {
+          const keyword = usersSearch.value.trim().toLowerCase();
+          [...usersTable.querySelectorAll("tr")].forEach((tr) => {
+            tr.style.display = tr.textContent.toLowerCase().includes(keyword) ? "" : "none";
+          });
+        });
+      }
+    </script>
+  </body>
+</html>

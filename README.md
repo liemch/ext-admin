@@ -11,6 +11,8 @@ Chrome Extension (MV3) hỗ trợ quản lý bài viết trên [TechHub](https:/
 - **AI tự thảo luận**: gen comment gốc trên chính bài viết, đếm mục tiêu từng bài,
   chạy ngẫu nhiên mỗi 1–5 phút → lưu `discussion_drafts`
 - **Auto comment** trên bài của mình hoặc nhập ID bài thành viên khác, tự chia nhịp để hoàn thành đủ số lượng trong thời gian đã chọn, chạy ngay hoặc hẹn giờ; có thể tự xóa cuốn chiếu và xem nhật ký xóa từng comment
+- **Quản lý người dùng**: xem danh sách user dùng extension, cấp/thu quyền admin,
+  khóa/mở khóa (user bị khóa không mở được panel), xem số bài đã lưu và comment hôm nay
 - **Hẹn xóa bài** qua `DELETE /api/v1/articles/{uuid}/`
 - UI dashboard: sidebar tính năng, bảng bài viết có tìm kiếm, tự co gọn trong side panel;
   mở full tab bằng nút "Mở dạng tab"
@@ -19,7 +21,16 @@ Chrome Extension (MV3) hỗ trợ quản lý bài viết trên [TechHub](https:/
 
 ### 1. Cấu hình
 
-Copy `config.example.js` → `config.js` (nếu chưa có) và điền:
+Copy `config.example.js` → `config.js` (nếu chưa có) và điền.
+`config.js` đã nằm trong `.gitignore` — **không bao giờ commit key lên repo**.
+
+NVIDIA có 2 chế độ:
+
+- **`mode: "proxy"` (khuyên dùng)** — extension gọi qua Supabase Edge Function,
+  key NVIDIA nằm trong Supabase secret, người cài extension không đọc được key.
+  Deploy theo [`supabase/functions/nvidia-proxy/README.md`](supabase/functions/nvidia-proxy/README.md).
+- **`mode: "direct"`** — key nằm thẳng trong `config.js`. Ai cài extension cũng đọc được
+  (chrome://extensions → xem nguồn). Chỉ dùng khi extension chạy trên máy của riêng mình.
 
 ```javascript
 const SUPABASE_CONFIG = {
@@ -29,7 +40,10 @@ const SUPABASE_CONFIG = {
 };
 
 const NVIDIA_CONFIG = {
-  apiKey: "nvapi-...",
+  mode: "proxy", // "proxy" | "direct"
+  proxyUrl: "https://<project-ref>.supabase.co/functions/v1/nvidia-proxy",
+  proxyToken: "your-proxy-token",
+  apiKey: "", // chỉ điền khi mode: "direct"
   baseUrl: "https://integrate.api.nvidia.com/v1",
   model: "nvidia/nemotron-3.5-lightning-30b-a3b",
   maxTokens: 256,
@@ -41,15 +55,29 @@ const NVIDIA_CONFIG = {
 
 API key NVIDIA: https://build.nvidia.com/settings/api-keys
 
+> ⚠️ **Nếu key từng bị commit lên repo (kể cả repo private): coi như key đã lộ —
+> revoke ngay và tạo key mới.** Key cũ vẫn nằm trong git history dù đã xóa file.
+
 ### 2. Setup Supabase
 
-Trong SQL Editor, chạy lần lượt:
+**Cách nhanh (khuyên dùng):** chạy script một phát — deploy 2 edge functions
+(`nvidia-proxy` che NVIDIA key, `admin-api` quản lý user), set secrets, áp
+migration `011` (chặn anon tự cấp `is_admin`), test và in sẵn khối `config.js`:
+
+```bash
+bash scripts/setup-supabase.sh
+```
+
+**Thủ công:** trong SQL Editor, chạy lần lượt:
 
 1. `supabase/migrations/001_init_schema.sql`
 2. `supabase/migrations/002_seed_settings_and_templates.sql` (sửa `YOUR_TECHHUB_USERNAME`)
 3. `supabase/migrations/003_auto_reply.sql` (chỉ khi upgrade DB cũ)
 4. `supabase/migrations/004_ai_reply_drafts.sql`
 5. `supabase/migrations/005_ai_discussion.sql`
+6. `006` → `010` (thảo luận gốc, medals, queue draft, community)
+7. `supabase/migrations/011_restrict_users_writes.sql` — **bắt buộc**: chặn anon
+   tự cấp `is_admin` / xóa user (cần deploy `admin-api` trước — script trên làm sẵn)
 
 Chi tiết bảng / kiểm tra: xem [`supabase/README.md`](supabase/README.md).
 
@@ -60,13 +88,18 @@ Chi tiết bảng / kiểm tra: xem [`supabase/README.md`](supabase/README.md).
 3. **Load unpacked** → chọn thư mục project này
 4. Đăng nhập https://techhub.fpt.net rồi mở **My Angel** (side panel hoặc tab)
 
-User trong DB cần `is_admin = true` mới vào được panel admin.
+Phân quyền theo bảng `users`:
+
+- `is_admin = true`: thấy toàn bộ menu (Tự động hóa, Bài người khác, Nguy hiểm, Người dùng)
+- `is_admin = false`: chỉ thấy Bài viết + Thống kê
+- `is_locked = true`: bị chặn khỏi extension
 
 ## Cách dùng
 
 | Menu | Việc làm |
 |------|----------|
 | **Bài của tôi** | Quét bài, chọn bài, xem điểm |
+| **Người dùng** | Xem danh sách user, cấp/thu quyền admin, khóa/mở khóa, xóa user |
 | **AI trả lời** | Bật tự trả lời / chạy 1 lần (NVIDIA hoặc template), phạm vi tất cả bài hoặc chỉ bài đã chọn |
 | **AI thảo luận** | Bật / chạy 1 lần gen comment độc lập, có phạm vi như trên |
 | **Auto comment** | Chọn bài → nhập số cmt → Bắt đầu |

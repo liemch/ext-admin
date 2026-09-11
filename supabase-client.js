@@ -608,6 +608,48 @@ class SupabaseClient {
   }
 
   /**
+   * Đếm số bài đã lưu theo username (dùng cho panel quản lý người dùng)
+   * @returns {Promise<Object>} map username -> số bài
+   */
+  async getPostCountsByUsername() {
+    try {
+      const url = `${this.restUrl}/posts?select=username`;
+      const response = await fetch(url, { headers: this.getHeaders() });
+      if (!response.ok) throw new Error(`Failed to fetch posts: ${response.status}`);
+      const rows = await response.json();
+      const counts = {};
+      rows.forEach((row) => {
+        if (!row.username) return;
+        counts[row.username] = (counts[row.username] || 0) + 1;
+      });
+      return counts;
+    } catch (error) {
+      console.error("[Supabase] Error counting posts by username:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Xóa user theo username (chỉ xóa dòng trong bảng users, giữ lại bài viết/tương tác)
+   * @param {string} username
+   * @returns {Promise<boolean>}
+   */
+  async deleteUserByUsername(username) {
+    try {
+      const url = `${this.restUrl}/${SUPABASE_CONFIG.tableName}?username=eq.${encodeURIComponent(username)}`;
+      const response = await fetch(url, {
+        method: "DELETE",
+        headers: this.getHeaders(),
+      });
+      if (!response.ok) throw new Error(`Failed to delete user: ${response.status}`);
+      return true;
+    } catch (error) {
+      console.error("[Supabase] Error deleting user:", error);
+      throw error;
+    }
+  }
+
+  /**
    * Lấy settings theo danh sách key
    * @param {string[]} [keys]
    * @returns {Promise<Object>} map key -> row

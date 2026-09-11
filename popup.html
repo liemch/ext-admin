@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
     <title>My Angel</title>
     <link rel="icon" href="icons/angel.png" />
     <link rel="stylesheet" href="popup.css" />
@@ -50,10 +51,25 @@
             </svg>
             <span class="nav-label">Thống kê</span>
           </button>
-
-          <span class="nav-group">Tự động hóa</span>
           <button
-            class="nav-item"
+            class="nav-item admin-only"
+            type="button"
+            data-panel="users"
+            data-title="Người dùng"
+            data-subtitle="Quản lý tài khoản đang dùng extension"
+          >
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true">
+              <path
+                d="M16 11c1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 3-1.34 3-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"
+                fill="currentColor"
+              />
+            </svg>
+            <span class="nav-label">Người dùng</span>
+          </button>
+
+          <span class="nav-group admin-only">Tự động hóa</span>
+          <button
+            class="nav-item admin-only"
             type="button"
             data-panel="reply"
             data-title="AI trả lời comment"
@@ -69,7 +85,7 @@
             <span id="replyDot" class="nav-dot hidden"></span>
           </button>
           <button
-            class="nav-item"
+            class="nav-item admin-only"
             type="button"
             data-panel="discussion"
             data-title="AI tự thảo luận"
@@ -85,7 +101,7 @@
             <span id="discussionDot" class="nav-dot hidden"></span>
           </button>
           <button
-            class="nav-item"
+            class="nav-item admin-only"
             type="button"
             data-panel="comment"
             data-title="Auto comment"
@@ -101,9 +117,9 @@
             <span id="commentDot" class="nav-dot hidden"></span>
           </button>
 
-          <span class="nav-group">Bài người khác</span>
+          <span class="nav-group admin-only">Bài người khác</span>
           <button
-            class="nav-item"
+            class="nav-item admin-only"
             type="button"
             data-panel="community"
             data-title="Quét chuyên mục"
@@ -118,7 +134,7 @@
             <span class="nav-label">Quét chuyên mục</span>
           </button>
           <button
-            class="nav-item"
+            class="nav-item admin-only"
             type="button"
             data-panel="external-discussion"
             data-title="Thảo luận bài người khác"
@@ -134,9 +150,9 @@
             <span id="externalDiscussionDot" class="nav-dot hidden"></span>
           </button>
 
-          <span class="nav-group">Nguy hiểm</span>
+          <span class="nav-group admin-only">Nguy hiểm</span>
           <button
-            class="nav-item"
+            class="nav-item admin-only"
             type="button"
             data-panel="delete"
             data-title="Hẹn xóa bài"
@@ -178,7 +194,7 @@
             <p id="pageSubtitle">Danh sách bài đã đồng bộ từ TechHub</p>
           </div>
           <div class="topbar-badges">
-            <span id="jobBadge" class="pill pill-muted">Chưa có job chạy</span>
+            <span id="jobBadge" class="pill pill-muted admin-only">Chưa có job chạy</span>
           </div>
         </header>
 
@@ -189,7 +205,7 @@
           </div>
 
           <div id="deniedSection" class="notice hidden">
-            <p>Tài khoản hiện tại không có quyền admin.</p>
+            <p>Tài khoản hiện tại không có quyền truy cập.</p>
           </div>
 
           <div id="adminSection" class="hidden">
@@ -295,7 +311,67 @@
               </div>
             </section>
 
-            <section class="panel hidden" data-panel="reply">
+            <section class="panel hidden admin-only" data-panel="users">
+              <div class="stat-grid">
+                <div class="stat-card">
+                  <span class="stat-label">Tổng người dùng</span>
+                  <strong class="stat-value" id="statUsersTotal">0</strong>
+                  <span class="stat-hint">đã lưu trong bảng users</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">Quản trị viên</span>
+                  <strong class="stat-value accent" id="statUsersAdmins">0</strong>
+                  <span class="stat-hint">is_admin = true</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">Đang khóa</span>
+                  <strong class="stat-value" id="statUsersLocked">0</strong>
+                  <span class="stat-hint">is_locked = true</span>
+                </div>
+                <div class="stat-card">
+                  <span class="stat-label">Cmt hôm nay</span>
+                  <strong class="stat-value" id="statUsersToday">0</strong>
+                  <span class="stat-hint">do extension đăng trong hôm nay</span>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Danh sách người dùng</h2>
+                    <p>Cấp quyền admin để cho phép mở panel · khóa để chặn dùng extension</p>
+                  </div>
+                  <div class="card-actions">
+                    <label class="search" for="usersSearch">
+                      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                        <path
+                          d="M10 4a6 6 0 014.47 10l4.27 4.26-1.42 1.42-4.26-4.27A6 6 0 1110 4zm0 2a4 4 0 100 8 4 4 0 000-8z"
+                          fill="currentColor"
+                        />
+                      </svg>
+                      <input
+                        id="usersSearch"
+                        type="search"
+                        placeholder="Tìm username, tên, email…"
+                        autocomplete="off"
+                      />
+                    </label>
+                    <button id="refreshUsersBtn" class="btn btn-primary" type="button">
+                      Làm mới
+                    </button>
+                  </div>
+                </div>
+                <div id="usersList" class="table-wrap"></div>
+                <div id="usersMessage" class="msg hidden"></div>
+                <p class="hint">
+                  Người dùng bị khóa không mở được panel extension và bị loại khỏi mục tiêu tự
+                  động tương tác. Xóa người dùng chỉ xóa dòng trong bảng users, bài viết và
+                  tương tác đã lưu vẫn được giữ.
+                </p>
+              </div>
+            </section>
+
+            <section class="panel hidden admin-only" data-panel="reply">
               <div class="card">
                 <div class="card-head">
                   <div>
@@ -416,7 +492,7 @@
               </div>
             </section>
 
-            <section class="panel hidden" data-panel="discussion">
+            <section class="panel hidden admin-only" data-panel="discussion">
               <div class="card">
                 <div class="card-head">
                   <div>
@@ -526,7 +602,7 @@
               </div>
             </section>
 
-            <section class="panel hidden" data-panel="community">
+            <section class="panel hidden admin-only" data-panel="community">
               <div class="card">
                 <div class="card-head">
                   <div>
@@ -604,7 +680,7 @@
               </div>
             </section>
 
-            <section class="panel hidden" data-panel="external-discussion">
+            <section class="panel hidden admin-only" data-panel="external-discussion">
               <div class="card">
                 <div class="card-head">
                   <div>
@@ -753,7 +829,7 @@
               </div>
             </section>
 
-            <section class="panel hidden" data-panel="comment">
+            <section class="panel hidden admin-only" data-panel="comment">
               <div class="card">
                 <div class="card-head">
                   <div>
@@ -866,7 +942,7 @@
               </div>
             </section>
 
-            <section class="panel hidden" data-panel="delete">
+            <section class="panel hidden admin-only" data-panel="delete">
               <div class="card">
                 <div class="card-head">
                   <div>

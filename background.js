@@ -486,6 +486,101 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
 
 // Lắng nghe message từ popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (ADMIN_ONLY_ACTIONS.has(request.action)) {
+    ensureActionAllowed()
+      .then(() => handlePopupMessage(request, sendResponse))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  return handlePopupMessage(request, sendResponse);
+});
+
+// Action chỉ quản trị viên được dùng
+// (menu Tự động hóa / Bài người khác / Nguy hiểm / Người dùng)
+const ADMIN_ONLY_ACTIONS = new Set([
+  "runInteractions",
+  "setCrossInteractionEnabled",
+  "startAutoComment",
+  "stopAutoComment",
+  "scheduleAutoComment",
+  "cancelAutoCommentSchedule",
+  "setAutoReplyEnabled",
+  "runAutoReplyOnce",
+  "generateReplyDrafts",
+  "updateReplyDraft",
+  "deleteReplyDraft",
+  "deletePendingReplyDrafts",
+  "setAutoDiscussionEnabled",
+  "runAutoDiscussionOnce",
+  "generateDiscussionDrafts",
+  "updateDiscussionDraft",
+  "deleteDiscussionDraft",
+  "deletePendingDiscussionDrafts",
+  "scanCommunityArticles",
+  "resolveExternalDiscussionPost",
+  "generateExternalDiscussionDrafts",
+  "deletePendingExternalDiscussionDrafts",
+  "setAutoExternalDiscussionEnabled",
+  "runAutoExternalDiscussionOnce",
+  "scheduleDeletePost",
+  "cancelScheduledDelete",
+  "deletePostNow",
+  "getUsersOverview",
+  "updateUserStatus",
+  "deleteUser",
+]);
+
+/**
+ * Kiểm tra user hiện tại (từ storage + Supabase) có quyền admin và không bị khóa.
+ * Ném lỗi nếu không được phép dùng action quản trị.
+ */
+async function ensureActionAllowed() {
+  const profile = await new Promise((resolve) => {
+    chrome.storage.local.get("userProfile", (result) => resolve(result.userProfile || null));
+  });
+  if (!profile?.username) {
+    throw new Error("Không tìm thấy phiên TechHub. Mở TechHub và đăng nhập trước.");
+  }
+  const user = await supabase.findUserByUsername(profile.username);
+  if (!user) {
+    throw new Error("Tài khoản chưa được đăng ký trong hệ thống.");
+  }
+  if (user.is_locked) {
+    throw new Error("Tài khoản đã bị khóa khỏi extension.");
+  }
+  if (!user.is_admin) {
+    throw new Error("Chức năng này chỉ dành cho quản trị viên.");
+  }
+}
+
+/**
+ * Gọi edge function admin-api (service role) cho các thao tác quản lý user.
+ * ADMIN_TOKEN chỉ nằm trong config.js của máy quản trị viên —
+ * sinh bởi scripts/setup-supabase.sh.
+ */
+async function adminApiRequest(action, payload = {}) {
+  const cfg = typeof ADMIN_API_CONFIG !== "undefined" ? ADMIN_API_CONFIG : {};
+  if (!cfg.url || !cfg.token || cfg.url === "YOUR_ADMIN_API_URL") {
+    throw new Error(
+      "Chưa cấu hình ADMIN_API_CONFIG trong config.js — chạy scripts/setup-supabase.sh để thiết lập"
+    );
+  }
+  const response = await fetch(cfg.url.replace(/\/+$/, ""), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${cfg.token}`,
+    },
+    body: JSON.stringify({ action, ...payload }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data?.error) {
+    throw new Error(data?.error || `Admin API HTTP ${response.status}`);
+  }
+  return data;
+}
+
+function handlePopupMessage(request, sendResponse) {
   if (request.action === "getCredentials") {
     // Trả về credentials đã capture
     chrome.storage.local.get("techhubCredentials", (result) => {
@@ -903,7 +998,31 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;
   }
-});
+
+  if (request.action === "getUsersOverview") {
+    adminApiRequest("getUsersOverview")
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "updateUserStatus") {
+    const payload = { username: request.username };
+    if (request.isAdmin !== undefined) payload.isAdmin = !!request.isAdmin;
+    if (request.isLocked !== undefined) payload.isLocked = !!request.isLocked;
+    adminApiRequest("updateUserStatus", payload)
+      .then((result) => sendResponse({ success: true, user: result.user || null }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "deleteUser") {
+    adminApiRequest("deleteUser", { username: request.username })
+      .then(() => sendResponse({ success: true }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+}
 
 console.log("TechHub Profile Sync - Background script loaded");
 
