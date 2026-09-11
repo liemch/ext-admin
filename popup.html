@@ -52,6 +52,22 @@
             <span class="nav-label">Thống kê</span>
           </button>
           <button
+            class="nav-item"
+            type="button"
+            data-panel="engagement"
+            data-title="Tương tác chéo"
+            data-subtitle="Nhận nhiệm vụ vote/comment bài của thành viên khác"
+          >
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true">
+              <path
+                d="M7 7h10v2l4 4-4 4v-3H7v-2h10v-.59L14.59 9 17 6.41V7H7V7zm-4 8h10v-2l-4-4 4-4v3h4v2H7v2H4v3z"
+                fill="currentColor"
+              />
+            </svg>
+            <span class="nav-label">Tương tác chéo</span>
+            <span id="engagementDot" class="nav-dot hidden"></span>
+          </button>
+          <button
             class="nav-item admin-only"
             type="button"
             data-panel="users"
@@ -208,6 +224,21 @@
             <p>Tài khoản hiện tại không có quyền truy cập.</p>
           </div>
 
+          <div id="sessionBanner" class="session-banner hidden">
+            <div class="session-banner-text">
+              <strong>Phiên TechHub đã hết hạn. Đăng nhập lại để tiếp tục.</strong>
+              <span>Background đã dừng nhận nhiệm vụ mới cho tới khi bạn đăng nhập lại.</span>
+            </div>
+            <div class="session-banner-actions">
+              <button id="openTechHubLoginBtn" class="btn btn-secondary" type="button">
+                Mở TechHub để đăng nhập
+              </button>
+              <button id="recheckSessionBtn" class="btn btn-ghost" type="button">
+                Kiểm tra lại
+              </button>
+            </div>
+          </div>
+
           <div id="adminSection" class="hidden">
             <section class="panel" data-panel="posts">
               <div class="stat-grid">
@@ -308,6 +339,361 @@
                   Bài tạo tính theo ngày tạo, bài publish tính theo ngày publish trong đúng
                   tháng đó. Muốn số liệu mới hơn thì quét bài hoặc làm mới chuyên mục trước.
                 </p>
+              </div>
+            </section>
+
+            <section class="panel hidden" data-panel="engagement">
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Nhận nhiệm vụ tương tác</h2>
+                    <p>Vote và bình luận bài của thành viên khác theo phân công</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="refreshEngagementBtn" class="btn btn-secondary" type="button">
+                      Làm mới
+                    </button>
+                    <button id="runEngagementOnceBtn" class="btn btn-primary" type="button">
+                      Chạy ngay 1 lượt
+                    </button>
+                  </div>
+                </div>
+
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="engagementEnabled">Nhận nhiệm vụ</label>
+                      <span>Bật để máy này tự nhận task vote/comment theo lịch</span>
+                    </div>
+                    <input id="engagementEnabled" class="switch" type="checkbox" />
+                  </div>
+                </div>
+
+                <div class="stat-grid engagement-stats">
+                  <div class="stat-card">
+                    <span class="stat-label">Trạng thái</span>
+                    <strong class="stat-value" id="engagementOnlineState">—</strong>
+                    <span class="stat-hint" id="engagementQueueMode">—</span>
+                  </div>
+                  <div class="stat-card">
+                    <span class="stat-label">Vote hôm nay</span>
+                    <strong class="stat-value" id="engagementVotesToday">0</strong>
+                    <span class="stat-hint">task vote đã nhận</span>
+                  </div>
+                  <div class="stat-card">
+                    <span class="stat-label">Cmt/Reply hôm nay</span>
+                    <strong class="stat-value accent" id="engagementCommentsToday">0</strong>
+                    <span class="stat-hint">task comment + reply đã nhận</span>
+                  </div>
+                  <div class="stat-card">
+                    <span class="stat-label">Chờ xử lý</span>
+                    <strong class="stat-value" id="engagementPendingCount">—</strong>
+                    <span class="stat-hint" id="engagementLastRun">chưa chạy lần nào</span>
+                  </div>
+                </div>
+
+                <div id="engagementLastTask" class="msg muted">Chưa có nhiệm vụ nào.</div>
+                <div id="engagementUserMessage" class="msg hidden"></div>
+                <div class="list-label">Hoạt động gần đây</div>
+                <div id="engagementActivityList" class="schedule-list">
+                  <div class="empty">Bấm Làm mới để tải hoạt động.</div>
+                </div>
+              </div>
+
+              <div class="card admin-only">
+                <div class="card-head">
+                  <div>
+                    <h2>Cài đặt máy này</h2>
+                    <p>Chu kỳ, quota và nhịp chạy của worker tương tác chéo</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="saveEngSettingsBtn" class="btn btn-primary" type="button">
+                      Lưu cài đặt
+                    </button>
+                  </div>
+                </div>
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="engIntervalMinutes">Chu kỳ thức dậy (phút)</label>
+                      <span>Mặc định 15 phút (MVP: 1 task mỗi lần thức dậy)</span>
+                    </div>
+                    <input id="engIntervalMinutes" type="number" min="1" max="1440" value="15" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="engTasksPerWake">Task mỗi lần thức dậy</label>
+                      <span>MVP nên để 1 để nhịp chạy đều giữa các máy</span>
+                    </div>
+                    <input id="engTasksPerWake" type="number" min="1" max="10" value="1" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="engDelaySec">Nghỉ giữa 2 task (giây)</label>
+                      <span>Chỉ dùng khi chạy nhiều task một lượt</span>
+                    </div>
+                    <input id="engDelaySec" type="number" min="1" max="600" value="5" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="engDailyCap">Giới hạn bài/ngày (legacy)</label>
+                      <span>MVP: tối đa 3 bài/ngày cho mỗi actor</span>
+                    </div>
+                    <input id="engDailyCap" type="number" min="1" max="50" value="3" />
+                  </div>
+                </div>
+                <div id="engSettingsMessage" class="msg hidden"></div>
+              </div>
+
+              <div class="card admin-only">
+                <div class="card-head">
+                  <div>
+                    <h2>Tạo campaign</h2>
+                    <p>Sinh task vote/comment, chia đều giữa các actor và tác giả</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="planCampaignBtn" class="btn btn-primary" type="button">
+                      Tạo campaign
+                    </button>
+                  </div>
+                </div>
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="campaignName">Tên campaign</label>
+                      <span>Ví dụ: tuan-37-vote-comment</span>
+                    </div>
+                    <input id="campaignName" type="text" placeholder="tuan-37-vote-comment" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label>Loại hành động</label>
+                      <span>Vote và comment là task riêng để retry độc lập</span>
+                    </div>
+                    <div class="inline-inputs">
+                      <label class="check"><input id="campaignActionVote" type="checkbox" checked /> Vote</label>
+                      <label class="check"><input id="campaignActionComment" type="checkbox" checked /> Comment</label>
+                    </div>
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label>Quota mỗi bài</label>
+                      <span>Số lượt vote / comment cần cho mỗi bài</span>
+                    </div>
+                    <div class="inline-inputs">
+                      <input id="campaignVotesPerPost" type="number" min="0" max="20" value="3" aria-label="Vote mỗi bài" />
+                      <span>vote ·</span>
+                      <input id="campaignCommentsPerPost" type="number" min="0" max="10" value="1" aria-label="Comment mỗi bài" />
+                      <span>cmt</span>
+                    </div>
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label>Giới hạn công bằng</label>
+                      <span>Mỗi actor/ngày · mỗi cặp actor–tác giả/ngày</span>
+                    </div>
+                    <div class="inline-inputs">
+                      <input id="campaignDailyCap" type="number" min="1" max="50" value="3" aria-label="Task mỗi actor mỗi ngày" />
+                      <span>·</span>
+                      <input id="campaignPairCap" type="number" min="1" max="10" value="1" aria-label="Task mỗi cặp mỗi ngày" />
+                    </div>
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label>Cooldown + trộn giờ</label>
+                      <span>Nghỉ giữa 2 lượt cùng cặp (phút) · trải lịch ngẫu nhiên (phút)</span>
+                    </div>
+                    <div class="inline-inputs">
+                      <input id="campaignCooldown" type="number" min="0" max="1440" value="45" aria-label="Cooldown phút" />
+                      <span>·</span>
+                      <input id="campaignJitter" type="number" min="0" max="720" value="10" aria-label="Jitter phút" />
+                    </div>
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="campaignUsernames">Phạm vi tác giả</label>
+                      <span>Cách nhau bằng dấu phẩy, bỏ trống = mọi tác giả</span>
+                    </div>
+                    <input id="campaignUsernames" type="text" placeholder="vd: user_a, user_b" spellcheck="false" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="campaignCommunity">Slug chuyên mục</label>
+                      <span>Bỏ trống = không lọc chuyên mục</span>
+                    </div>
+                    <input id="campaignCommunity" type="text" placeholder="cai-tien-moi-ngay" spellcheck="false" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label>Bài tối đa + số bài</label>
+                      <span>Tuổi bài (ngày) · số bài tối đa mỗi campaign</span>
+                    </div>
+                    <div class="inline-inputs">
+                      <input id="campaignMaxAge" type="number" min="1" max="365" value="60" aria-label="Tuổi bài tối đa" />
+                      <span>ngày ·</span>
+                      <input id="campaignLimit" type="number" min="1" max="200" value="50" aria-label="Số bài tối đa" />
+                      <span>bài</span>
+                    </div>
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="campaignActors">Actor tham gia</label>
+                      <span>Cách nhau bằng dấu phẩy, bỏ trống = máy online 7 ngày qua</span>
+                    </div>
+                    <input id="campaignActors" type="text" placeholder="vd: user_a, user_b" spellcheck="false" />
+                  </div>
+                </div>
+                <div id="campaignMessage" class="msg hidden"></div>
+                <div class="list-label">Campaign gần đây</div>
+                <div id="campaignsList" class="schedule-list">
+                  <div class="empty">Bấm Làm mới campaign để tải.</div>
+                </div>
+                <div class="card-actions">
+                  <button id="refreshCampaignsBtn" class="btn btn-secondary" type="button">
+                    Làm mới campaign
+                  </button>
+                </div>
+              </div>
+
+              <div class="card admin-only">
+                <div class="card-head">
+                  <div>
+                    <h2>Kịch bản thảo luận</h2>
+                    <p>Dán JSON turns (A→B→A→B) hoặc format cũ discussion/answer</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="validateThreadsBtn" class="btn btn-secondary" type="button">
+                      Kiểm tra
+                    </button>
+                    <button id="importThreadsBtn" class="btn btn-primary" type="button">
+                      Nhập kịch bản
+                    </button>
+                  </div>
+                </div>
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="threadDefaultPostId">Bài đích mặc định</label>
+                      <span>ID bài TechHub (khi JSON không ghi targetTechhubId)</span>
+                    </div>
+                    <input id="threadDefaultPostId" type="number" min="1" placeholder="vd: 4010" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="threadDefaultVisitor">User A mặc định</label>
+                      <span>Người đóng vai visitor (B luôn là chủ bài)</span>
+                    </div>
+                    <input id="threadDefaultVisitor" type="text" placeholder="username" spellcheck="false" />
+                  </div>
+                </div>
+                <textarea
+                  id="threadJsonInput"
+                  class="code-input"
+                  rows="8"
+                  spellcheck="false"
+                  placeholder='[{"name":"vd","actors":{"A":"visitor","B":"author"},"turns":[{"actor":"A","content":"..."},{"actor":"B","content":"..."}]}]'
+                ></textarea>
+                <div id="threadImportMessage" class="msg hidden"></div>
+                <div class="list-label">Xem trước</div>
+                <div id="threadPreviewList" class="thread-preview-list">
+                  <div class="empty">Dán JSON rồi bấm Kiểm tra.</div>
+                </div>
+                <div class="list-label">Chuỗi đã nhập</div>
+                <div class="draft-toolbar">
+                  <select id="threadStatusFilter" aria-label="Lọc chuỗi theo trạng thái">
+                    <option value="">Tất cả trạng thái</option>
+                    <option value="active">active</option>
+                    <option value="pending">pending</option>
+                    <option value="blocked">blocked</option>
+                    <option value="completed">completed</option>
+                    <option value="cancelled">cancelled</option>
+                  </select>
+                  <button id="refreshThreadsBtn" class="btn btn-secondary" type="button">
+                    Làm mới chuỗi
+                  </button>
+                </div>
+                <div id="threadsList" class="thread-preview-list">
+                  <div class="empty">Bấm Làm mới chuỗi để tải.</div>
+                </div>
+              </div>
+
+              <div class="card admin-only">
+                <div class="card-head">
+                  <div>
+                    <h2>Hàng đợi task</h2>
+                    <p>Theo dõi pending / claimed / succeeded / failed / skipped</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="refreshTasksBtn" class="btn btn-secondary" type="button">
+                      Làm mới task
+                    </button>
+                  </div>
+                </div>
+                <div class="draft-toolbar">
+                  <select id="taskStatusFilter" aria-label="Lọc task theo trạng thái">
+                    <option value="">Mọi trạng thái</option>
+                    <option value="pending">pending</option>
+                    <option value="claimed">claimed</option>
+                    <option value="succeeded">succeeded</option>
+                    <option value="failed">failed</option>
+                    <option value="skipped">skipped</option>
+                    <option value="cancelled">cancelled</option>
+                  </select>
+                  <input id="taskActorFilter" type="text" placeholder="actor…" spellcheck="false" />
+                  <select id="taskActionFilter" aria-label="Lọc task theo loại">
+                    <option value="">Mọi loại</option>
+                    <option value="vote">vote</option>
+                    <option value="comment">comment</option>
+                    <option value="reply">reply</option>
+                  </select>
+                </div>
+                <div id="tasksList" class="schedule-list">
+                  <div class="empty">Bấm Làm mới task để tải.</div>
+                </div>
+                <div id="tasksMessage" class="msg hidden"></div>
+              </div>
+
+              <div class="card admin-only">
+                <div class="card-head">
+                  <div>
+                    <h2>Vận hành</h2>
+                    <p>Tỷ lệ thành công, lỗi theo HTTP/actor, kill switch</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="refreshOpsBtn" class="btn btn-secondary" type="button">
+                      Làm mới
+                    </button>
+                  </div>
+                </div>
+                <div id="opsSummary" class="stat-grid engagement-stats">
+                  <div class="empty">Bấm Làm mới để tải số liệu.</div>
+                </div>
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="killSwitchToggle">Kill switch toàn hệ thống</label>
+                      <span>Bật = dừng phát task mới cho mọi máy</span>
+                    </div>
+                    <input id="killSwitchToggle" class="switch" type="checkbox" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="cleanupDays">Dọn nhật ký cũ hơn (ngày)</label>
+                      <span>Xóa engagement_events quá hạn để bảng gọn</span>
+                    </div>
+                    <div class="inline-inputs">
+                      <input id="cleanupDays" type="number" min="1" max="365" value="30" />
+                      <button id="cleanupEventsBtn" class="btn btn-secondary" type="button">
+                        Dọn ngay
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div id="opsMessage" class="msg hidden"></div>
+                <div class="list-label">Thiết bị đã đăng ký</div>
+                <div id="devicesList" class="schedule-list">
+                  <div class="empty">Chưa có dữ liệu.</div>
+                </div>
               </div>
             </section>
 
@@ -659,14 +1045,12 @@
                   </div>
                   <div class="field">
                     <div class="field-text">
-                      <label for="crossInteractionEnabled">Tự động tương tác chéo</label>
-                      <span>Mỗi 15 phút tự bình luận và thích bài người khác</span>
+                      <label>Tương tác chéo</label>
+                      <span>Nhận task vote/comment bài thành viên khác theo phân công</span>
                     </div>
-                    <input
-                      id="crossInteractionEnabled"
-                      class="switch"
-                      type="checkbox"
-                    />
+                    <button id="gotoEngagementBtn" class="btn btn-secondary" type="button">
+                      Mở mục Tương tác chéo
+                    </button>
                   </div>
                 </div>
                 <div id="communityPostsList" class="table-wrap">
@@ -988,6 +1372,8 @@
 
     <script src="config.js"></script>
     <script src="supabase-client.js"></script>
+    <script src="discussion-import.js"></script>
     <script src="popup.js"></script>
+    <script src="engagement-ui.js"></script>
   </body>
 </html>

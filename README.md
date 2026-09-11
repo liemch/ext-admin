@@ -1,12 +1,17 @@
 # My Angel
 
-Chrome Extension (MV3) hỗ trợ quản lý bài viết trên [TechHub](https://techhub.fpt.net): quét bài, AI trả lời comment, AI tự thảo luận, auto comment và hẹn xóa bài.
+Chrome Extension (MV3) hỗ trợ quản lý bài viết trên [TechHub](https://techhub.fpt.net): quét bài, AI trả lời comment, AI tự thảo luận, tương tác chéo giữa các user, auto comment và hẹn xóa bài.
 
 ## Tính năng
 
 - Capture phiên TechHub (cookie / CSRF) trong background
 - Quét bài của user (bỏ bài đã `published_at`) → lưu Supabase
 - Hiển thị điểm bài: `1 cmt = 0.2` · `1 vote = 0.1` · `1 medal = 6`
+- **Tương tác chéo giữa các user**: hàng đợi trung tâm (`engagement-api`) chia task vote/comment
+  cho từng máy theo campaign — phân phối công bằng, cooldown, giới hạn ngày, claim atomic;
+  chạy nền im lặng, hết phiên TechHub thì dừng và báo đăng nhập lại trong panel
+- **Kịch bản thảo luận A/B**: import JSON 2–4 turn (hoặc format cũ `discussion`/`answer`),
+  máy khách và máy chủ bài thay phiên comment/reply nối chuỗi, admin sửa và chạy lại từng turn
 - **AI trả lời comment**: đọc nội dung bài + chuỗi hội thoại → NVIDIA gen → lưu `reply_drafts` → reply
 - **AI tự thảo luận**: gen comment gốc trên chính bài viết, đếm mục tiêu từng bài,
   chạy ngẫu nhiên mỗi 1–5 phút → lưu `discussion_drafts`
@@ -60,9 +65,11 @@ API key NVIDIA: https://build.nvidia.com/settings/api-keys
 
 ### 2. Setup Supabase
 
-**Cách nhanh (khuyên dùng):** chạy script một phát — deploy 2 edge functions
-(`nvidia-proxy` che NVIDIA key, `admin-api` quản lý user), set secrets, áp
-migration `011` (chặn anon tự cấp `is_admin`), test và in sẵn khối `config.js`:
+**Cách nhanh (khuyên dùng):** chạy script một phát — deploy 3 edge functions
+(`nvidia-proxy` che NVIDIA key, `admin-api` quản lý user, `engagement-api` hàng đợi
+tương tác chéo), set secrets, áp migration `011` (chặn anon tự cấp `is_admin`) và
+`012` (hàng đợi tương tác), test và in sẵn khối `config.js` (bản admin đủ token,
+bản user chỉ có URL):
 
 ```bash
 bash scripts/setup-supabase.sh
@@ -78,6 +85,9 @@ bash scripts/setup-supabase.sh
 6. `006` → `010` (thảo luận gốc, medals, queue draft, community)
 7. `supabase/migrations/011_restrict_users_writes.sql` — **bắt buộc**: chặn anon
    tự cấp `is_admin` / xóa user (cần deploy `admin-api` trước — script trên làm sẵn)
+8. `supabase/migrations/012_cross_user_engagement.sql` — hàng đợi tương tác chéo
+   (`engagement_*`, `discussion_threads/turns`) + RPC claim atomic (cần deploy
+   `engagement-api` — xem [`supabase/functions/engagement-api/README.md`](supabase/functions/engagement-api/README.md))
 
 Chi tiết bảng / kiểm tra: xem [`supabase/README.md`](supabase/README.md).
 
@@ -88,10 +98,20 @@ Chi tiết bảng / kiểm tra: xem [`supabase/README.md`](supabase/README.md).
 3. **Load unpacked** → chọn thư mục project này
 4. Đăng nhập https://techhub.fpt.net rồi mở **My Angel** (side panel hoặc tab)
 
+Máy user thường chỉ cần thêm URL hàng đợi (không cần token — thiết bị tự đăng ký,
+server chỉ lưu hash để thu hồi từng máy khi cần):
+
+```javascript
+const ENGAGEMENT_API_CONFIG = {
+  url: "https://<project-ref>.supabase.co/functions/v1/engagement-api",
+  adminToken: "", // máy admin điền ADMIN_TOKEN, máy user để trống
+};
+```
+
 Phân quyền theo bảng `users`:
 
 - `is_admin = true`: thấy toàn bộ menu (Tự động hóa, Bài người khác, Nguy hiểm, Người dùng)
-- `is_admin = false`: chỉ thấy Bài viết + Thống kê
+- `is_admin = false`: chỉ thấy Bài viết + Thống kê + Tương tác (bật/tắt máy mình, xem tiến độ)
 - `is_locked = true`: bị chặn khỏi extension
 
 ## Cách dùng
@@ -104,6 +124,10 @@ Phân quyền theo bảng `users`:
 | **AI thảo luận** | Bật / chạy 1 lần gen comment độc lập, có phạm vi như trên |
 | **Auto comment** | Chọn bài → nhập số cmt → Bắt đầu |
 | **Hẹn xóa bài** | Nhập `techhub_id` + thời gian, hoặc Xóa ngay |
+| **Tương tác** (mọi user) | Bật hàng đợi → máy tự nhận task vote/comment khi campaign chạy; hết phiên thì đăng nhập lại theo banner |
+| **Tương tác** (admin) | Tạo campaign, import kịch bản JSON, xem task/threads, vận hành (kill switch, thiết bị, dọn log) |
+
+Chi tiết kiến trúc và phân phối task: xem [`PLAN_CROSS_USER_ENGAGEMENT.md`](PLAN_CROSS_USER_ENGAGEMENT.md).
 
 Nút mở rộng (góc header) mở UI dạng tab full.
 
@@ -118,10 +142,18 @@ ext-admin/
 ├── config.example.js
 ├── supabase-client.js
 ├── nvidia-client.js
+├── engagement-client.js   # Gọi engagement-api (device token + admin token)
+├── engagement-worker.js   # Worker hàng đợi: claim → vote/comment/reply → báo kết quả
+├── engagement-ui.js       # Panel Tương tác (user + admin)
+├── discussion-import.js   # Validate kịch bản thảo luận JSON (dùng chung UI + test)
 ├── icons/angel.png
 ├── privacy_policy.html
+├── scripts/
+│   ├── setup-supabase.sh  # Deploy functions + migrations + in config mẫu
+│   └── test-engagement.mjs# Kiểm thử offline (`node scripts/test-engagement.mjs`)
 ├── supabase/
 │   ├── README.md
+│   ├── functions/engagement-api/
 │   └── migrations/
 └── README.md
 ```
@@ -133,11 +165,19 @@ ext-admin/
 3. Auto-reply: fetch nội dung bài + comments → AI/template → reply (`ancestry`) → `interactions` + `reply_drafts`
 4. AI thảo luận: gen comment độc lập → `discussion_drafts` + `interactions`
 5. Auto-comment / hẹn xóa chạy qua alarm + storage state
+6. Tương tác chéo: admin tạo campaign → server sinh task → máy user heartbeat +
+   claim 1 task/lease → vote/comment/reply trên TechHub → báo kết quả; kịch bản
+   thảo luận mở dần từng turn theo comment ID thật
 
 ## Troubleshooting
 
 - **Không có quyền admin** → set `is_admin = true` cho username trong bảng `users`
 - **AI lỗi / key** → kiểm tra `NVIDIA_CONFIG.apiKey` trong `config.js`
+- **Banner "cần đăng nhập lại TechHub"** → mở techhub.fpt.net đăng nhập, quay lại
+  panel Tương tác bấm "Kiểm tra phiên" để mở lại task
+- **Máy báo "thiết bị đã bị thu hồi"** → admin mở Tương tác → Vận hành → bỏ thu hồi máy đó
+- **Kiểm thử offline** → `node scripts/test-engagement.mjs` (validate kịch bản JSON,
+  logic worker thuần, đối chiếu UI/background/edge/migration)
 - **Không lấy comment / reply** → mở TechHub đã đăng nhập, reload extension
 - **Thiếu bảng draft** → chạy migration `004` và `005`
 

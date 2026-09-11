@@ -1541,20 +1541,27 @@ class SupabaseClient {
    * @param {number|null} [parentCommentId]
    */
   async recordInteraction(username, techhubId, type, parentCommentId = null) {
-    try {
-      const payload = { username, techhub_id: techhubId, interaction_type: type };
-      if (parentCommentId != null) {
-        payload.parent_comment_id = parentCommentId;
-      }
-      const response = await fetch(`${this.restUrl}/interactions`, {
-        method: "POST",
-        headers: this.getHeaders(),
-        body: JSON.stringify(payload)
-      });
-      if (!response.ok) throw new Error(`Failed to record interaction: ${response.status}`);
-    } catch (error) {
-      console.error("[Supabase] Error recording interaction:", error);
+    const payload = { username, techhub_id: techhubId, interaction_type: type };
+    if (parentCommentId != null) {
+      payload.parent_comment_id = parentCommentId;
     }
+    const response = await fetch(`${this.restUrl}/interactions`, {
+      method: "POST",
+      headers: this.getHeaders(),
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      // 409 = đã ghi rồi (unique reply) → coi như trùng, không phải lỗi.
+      if (response.status === 409) {
+        return { duplicate: true };
+      }
+      const errText = await response.text().catch(() => "");
+      throw new Error(
+        `Failed to record interaction: ${response.status}${errText ? ` ${errText.slice(0, 200)}` : ""}`
+      );
+    }
+    const data = await response.json().catch(() => null);
+    return Array.isArray(data) ? data[0] || null : data;
   }
 
   /**
