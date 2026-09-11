@@ -903,6 +903,38 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;
   }
+
+  if (request.action === "getUsersOverview") {
+    Promise.all([
+      supabase.getAllUsers(),
+      supabase.getPostCountsByUsername(),
+      supabase.getTodayInteractionsStats(),
+    ])
+      .then(([users, postCounts, todayInteractionCounts]) =>
+        sendResponse({ success: true, users, postCounts, todayInteractionCounts })
+      )
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "updateUserStatus") {
+    const updates = {};
+    if (request.isAdmin !== undefined) updates.is_admin = !!request.isAdmin;
+    if (request.isLocked !== undefined) updates.is_locked = !!request.isLocked;
+    supabase
+      .updateUserStatus(request.username, updates)
+      .then((user) => sendResponse({ success: true, user }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "deleteUser") {
+    supabase
+      .deleteUserByUsername(request.username)
+      .then(() => sendResponse({ success: true }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
 });
 
 console.log("TechHub Profile Sync - Background script loaded");

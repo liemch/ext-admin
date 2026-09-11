@@ -1503,6 +1503,99 @@ input[type="search"]::-webkit-search-cancel-button {
   margin-top: 3px;
 }
 
+/* ============ Users panel ============ */
+
+.cell-user {
+  min-width: 220px;
+}
+
+.user-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.u-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  font-size: 11.5px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: #fff;
+  background: var(--grad-accent);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.14) inset,
+    0 3px 8px rgba(99, 102, 241, 0.35);
+}
+
+.u-avatar.locked {
+  background: linear-gradient(135deg, #64748b, #475569);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1) inset;
+}
+
+.user-cell-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.user-cell-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-cell-sub {
+  font-size: 10.5px;
+  color: var(--text-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge.admin {
+  background: rgba(167, 139, 250, 0.12);
+  color: #c4b5fd;
+  border-color: rgba(167, 139, 250, 0.28);
+}
+
+.badge.locked {
+  background: rgba(251, 113, 133, 0.11);
+  color: #fda4af;
+  border-color: rgba(251, 113, 133, 0.26);
+}
+
+.badge.self {
+  background: rgba(56, 189, 248, 0.11);
+  color: #7dd3fc;
+  border-color: rgba(56, 189, 248, 0.26);
+}
+
+.mini-btn.danger {
+  border-color: rgba(251, 113, 133, 0.32);
+  background: rgba(251, 113, 133, 0.07);
+  color: #ffb4be;
+}
+
+.mini-btn.danger:hover:not(:disabled) {
+  border-color: rgba(251, 113, 133, 0.65);
+  background: rgba(251, 113, 133, 0.16);
+  color: #ffd7dc;
+}
+
 /* ============ Tab view ============ */
 
 body.view-tab .content {
@@ -1719,7 +1812,12 @@ body.view-tab .content {
     min-width: 0;
   }
 
-  .data-table tbody td:not(.cell-title):not(.cell-action) {
+  .cell-user {
+    max-width: none;
+    min-width: 0;
+  }
+
+  .data-table tbody td:not(.cell-title):not(.cell-action):not(.cell-user) {
     display: inline-flex;
     width: auto;
     align-items: center;
@@ -1728,7 +1826,7 @@ body.view-tab .content {
     font-size: 11px;
   }
 
-  .data-table tbody td[data-label]:not(.cell-title):not(.cell-action)::before {
+  .data-table tbody td[data-label]:not(.cell-title):not(.cell-action):not(.cell-user)::before {
     content: attr(data-label);
     font-size: 9px;
     text-transform: uppercase;

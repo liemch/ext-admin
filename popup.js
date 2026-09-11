@@ -133,6 +133,14 @@ const elements = {
   deleteNowBtn: document.getElementById("deleteNowBtn"),
   scheduledDeletesList: document.getElementById("scheduledDeletesList"),
   deleteScheduleMessage: document.getElementById("deleteScheduleMessage"),
+  usersSearch: document.getElementById("usersSearch"),
+  usersList: document.getElementById("usersList"),
+  usersMessage: document.getElementById("usersMessage"),
+  refreshUsersBtn: document.getElementById("refreshUsersBtn"),
+  statUsersTotal: document.getElementById("statUsersTotal"),
+  statUsersAdmins: document.getElementById("statUsersAdmins"),
+  statUsersLocked: document.getElementById("statUsersLocked"),
+  statUsersToday: document.getElementById("statUsersToday"),
   openInTabBtn: document.getElementById("openInTabBtn"),
   sideMenu: document.getElementById("sideMenu"),
 };
@@ -154,6 +162,10 @@ let currentReplyDrafts = [];
 let currentDiscussionDrafts = [];
 let communityPosts = [];
 let communityPostsFilter = "";
+let cachedUsers = [];
+let usersPostCounts = {};
+let usersTodayCounts = {};
+let usersFilter = "";
 let externalDiscussionPost = null;
 let pendingExternalDiscussionDraftCount = 0;
 let currentExternalDiscussionDrafts = [];
@@ -334,6 +346,10 @@ function showPanel(name, persist = true) {
   if (name === "community" && communityPosts.length === 0) {
     loadCachedCommunityPosts(false);
   }
+
+  if (name === "users" && cachedUsers.length === 0) {
+    loadUsers();
+  }
 }
 
 async function restoreActivePanel() {
@@ -397,6 +413,29 @@ function setupEventListeners() {
     elements.postsSearch.addEventListener("input", () => {
       postsFilter = elements.postsSearch.value.trim().toLowerCase();
       renderMyPosts(cachedPosts);
+    });
+  }
+  if (elements.usersSearch) {
+    elements.usersSearch.addEventListener("input", () => {
+      usersFilter = elements.usersSearch.value.trim().toLowerCase();
+      renderUsers();
+    });
+  }
+  if (elements.refreshUsersBtn) {
+    elements.refreshUsersBtn.addEventListener("click", () => loadUsers(true));
+  }
+  if (elements.usersList) {
+    elements.usersList.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-user-action]");
+      if (!button) return;
+      const username = button.dataset.username;
+      if (button.dataset.userAction === "admin") {
+        toggleUserAdmin(username);
+      } else if (button.dataset.userAction === "lock") {
+        toggleUserLock(username);
+      } else if (button.dataset.userAction === "delete") {
+        deleteUserAccount(username);
+      }
     });
   }
   if (elements.scheduleAutoCommentBtn) {
@@ -649,9 +688,14 @@ function showError(message) {
   elements.errorMessage.textContent = message;
 }
 
-function showDenied() {
+function showDenied(message) {
   hideAllStates();
   elements.deniedSection.classList.remove("hidden");
+  const text = elements.deniedSection.querySelector("p");
+  if (text) {
+    text.textContent =
+      message || "Tài khoản hiện tại không có quyền admin.";
+  }
 }
 
 function showAdmin() {
@@ -694,6 +738,12 @@ async function loadAdminGate() {
     const dbUser = await supabase.findUserByUsername(username);
     if (!dbUser || !dbUser.is_admin) {
       showDenied();
+      return;
+    }
+    if (dbUser.is_locked) {
+      showDenied(
+        `Tài khoản @${username} đã bị khóa khỏi extension. Liên hệ quản trị viên để mở lại.`
+      );
       return;
     }
 
@@ -751,6 +801,272 @@ async function toggleCrossInteraction() {
     showAdminMsg(elements.communityPostsMessage, `Lỗi: ${error.message}`, "error");
   } finally {
     if (elements.crossInteractionEnabled) elements.crossInteractionEnabled.disabled = false;
+  }
+}
+
+// ==================== Quản lý người dùng ====================
+
+function isSelfUsername(username) {
+  return (
+    !!username &&
+    !!currentUserProfile?.username &&
+    String(username).toLowerCase() ===
+      String(currentUserProfile.username).toLowerCase()
+  );
+}
+
+function findCachedUser(username) {
+  return cachedUsers.find(
+    (user) => String(user.username).toLowerCase() === String(username).toLowerCase()
+  );
+}
+
+async function loadUsers(showSuccess = false) {
+  if (elements.usersList) {
+    elements.usersList.innerHTML =
+      '<div class="empty">Đang tải danh sách người dùng…</div>';
+  }
+  try {
+    const response = await sendMessage({ action: "getUsersOverview" });
+    if (!response?.success) {
+      throw new Error(response?.error || "Không tải được danh sách người dùng");
+    }
+    cachedUsers = Array.isArray(response.users) ? response.users : [];
+    usersPostCounts = response.postCounts || {};
+    usersTodayCounts = response.todayInteractionCounts || {};
+    renderUsers();
+    if (showSuccess) {
+      showAdminMsg(
+        elements.usersMessage,
+        `Đã làm mới ${cachedUsers.length} người dùng.`,
+        "success"
+      );
+    }
+  } catch (error) {
+    if (elements.usersList) {
+      elements.usersList.innerHTML =
+        '<div class="empty">Không tải được dữ liệu người dùng.</div>';
+    }
+    showAdminMsg(elements.usersMessage, `Lỗi: ${error.message}`, "error");
+  }
+}
+
+function updateUsersStats() {
+  if (elements.statUsersTotal) {
+    elements.statUsersTotal.textContent = String(cachedUsers.length);
+  }
+  if (elements.statUsersAdmins) {
+    elements.statUsersAdmins.textContent = String(
+      cachedUsers.filter((user) => !!user.is_admin).length
+    );
+  }
+  if (elements.statUsersLocked) {
+    elements.statUsersLocked.textContent = String(
+      cachedUsers.filter((user) => !!user.is_locked).length
+    );
+  }
+  if (elements.statUsersToday) {
+    const todayTotal = cachedUsers.reduce(
+      (sum, user) => sum + (Number(usersTodayCounts[user.username]) || 0),
+      0
+    );
+    elements.statUsersToday.textContent = String(todayTotal);
+  }
+}
+
+function renderUsers() {
+  updateUsersStats();
+  if (!elements.usersList) return;
+
+  const keyword = usersFilter.trim().toLowerCase();
+  const visibleUsers = cachedUsers.filter((user) => {
+    if (!keyword) return true;
+    const haystack = [user.username, user.full_name, user.email]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(keyword);
+  });
+
+  if (visibleUsers.length === 0) {
+    elements.usersList.innerHTML = cachedUsers.length
+      ? '<div class="empty">Không có người dùng khớp từ khóa.</div>'
+      : '<div class="empty">Chưa có người dùng nào. Bấm Làm mới để tải.</div>';
+    return;
+  }
+
+  const rows = visibleUsers
+    .map((user) => {
+      const username = String(user.username || "-");
+      const self = isSelfUsername(username);
+      const isAdmin = !!user.is_admin;
+      const isLocked = !!user.is_locked;
+      const posts = Number(usersPostCounts[user.username]) || 0;
+      const todayCount = Number(usersTodayCounts[user.username]) || 0;
+      const fullName = user.full_name ? String(user.full_name) : "";
+      const selfTitle = self ? ' title="Không thể thao tác trên tài khoản của chính mình"' : "";
+
+      const badges =
+        (isAdmin ? '<span class="badge admin">Admin</span>' : "") +
+        (isLocked ? '<span class="badge locked">Khóa</span>' : "");
+
+      return (
+        `<tr class="${self ? "selected" : ""}">` +
+        `<td class="cell-user">` +
+        `<div class="user-cell">` +
+        `<span class="u-avatar${isLocked ? " locked" : ""}">${escapeHtml(
+          username.slice(0, 2)
+        )}</span>` +
+        `<div class="user-cell-text">` +
+        `<span class="user-cell-name">@${escapeHtml(username)}${
+          self ? ' <span class="badge self">Bạn</span>' : ""
+        }</span>` +
+        (fullName
+          ? `<div class="user-cell-sub">${escapeHtml(fullName)}</div>`
+          : "") +
+        `</div></div></td>` +
+        `<td data-label="Bài"><span class="num">${posts}</span></td>` +
+        `<td data-label="Cmt hôm nay"><span class="num">${todayCount}</span></td>` +
+        `<td data-label="Trạng thái">${
+          badges || '<span class="badge other">Thường</span>'
+        }</td>` +
+        `<td class="cell-date" data-label="Hoạt động">${escapeHtml(
+          formatRelativeDate(user.last_update || user.created_at)
+        )}</td>` +
+        `<td class="cell-action">` +
+        `<div class="row-actions">` +
+        `<button type="button" class="mini-btn" data-user-action="admin" data-username="${escapeHtml(
+          username
+        )}"${self ? " disabled" : ""}${selfTitle}>${isAdmin ? "Thu quyền" : "Cấp quyền"}</button>` +
+        `<button type="button" class="mini-btn" data-user-action="lock" data-username="${escapeHtml(
+          username
+        )}"${self ? " disabled" : ""}${selfTitle}>${
+          isLocked ? "Mở khóa" : "Khóa"
+        }</button>` +
+        `<button type="button" class="mini-btn danger" data-user-action="delete" data-username="${escapeHtml(
+          username
+        )}"${self ? " disabled" : ""}${selfTitle}>Xóa</button>` +
+        `</div>` +
+        `</td>` +
+        `</tr>`
+      );
+    })
+    .join("");
+
+  elements.usersList.innerHTML =
+    '<table class="data-table"><thead><tr>' +
+    "<th>Người dùng</th><th>Bài</th><th>Cmt hôm nay</th>" +
+    "<th>Trạng thái</th><th>Hoạt động</th><th></th>" +
+    `</tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+async function toggleUserAdmin(username) {
+  const user = findCachedUser(username);
+  if (!user) return;
+  if (isSelfUsername(username)) {
+    showAdminMsg(
+      elements.usersMessage,
+      "Không thể thay đổi quyền admin của chính mình.",
+      "error"
+    );
+    return;
+  }
+  const nextValue = !user.is_admin;
+  try {
+    const response = await sendMessage({
+      action: "updateUserStatus",
+      username,
+      isAdmin: nextValue,
+    });
+    if (!response?.success) {
+      throw new Error(response?.error || "Cập nhật thất bại");
+    }
+    if (response.user) Object.assign(user, response.user);
+    renderUsers();
+    showAdminMsg(
+      elements.usersMessage,
+      nextValue
+        ? `Đã cấp quyền admin cho @${username}.`
+        : `Đã thu quyền admin của @${username}.`,
+      "success"
+    );
+  } catch (error) {
+    showAdminMsg(elements.usersMessage, `Lỗi: ${error.message}`, "error");
+  }
+}
+
+async function toggleUserLock(username) {
+  const user = findCachedUser(username);
+  if (!user) return;
+  if (isSelfUsername(username)) {
+    showAdminMsg(
+      elements.usersMessage,
+      "Không thể khóa chính mình.",
+      "error"
+    );
+    return;
+  }
+  const nextValue = !user.is_locked;
+  if (
+    nextValue &&
+    !window.confirm(
+      `Khóa @${username}? Tài khoản này sẽ không mở được panel extension cho đến khi được mở khóa.`
+    )
+  ) {
+    return;
+  }
+  try {
+    const response = await sendMessage({
+      action: "updateUserStatus",
+      username,
+      isLocked: nextValue,
+    });
+    if (!response?.success) {
+      throw new Error(response?.error || "Cập nhật thất bại");
+    }
+    if (response.user) Object.assign(user, response.user);
+    renderUsers();
+    showAdminMsg(
+      elements.usersMessage,
+      nextValue
+        ? `Đã khóa @${username}.`
+        : `Đã mở khóa cho @${username}.`,
+      "success"
+    );
+  } catch (error) {
+    showAdminMsg(elements.usersMessage, `Lỗi: ${error.message}`, "error");
+  }
+}
+
+async function deleteUserAccount(username) {
+  if (isSelfUsername(username)) {
+    showAdminMsg(
+      elements.usersMessage,
+      "Không thể xóa tài khoản của chính mình.",
+      "error"
+    );
+    return;
+  }
+  if (
+    !window.confirm(
+      `Xóa người dùng @${username} khỏi Supabase? Bài viết và tương tác đã lưu sẽ được giữ lại.`
+    )
+  ) {
+    return;
+  }
+  try {
+    const response = await sendMessage({ action: "deleteUser", username });
+    if (!response?.success) {
+      throw new Error(response?.error || "Xóa thất bại");
+    }
+    cachedUsers = cachedUsers.filter(
+      (user) =>
+        String(user.username).toLowerCase() !== String(username).toLowerCase()
+    );
+    renderUsers();
+    showAdminMsg(elements.usersMessage, `Đã xóa @${username}.`, "success");
+  } catch (error) {
+    showAdminMsg(elements.usersMessage, `Lỗi: ${error.message}`, "error");
   }
 }
 

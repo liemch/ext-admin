@@ -11,6 +11,8 @@ Chrome Extension (MV3) hỗ trợ quản lý bài viết trên [TechHub](https:/
 - **AI tự thảo luận**: gen comment gốc trên chính bài viết, đếm mục tiêu từng bài,
   chạy ngẫu nhiên mỗi 1–5 phút → lưu `discussion_drafts`
 - **Auto comment** trên bài của mình hoặc nhập ID bài thành viên khác, tự chia nhịp để hoàn thành đủ số lượng trong thời gian đã chọn, chạy ngay hoặc hẹn giờ; có thể tự xóa cuốn chiếu và xem nhật ký xóa từng comment
+- **Quản lý người dùng**: xem danh sách user dùng extension, cấp/thu quyền admin,
+  khóa/mở khóa (user bị khóa không mở được panel), xem số bài đã lưu và comment hôm nay
 - **Hẹn xóa bài** qua `DELETE /api/v1/articles/{uuid}/`
 - UI dashboard: sidebar tính năng, bảng bài viết có tìm kiếm, tự co gọn trong side panel;
   mở full tab bằng nút "Mở dạng tab"
@@ -67,6 +69,7 @@ User trong DB cần `is_admin = true` mới vào được panel admin.
 | Menu | Việc làm |
 |------|----------|
 | **Bài của tôi** | Quét bài, chọn bài, xem điểm |
+| **Người dùng** | Xem danh sách user, cấp/thu quyền admin, khóa/mở khóa, xóa user |
 | **AI trả lời** | Bật tự trả lời / chạy 1 lần (NVIDIA hoặc template), phạm vi tất cả bài hoặc chỉ bài đã chọn |
 | **AI thảo luận** | Bật / chạy 1 lần gen comment độc lập, có phạm vi như trên |
 | **Auto comment** | Chọn bài → nhập số cmt → Bắt đầu |
