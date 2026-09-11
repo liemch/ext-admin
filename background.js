@@ -1,4 +1,4 @@
-importScripts('config.js', 'supabase-client.js', 'nvidia-client.js', 'engagement-client.js', 'engagement-worker.js');
+importScripts('config.js', 'supabase-client.js', 'nvidia-client.js', 'engagement-client.js', 'engagement-worker.js', 'post-sync-client.js', 'post-sync-worker.js');
 
 // Background Service Worker - Lắng nghe và bắt headers từ TechHub API
 
@@ -536,6 +536,16 @@ const ADMIN_ONLY_ACTIONS = new Set([
   "engagementCleanupEvents",
   "engagementSetKillSwitch",
   "engagementRevokeDevice",
+  // Post-sync admin (chỉ máy admin/leader).
+  "postSyncGetStatus",
+  "postSyncRunLeaderTick",
+  "postSyncEnqueueJobs",
+  "postSyncListJobs",
+  "postSyncListHints",
+  "postSyncListRuns",
+  "postSyncResubmitHint",
+  "postSyncRetryJob",
+  "postSyncCancelJob",
 ]);
 
 /**
@@ -1211,6 +1221,71 @@ function handlePopupMessage(request, sendResponse) {
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;
   }
+
+  // ---- Post-sync (user: xem bài đã sync của chính mình) ----
+  if (request.action === "postSyncGetState") {
+    PostSyncClient.getMySyncedPosts({ limit: request.limit || 50, offset: request.offset || 0 })
+      .then((result) => sendResponse({ success: true, ...result, isLeader: PostSyncClient.isPostSyncLeader() }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  // ---- Post-sync admin (chỉ leader) ----
+  if (request.action === "postSyncGetStatus") {
+    PostSyncClient.postSyncAdmin("getStatus", {})
+      .then((result) => sendResponse({ success: true, ...result, isLeader: PostSyncClient.isPostSyncLeader(), configured: PostSyncClient.isPostSyncConfigured() }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  if (request.action === "postSyncRunLeaderTick") {
+    PostSyncWorker.enqueueScheduledJobs()
+      .then(() => PostSyncWorker.claimAndRunOneJob())
+      .then((result) => PostSyncClient.postSyncAdmin("getStatus", {}).then((status) => sendResponse({ success: true, result, ...status })))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  if (request.action === "postSyncEnqueueJobs") {
+    PostSyncWorker.enqueueScheduledJobs()
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  if (request.action === "postSyncListJobs") {
+    PostSyncClient.postSyncAdmin("listJobs", { status: request.status, limit: request.limit || 50, offset: request.offset || 0 })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  if (request.action === "postSyncListHints") {
+    PostSyncClient.postSyncAdmin("listHints", { status: request.status, limit: request.limit || 50, offset: request.offset || 0 })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  if (request.action === "postSyncListRuns") {
+    PostSyncClient.postSyncAdmin("listRuns", { jobId: request.jobId, limit: request.limit || 50, offset: request.offset || 0 })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  if (request.action === "postSyncResubmitHint") {
+    PostSyncClient.postSyncAdmin("resubmitHint", { hintId: request.hintId })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  if (request.action === "postSyncRetryJob") {
+    PostSyncClient.postSyncAdmin("retryJob", { jobId: request.jobId })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  if (request.action === "postSyncCancelJob") {
+    PostSyncClient.postSyncAdmin("cancelJob", { jobId: request.jobId })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
 }
 
 console.log("TechHub Profile Sync - Background script loaded");
@@ -1264,7 +1339,30 @@ function setupAlarms() {
       chrome.alarms.create(AI_JOB_WATCHDOG_ALARM, { periodInMinutes: 1 });
     }
   });
+  // Post-sync leader: máy admin thức dậy mỗi 5 phút để enqueue + claim 1 job.
+  if (typeof PostSyncWorker !== "undefined" && typeof PostSyncClient !== "undefined" && PostSyncClient.isPostSyncLeader()) {
+    chrome.alarms.get(PostSyncWorker.LEADER_WAKE_ALARM, (alarm) => {
+      if (!alarm) {
+        chrome.alarms.create(PostSyncWorker.LEADER_WAKE_ALARM, { periodInMinutes: 5, delayInMinutes: 1 });
+      }
+    });
+  }
 }
+
+// Post hint: lắng nghe tab điều hướng đến bài TechHub → gửi hint im lặng.
+function handleTechHubTabForHint(tabId, url) {
+  if (!url || typeof PostSyncWorker === "undefined" || typeof PostSyncClient === "undefined") return;
+  if (!PostSyncClient.isPostSyncConfigured()) return;
+  try {
+    PostSyncWorker.maybeSubmitHintFromUrl(url, "article_page").catch(() => {});
+  } catch (_) {}
+}
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.url) handleTechHubTabForHint(tabId, changeInfo.url);
+});
+chrome.tabs.onCreated.addListener((tab) => {
+  if (tab.url) handleTechHubTabForHint(tab.id, tab.url);
+});
 
 async function rearmAiJobAlarms() {
   await Promise.all([
@@ -1310,6 +1408,13 @@ restoreScheduledDeletes().catch((err) => {
   console.error("[Background] Failed to restore scheduled deletes:", err);
 });
 
+// Post-sync bootstrap: đăng ký thiết bị này và lên lịch nếu là leader.
+if (typeof PostSyncWorker !== "undefined" && typeof PostSyncClient !== "undefined") {
+  PostSyncWorker.bootstrap().catch((err) => {
+    console.warn("[Background] Post-sync bootstrap failed:", err);
+  });
+}
+
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === CROSS_INTERACTION_ALARM) {
     runCrossInteraction(false).catch((err) => {
@@ -1352,6 +1457,13 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     processDueScheduledDeletes().catch((err) => {
       console.error("[Background] Scheduled delete failed:", err);
     });
+  } else if (typeof PostSyncWorker !== "undefined" && alarm.name === PostSyncWorker.LEADER_WAKE_ALARM) {
+    // Leader tick: enqueue then claim+run 1 job (best-effort, silent).
+    if (PostSyncClient.isPostSyncConfigured() && PostSyncClient.isPostSyncLeader()) {
+      PostSyncWorker.enqueueScheduledJobs()
+        .then(() => PostSyncWorker.claimAndRunOneJob())
+        .catch((err) => console.warn("[Background] Post-sync leader tick failed:", err));
+    }
   }
 });
 

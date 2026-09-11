@@ -73,7 +73,24 @@ const ENGAGEMENT_API_CONFIG = {
   adminToken: "",
 };
 
+// Post Sync API — edge function đồng bộ bài viết (hint + feed discovery + reconcile).
+// Xem PLAN_POST_SYNC.md.
+//
+// - Mọi máy đều điền `url` để gửi hint khi user mở/đăng bài (không quét feed).
+// - `adminToken` CHỈ điền trên máy admin (máy sẽ làm leader quét feed, verify hint,
+//   đối soát bài). User thường để "".
+const POST_SYNC_API_CONFIG = {
+  url: "https://xxxxx.supabase.co/functions/v1/post-sync-api",
+  adminToken: "",
+};
+
 // Xuất config để sử dụng trong các file khác
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { SUPABASE_CONFIG, NVIDIA_CONFIG };
+  module.exports = {
+    SUPABASE_CONFIG,
+    ADMIN_API_CONFIG,
+    NVIDIA_CONFIG,
+    ENGAGEMENT_API_CONFIG,
+    POST_SYNC_API_CONFIG,
+  };
 }

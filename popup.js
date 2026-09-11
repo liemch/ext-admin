@@ -157,6 +157,7 @@ const ADMIN_ONLY_PANELS = new Set([
   "external-discussion",
   "delete",
   "users",
+  "post-sync",
 ]);
 
 const isTabView = new URLSearchParams(location.search).get("view") === "tab";
@@ -257,6 +258,12 @@ async function init() {
 
   await loadAdminGate();
   await restoreActivePanel();
+
+  // Post-sync: bind UI và nạp cache "Bài viết của tôi".
+  if (typeof PostSyncUI !== "undefined") {
+    PostSyncUI.bindPostSyncUI();
+    PostSyncUI.renderMyPostsCache(currentUserProfile?.username || null).catch(() => {});
+  }
 }
 
 function applyViewMode() {
@@ -365,6 +372,13 @@ function showPanel(name, persist = true) {
 
   if (name === "users" && cachedUsers.length === 0) {
     loadUsers();
+  }
+
+  if (name === "post-sync" && typeof PostSyncUI !== "undefined") {
+    PostSyncUI.refreshAllPostSync().catch(() => {});
+  }
+  if (name === "posts" && typeof PostSyncUI !== "undefined") {
+    PostSyncUI.renderMyPostsCache(currentUserProfile?.username || null).catch(() => {});
   }
 }
 

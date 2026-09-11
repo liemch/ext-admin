@@ -19,6 +19,10 @@ Chrome Extension (MV3) hỗ trợ quản lý bài viết trên [TechHub](https:/
 - **Quản lý người dùng**: xem danh sách user dùng extension, cấp/thu quyền admin,
   khóa/mở khóa (user bị khóa không mở được panel), xem số bài đã lưu và comment hôm nay
 - **Hẹn xóa bài** qua `DELETE /api/v1/articles/{uuid}/`
+- **Đồng bộ bài viết (post-sync)** — máy admin/leader quét feed và verify hint tự động;
+  máy user chỉ gửi gợi ý nhẹ khi mở bài (không quét feed, không gây tải TechHub từ máy người dùng).
+  Campaign tương tác chéo chỉ chọn bài `verification_status = verified`, và tự hủy
+  các task nhắm vào bài đã đóng/xóa/rejected. Chi tiết: [`PLAN_POST_SYNC.md`](PLAN_POST_SYNC.md).
 - UI dashboard: sidebar tính năng, bảng bài viết có tìm kiếm, tự co gọn trong side panel;
   mở full tab bằng nút "Mở dạng tab"
 

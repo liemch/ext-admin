@@ -1005,6 +1005,64 @@ async function handleHeartbeat(
   });
 }
 
+// Hủy các task pending của actor chỉ tới bài đã đóng/xóa/rejected/stale
+// (vô hiệu hóa theo dõi: PLAN_POST_SYNC §4).
+async function cancelTasksForInvalidPosts(rest: Rest, actorUsername: string) {
+  const taskRows = await rest.getJson<Array<{ id: number; techhub_id: number }>>(
+    "engagement_tasks",
+    {
+      actor_username: `eq.${actorUsername}`,
+      status: "eq.pending",
+      select: "id,techhub_id",
+      limit: "200",
+    }
+  );
+  if (!taskRows || taskRows.length === 0) return { cancelled: 0 };
+  const ids = taskRows.map((t) => t.techhub_id).filter((n) => Number.isFinite(n));
+  if (ids.length === 0) return { cancelled: 0 };
+  const uniqueIds = [...new Set(ids)];
+  const posts = await rest.getJson<
+    Array<{ techhub_id: number; status: string; verification_status: string }>
+  >("posts", {
+    techhub_id: `in.(${uniqueIds.join(",")})`,
+    select: "techhub_id,status,verification_status",
+  });
+  const byId = new Map<number, { status: string; verification_status: string }>();
+  for (const p of posts || []) byId.set(Number(p.techhub_id), p);
+  const badIds = new Set<number>();
+  for (const tid of ids) {
+    const p = byId.get(tid);
+    if (!p) {
+      // Bài không còn trong DB → hủy (đã xóa).
+      badIds.add(tid);
+      continue;
+    }
+    const st = String(p.status || "").toLowerCase();
+    const vs = String(p.verification_status || "");
+    if (st !== "open" || vs === "rejected" || vs === "stale") badIds.add(tid);
+  }
+  if (badIds.size === 0) return { cancelled: 0 };
+  const cancelTaskIds = taskRows
+    .filter((t) => badIds.has(Number(t.techhub_id)))
+    .map((t) => t.id);
+  // Update từng lô 50.
+  let cancelled = 0;
+  for (let i = 0; i < cancelTaskIds.length; i += 50) {
+    const batch = cancelTaskIds.slice(i, i + 50).join(",");
+    await rest.patch(
+      "engagement_tasks",
+      { id: `in.(${batch})`, status: "eq.pending" },
+      {
+        status: "cancelled",
+        last_error: "Bài không còn mở / đã bị từ chối hoặc bị xóa.",
+        updated_at: new Date().toISOString(),
+      }
+    );
+    cancelled += batch.split(",").length;
+  }
+  return { cancelled };
+}
+
 async function handleClaimTask(rest: Rest, auth: Auth) {
   const { device } = requireDevice(auth);
   if (await isKillSwitchOn(rest)) {
@@ -1023,6 +1081,14 @@ async function handleClaimTask(rest: Rest, auth: Auth) {
   const parsedLease = Number(leaseSetting);
   if (Number.isFinite(parsedLease) && parsedLease >= 60 && parsedLease <= 3600) {
     leaseSeconds = Math.floor(parsedLease);
+  }
+
+  // Hủy các task nhắm vào bài không còn mở/đã rejected/stale (chỉ tác động lên
+  // các task "pending" của actor hiện tại để tránh quét toàn bảng mỗi lần claim).
+  try {
+    await cancelTasksForInvalidPosts(rest, device.username);
+  } catch (error) {
+    console.warn("[engagement] cancelTasksForInvalidPosts failed:", error);
   }
 
   const rows = await rest.rpc<TaskRow[]>("claim_engagement_task", {
@@ -1665,11 +1731,13 @@ async function handlePlanCampaign(
     if (actors.length === 0) throw new HttpError("Không tìm được actor nào.", 400);
   }
 
-  // 2. Bài ứng viên: open, có UUID, trong phạm vi, tác giả không bị khóa.
+  // 2. Bài ứng viên: open + verification_status = verified, có UUID, trong phạm vi, tác giả không bị khóa.
+  //    (Bài stale/rejected/unverified không được đưa vào campaign — PLAN_POST_SYNC §4.)
   const postParams: Record<string, string> = {
     status: "eq.open",
+    verification_status: "eq.verified",
     select:
-      "techhub_id,techhub_uuid,username,title,status,published_at,created_at,community_slug",
+      "techhub_id,techhub_uuid,username,title,status,published_at,created_at,community_slug,verification_status",
     order: "created_at.desc",
     limit: String(input.postScope.limit || 50),
   };

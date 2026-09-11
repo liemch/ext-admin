@@ -70,6 +70,22 @@
           <button
             class="nav-item admin-only"
             type="button"
+            data-panel="post-sync"
+            data-title="Đồng bộ bài viết"
+            data-subtitle="Leader quét feed/hint để phát hiện bài mới"
+          >
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true">
+              <path
+                d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0020 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 004 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"
+                fill="currentColor"
+              />
+            </svg>
+            <span class="nav-label">Đồng bộ bài</span>
+            <span id="postSyncDot" class="nav-dot hidden"></span>
+          </button>
+          <button
+            class="nav-item admin-only"
+            type="button"
             data-panel="users"
             data-title="Người dùng"
             data-subtitle="Quản lý tài khoản đang dùng extension"
@@ -287,6 +303,16 @@
                 </div>
                 <div id="myPostsList" class="table-wrap"></div>
                 <div id="postsMessage" class="msg hidden"></div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Bài viết của tôi (từ đồng bộ)</h2>
+                    <p>Các bài do leader đã xác minh gần đây — không cần quét feed</p>
+                  </div>
+                </div>
+                <div id="myPostsCacheList" class="my-posts-cache"></div>
               </div>
             </section>
 
@@ -694,6 +720,82 @@
                 <div id="devicesList" class="schedule-list">
                   <div class="empty">Chưa có dữ liệu.</div>
                 </div>
+              </div>
+            </section>
+
+            <section class="panel hidden admin-only" data-panel="post-sync">
+              <div id="postSyncFlash" class="flash"></div>
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Tổng quan leader</h2>
+                    <p>Máy admin này có thể làm leader và xử lý các job sync mỗi 5 phút</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="postSyncCheckSessionBtn" class="btn" type="button">Kiểm tra phiên</button>
+                    <button id="postSyncRefreshBtn" class="btn btn-primary" type="button">Làm mới</button>
+                  </div>
+                </div>
+                <div id="postSyncOverview" class="grid-2"></div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Yêu cầu quét</h2>
+                    <p>Xếp lịch quét feed chuyên mục hoặc quét một user cụ thể</p>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label for="postSyncCommunitySlug">Chuyên mục</label>
+                  <input id="postSyncCommunitySlug" class="input" type="text" value="cai-tien-moi-ngay" />
+                  <button id="postSyncFeedBtn" class="btn btn-primary" type="button">Quét feed</button>
+                </div>
+                <div class="form-row">
+                  <label for="postSyncUsernameInput">Username</label>
+                  <input id="postSyncUsernameInput" class="input" type="text" placeholder="vd: an.nguyenhongsat1" />
+                  <button id="postSyncUserBtn" class="btn" type="button">Quét user</button>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Nguồn & lịch quét</h2>
+                  </div>
+                </div>
+                <div id="postSyncSources"></div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Bài mới xác minh</h2>
+                  </div>
+                  <div class="card-actions">
+                    <select id="postSyncNewDays" class="input">
+                      <option value="1">24h qua</option>
+                      <option value="7" selected>7 ngày</option>
+                      <option value="30">30 ngày</option>
+                    </select>
+                    <select id="postSyncNewFilter" class="input">
+                      <option value="">Tất cả nguồn</option>
+                      <option value="post_hint">post_hint</option>
+                      <option value="feed_discovery">feed_discovery</option>
+                      <option value="user_reconcile">user_reconcile</option>
+                    </select>
+                  </div>
+                </div>
+                <div id="postSyncNewList"></div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Lịch sử chạy</h2>
+                  </div>
+                </div>
+                <div id="postSyncRuns"></div>
               </div>
             </section>
 
@@ -1373,6 +1475,7 @@
     <script src="config.js"></script>
     <script src="supabase-client.js"></script>
     <script src="discussion-import.js"></script>
+    <script src="post-sync-ui.js"></script>
     <script src="popup.js"></script>
     <script src="engagement-ui.js"></script>
   </body>
