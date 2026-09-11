@@ -99,14 +99,14 @@ ok "Đã deploy nvidia-proxy + admin-api"
 # ---------- 7. Migration 011: chặn anon ghi users ----------
 step "Áp migration 011 (chặn anon sửa is_admin / xóa user)"
 MIG="supabase/migrations/011_restrict_users_writes.sql"
-if supabase db execute --help >/dev/null 2>&1; then
-  if supabase db execute --file "$MIG"; then
+if supabase db query --help >/dev/null 2>&1; then
+  if supabase db query --linked --file "$MIG"; then
     ok "Đã áp dụng $MIG"
   else
     warn "CLI không chạy được SQL — mở Dashboard > SQL Editor và chạy nội dung file: $MIG"
   fi
 else
-  warn "CLI không có lệnh 'db execute' — mở Dashboard > SQL Editor và chạy nội dung file: $MIG"
+  warn "CLI không có lệnh 'db query' — mở Dashboard > SQL Editor và chạy nội dung file: $MIG"
 fi
 
 # ---------- 8. Test ----------
