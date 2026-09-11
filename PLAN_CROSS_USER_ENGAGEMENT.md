@@ -34,12 +34,16 @@ Supabase giữ vai trò điều phối; extension vẫn là nơi thực thi vì 
 
 Luồng chính:
 
-1. Extension đồng bộ profile và bài viết lên Supabase.
+1. Một máy admin được chọn làm sync leader, quét bài TechHub theo lịch và cập nhật Supabase.
 2. Bộ lập lịch tạo nhiệm vụ `vote`, `comment` hoặc `reply` cho từng actor.
 3. Extension gọi Edge Function để claim đúng một nhiệm vụ bằng lease có thời hạn.
 4. Extension đọc bài và comment hiện tại từ TechHub, thực hiện hành động bằng phiên đăng nhập local.
 5. Extension báo `succeeded`, `failed` hoặc `skipped`; server cập nhật lịch sử và lịch chạy tiếp theo.
 6. Nhiệm vụ hết lease được trả lại hàng đợi, nhưng idempotency key ngăn thực thi trùng.
+
+### Đồng bộ bài viết
+
+Đồng bộ bài dùng plan riêng: [PLAN_POST_SYNC.md](PLAN_POST_SYNC.md). Campaign chỉ nhận bài đã được sync leader xác minh. User thường không quét feed; họ chỉ gửi post hint từ dữ liệu đang xem. Feed discovery và reconcile username do một admin leader có lease thực hiện.
 
 ## 4. Kịch bản JSON nhiều cấp
 
@@ -148,6 +152,10 @@ Nhật ký append-only cho claim, bắt đầu, thành công, retry và lỗi. D
 
 Chỉ turn đầu được đưa vào queue khi bắt đầu. Khi TechHub trả về comment ID, server ghi ID đó rồi mở khóa turn kế tiếp. Task reply lấy `parent_techhub_comment_id` từ `techhub_comment_id` của turn trước, nhờ đó cấp 2, 3, 4 luôn nối đúng ancestry dù hai máy thực thi ở thời điểm khác nhau.
 
+### Tích hợp với post sync
+
+Schema `post_hints` và `post_sync_*` được đặc tả trong [PLAN_POST_SYNC.md](PLAN_POST_SYNC.md). Engagement planner chỉ lấy bài có `last_verified_at` hợp lệ, đúng tác giả và nằm trong cửa sổ campaign.
+
 ### Edge Function `engagement-api`
 
 Cung cấp các action:
@@ -197,10 +205,15 @@ Chỉ tạo reply task sau khi comment trước thành công và có `techhub_co
 
 ## 8. Giao diện
 
-Thay switch “Tự động tương tác chéo” bằng hai lớp:
+Tách thành hai menu độc lập:
 
-- User: bật/tắt nhận task, trạng thái online, task gần nhất, lượt vote/comment hôm nay và lỗi cần xử lý.
-- Admin: tạo campaign, chọn vote/comment/reply, quota, cooldown, phạm vi bài, lịch chạy; xem tiến độ và pause/cancel.
+- **Bài viết của tôi** dành cho mọi user: danh sách bài cache, số comment/vote, thời gian đồng bộ gần nhất, bật/tắt tham gia thảo luận và hoạt động của chính tài khoản.
+- **Chiến dịch** chỉ dành cho admin: tạo campaign, chọn bài, nhập JSON, chọn vote/comment/reply, quota, cooldown, lịch chạy, pause/cancel và xem tiến độ toàn hệ thống.
+- **Đồng bộ bài viết** là menu admin riêng theo [PLAN_POST_SYNC.md](PLAN_POST_SYNC.md); plan engagement chỉ dùng kết quả bài đã verified.
+
+User thường không cần thấy khái niệm campaign, task lease, device token hoặc vận hành. Switch nên đặt tên dễ hiểu như “Cho phép tài khoản tham gia thảo luận”. Khi tắt, server ngừng phân task mới; task đang claim được release về queue.
+
+Số comment/vote của user nên lấy từ `engagement_tasks`/`engagement_events`, không gọi TechHub để đếm lại mỗi lần mở extension. Danh sách bài và tổng số liệu thật dùng cache `posts`; UI luôn hiển thị thời điểm cache được cập nhật.
 - Admin có ô dán JSON, nút “Kiểm tra”, preview từng thread/turn, chọn bài đích và nút “Nhập kịch bản”. Lỗi JSON phải chỉ rõ thread và turn.
 
 Danh sách hoạt động hiển thị riêng `pending`, `running`, `success`, `retry`, `failed`; không hiển thị token hoặc cookie.
@@ -249,6 +262,7 @@ Có thể bỏ permission `notifications` khỏi `manifest.json` sau khi các lu
 - Planner sinh task vote/comment theo quota.
 - Cooldown, daily cap và phân phối vòng giữa các tác giả.
 - UI admin tạo, pause và theo dõi campaign.
+- Tách menu user “Bài viết của tôi” và menu admin “Chiến dịch”.
 
 Điều kiện hoàn thành: campaign đạt đúng quota, không vượt giới hạn actor/bài và tự kết thúc khi hết task.
 
@@ -268,6 +282,9 @@ Có thể bỏ permission `notifications` khỏi `manifest.json` sau khi các lu
 - Retry có backoff cho 429/5xx; với 401/403 thì lưu `session_required` và dừng im lặng cho tới khi người dùng mở extension, đăng nhập lại.
 - Giới hạn tốc độ toàn hệ thống và kill switch.
 - Dọn event cũ, cảnh báo task treo và thống kê tỷ lệ thành công.
+- Tích hợp campaign với bài đã verified từ [PLAN_POST_SYNC.md](PLAN_POST_SYNC.md).
+
+Điều kiện hoàn thành: planner không tạo task cho bài chưa verified; khi bài bị sync đánh dấu đóng/xóa, task chưa chạy được cancel hoặc skip có lý do.
 
 ## 10. Thứ tự ưu tiên MVP
 

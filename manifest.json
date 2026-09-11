@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "My Angel",
-  "version": "1.1.1",
-  "description": "Trợ lý TechHub: quét bài, AI trả lời comment, AI tự thảo luận, auto comment và hẹn xóa bài",
-  "permissions": ["storage", "webRequest", "activeTab", "tabs", "scripting", "alarms", "sidePanel", "declarativeNetRequest", "notifications", "cookies"],
+  "version": "1.2.0",
+  "description": "Trợ lý TechHub: quét bài, AI trả lời comment, AI tự thảo luận, tương tác chéo giữa các user và hẹn xóa bài",
+  "permissions": ["storage", "webRequest", "activeTab", "tabs", "scripting", "alarms", "sidePanel", "declarativeNetRequest", "cookies"],
   "host_permissions": [
     "https://techhub.fpt.net/*",
     "https://*.supabase.co/*",

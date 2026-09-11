@@ -24,6 +24,11 @@
 | `interactions` | Dedup comment/like/reply |
 | `reply_drafts` | Draft AI gen trước khi reply |
 | `discussion_drafts` | Draft AI gen cho comment thảo luận độc lập |
+| `engagement_devices` | Máy đã đăng ký (hash device token, `revoked` để thu hồi) |
+| `engagement_campaigns` | Campaign vote/comment + phạm vi bài + quota |
+| `engagement_tasks` | Task hàng đợi (lease, `idempotency_key`, `session_required`) |
+| `engagement_events` | Nhật ký claim/succeed/fail/retry (dọn định kỳ) |
+| `discussion_threads` / `discussion_turns` | Kịch bản thảo luận A/B 2–4 turn + dependency |
 
 ## Edge Functions
 
@@ -31,13 +36,14 @@
 |---|---|---|
 | `nvidia-proxy` | Proxy AI NVIDIA — key nằm trong secret, không nằm trong extension | `PROXY_TOKEN` |
 | `admin-api` | Quản lý user (danh sách / cấp-thu quyền / khóa / xóa) qua service role, bypass RLS sau migration 011 | `ADMIN_TOKEN` — **chỉ máy admin được giữ** |
+| `engagement-api` | Hàng đợi tương tác chéo (heartbeat/claim/complete/campaign/kịch bản) | `ADMIN_TOKEN` cho admin; máy user dùng device token tự sinh |
 
-Deploy + set secrets + áp migration 011 một phát: `bash scripts/setup-supabase.sh`.
+Deploy + set secrets + áp migration 011 + 012 một phát: `bash scripts/setup-supabase.sh`.
 
 ## Setup project mới
 
 1. Tạo project Supabase → lấy URL + anon key
-2. SQL Editor → Run `migrations/001` → `002` → (`003` nếu upgrade) → `004_ai_reply_drafts.sql` → `005_ai_discussion.sql` → `006_root_self_discussion.sql` → `007_posts_medals_count.sql` → `008_discussion_draft_queue.sql` → `009_reply_draft_queue.sql`
+2. SQL Editor → Run `migrations/001` → `002` → (`003` nếu upgrade) → `004_ai_reply_drafts.sql` → `005_ai_discussion.sql` → `006_root_self_discussion.sql` → `007_posts_medals_count.sql` → `008_discussion_draft_queue.sql` → `009_reply_draft_queue.sql` → `010` (community) → `011_restrict_users_writes.sql` → `012_cross_user_engagement.sql`
 3. Sửa `YOUR_TECHHUB_USERNAME` trong `002` → Run
 4. Điền `NVIDIA_CONFIG.apiKey` trong `config.js` (lấy tại https://build.nvidia.com/settings/api-keys)
 5. Reload extension
@@ -59,4 +65,6 @@ SELECT kind, count(*) FROM comment_templates WHERE is_active GROUP BY kind;
 SELECT username, is_admin FROM users;
 SELECT count(*) FROM reply_drafts;
 SELECT count(*) FROM discussion_drafts;
+SELECT status, count(*) FROM engagement_tasks GROUP BY status;
+SELECT username, revoked, last_seen_at FROM engagement_devices ORDER BY last_seen_at DESC;
 ```

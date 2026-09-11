@@ -4,11 +4,12 @@
 #
 #  Script này làm toàn bộ phần Supabase:
 #    1. Đăng nhập + link project (lấy ref tự động từ config.js nếu có)
-#    2. Sinh PROXY_TOKEN (cho nvidia-proxy) và ADMIN_TOKEN (cho admin-api)
+#    2. Sinh PROXY_TOKEN (cho nvidia-proxy) và ADMIN_TOKEN (cho admin-api + engagement-api)
 #    3. Set secrets: NVIDIA_API_KEY (key MỚI), PROXY_TOKEN, ADMIN_TOKEN
-#    4. Deploy 2 edge functions: nvidia-proxy, admin-api
-#    5. Áp migration 011 — chặn anon tự cấp is_admin / xóa user
-#    6. Test 2 function bằng curl
+#    4. Deploy 3 edge functions: nvidia-proxy, admin-api, engagement-api
+#    5. Áp migration 011 (chặn anon tự cấp is_admin / xóa user) và
+#       migration 012 (hàng đợi tương tác giữa các user)
+#    6. Test 3 function bằng curl
 #    7. In sẵn 2 khối config.js: một cho máy admin, một cho user thường
 #
 #  Yêu cầu: Supabase CLI
@@ -92,22 +93,28 @@ ok "Đã set NVIDIA_API_KEY, PROXY_TOKEN, ADMIN_TOKEN"
 
 # ---------- 6. Deploy edge functions ----------
 step "Deploy edge functions"
-supabase functions deploy nvidia-proxy --no-verify-jwt
-supabase functions deploy admin-api   --no-verify-jwt
-ok "Đã deploy nvidia-proxy + admin-api"
+supabase functions deploy nvidia-proxy   --no-verify-jwt
+supabase functions deploy admin-api     --no-verify-jwt
+supabase functions deploy engagement-api --no-verify-jwt
+ok "Đã deploy nvidia-proxy + admin-api + engagement-api"
 
-# ---------- 7. Migration 011: chặn anon ghi users ----------
+# ---------- 7. Migration 011 + 012 ----------
 step "Áp migration 011 (chặn anon sửa is_admin / xóa user)"
-MIG="supabase/migrations/011_restrict_users_writes.sql"
-if supabase db query --help >/dev/null 2>&1; then
-  if supabase db query --linked --file "$MIG"; then
-    ok "Đã áp dụng $MIG"
+apply_migration() {
+  local MIG="$1"
+  if supabase db query --help >/dev/null 2>&1; then
+    if supabase db query --linked --file "$MIG"; then
+      ok "Đã áp dụng $MIG"
+    else
+      warn "CLI không chạy được SQL — mở Dashboard > SQL Editor và chạy nội dung file: $MIG"
+    fi
   else
-    warn "CLI không chạy được SQL — mở Dashboard > SQL Editor và chạy nội dung file: $MIG"
+    warn "CLI không có lệnh 'db query' — mở Dashboard > SQL Editor và chạy nội dung file: $MIG"
   fi
-else
-  warn "CLI không có lệnh 'db query' — mở Dashboard > SQL Editor và chạy nội dung file: $MIG"
-fi
+}
+apply_migration "supabase/migrations/011_restrict_users_writes.sql"
+step "Áp migration 012 (hàng đợi tương tác giữa các user)"
+apply_migration "supabase/migrations/012_cross_user_engagement.sql"
 
 # ---------- 8. Test ----------
 BASE="https://${PROJECT_REF}.supabase.co/functions/v1"
@@ -119,6 +126,9 @@ if command -v curl >/dev/null 2>&1; then
   CODE2="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/admin-api" \
     -H 'Content-Type: application/json' -d '{"action":"getUsersOverview"}')"
   info "admin-api không token    → HTTP $CODE2 (mong đợi 401)"
+  CODE3="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/engagement-api" \
+    -H 'Content-Type: application/json' -d '{"action":"getStatus"}')"
+  info "engagement-api không token → HTTP $CODE3 (mong đợi 401)"
   info "admin-api có ADMIN_TOKEN → kết quả (cắt 120 ký tự đầu):"
   curl -s -X POST "$BASE/admin-api" \
     -H "Authorization: Bearer $ADMIN_TOKEN" \
@@ -139,6 +149,11 @@ ${BOLD}── 1) MÁY CỦA ANH (admin) — config.js, KHÔNG chia sẻ file nà
 const ADMIN_API_CONFIG = {
   url: "$BASE/admin-api",
   token: "$ADMIN_TOKEN",
+};
+
+const ENGAGEMENT_API_CONFIG = {
+  url: "$BASE/engagement-api",
+  adminToken: "$ADMIN_TOKEN",
 };
 
 const NVIDIA_CONFIG = {
@@ -162,6 +177,13 @@ const SUPABASE_CONFIG = {
 };
 
 const ADMIN_API_CONFIG = { url: "", token: "" };
+
+// Hàng đợi tương tác chéo — máy user chỉ cần url (thiết bị tự đăng ký,
+// server lưu hash token để thu hồi; KHÔNG gửi adminToken cho user):
+const ENGAGEMENT_API_CONFIG = {
+  url: "$BASE/engagement-api",
+  adminToken: "",
+};
 
 // AI chỉ dành cho admin — user thường để trống:
 const NVIDIA_CONFIG = { mode: "direct", apiKey: "" };

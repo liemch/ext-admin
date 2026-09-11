@@ -58,6 +58,21 @@ const NVIDIA_CONFIG = {
   enableThinking: false,
 };
 
+// Engagement API — edge function điều phối tương tác giữa các user
+// (hàng đợi task, campaign, kịch bản thảo luận). Xem:
+// supabase/functions/engagement-api/README.md
+//
+// - Mọi máy (kể cả user thường) đều điền `url` để nhận task từ hàng đợi
+//   trung tâm. Thiết bị tự đăng ký bằng device token riêng, server chỉ lưu
+//   hash để khóa/thu hồi từng máy.
+// - `adminToken` CHỈ điền trên máy quản trị viên (giống ADMIN_API_CONFIG.token)
+//   để tạo campaign / nhập kịch bản / xem vận hành. User thường để "".
+// - Bỏ trống `url` → worker chạy chế độ máy đơn (legacy) như bản cũ.
+const ENGAGEMENT_API_CONFIG = {
+  url: "https://xxxxx.supabase.co/functions/v1/engagement-api",
+  adminToken: "",
+};
+
 // Xuất config để sử dụng trong các file khác
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { SUPABASE_CONFIG, NVIDIA_CONFIG };

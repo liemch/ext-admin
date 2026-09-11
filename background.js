@@ -1,4 +1,4 @@
-importScripts('config.js', 'supabase-client.js', 'nvidia-client.js');
+importScripts('config.js', 'supabase-client.js', 'nvidia-client.js', 'engagement-client.js', 'engagement-worker.js');
 
 // Background Service Worker - Lắng nghe và bắt headers từ TechHub API
 
@@ -411,19 +411,15 @@ async function getMonthlyPostStats(scope, communitySlug) {
 // Lắng nghe sự kiện webRequest để bắt headers
 chrome.webRequest.onBeforeSendHeaders.addListener(
   function (details) {
-    console.log("[Background] Request intercepted:", details.url);
-    console.log("[Background] All headers:", details.requestHeaders);
-
     if (!details.requestHeaders) {
-      console.log("[Background] No request headers found");
       return;
     }
 
     let cookie = null;
     let csrf = null;
 
+    // Chỉ đọc tên header — không log giá trị cookie/CSRF ra console.
     for (const h of details.requestHeaders) {
-      console.log(`[Background] Header: ${h.name} = ${h.value ? h.value.substring(0, 50) + "..." : "null"}`);
       if (h.name.toLowerCase() === "cookie") {
         cookie = h.value;
       }
@@ -432,13 +428,8 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
       }
     }
 
-    console.log("====== TECHHUB PROFILE REQUEST ======");
-    console.log("Cookie found:", cookie ? "YES (" + cookie.length + " chars)" : "NO");
-    console.log("X-CSRFToken found:", csrf ? "YES" : "NO");
-
     if (cookie || csrf) {
-      console.log("Cookie:", cookie);
-      console.log("X-CSRFToken:", csrf);
+      // Không log cookie/CSRF ra console (chế độ chạy im lặng, an toàn phiên).
 
       // Lưu credentials vào storage, giữ lại giá trị cũ nếu request hiện tại không có
       capturedCredentials = {
@@ -455,23 +446,24 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
         () => {
           console.log("Credentials saved to storage");
           
-          // Kiểm tra xem đã qua 15 phút kể từ lần tương tác trước chưa
-          const now = Date.now();
-          chrome.storage.local.get(
-            ['lastAutoInteractionTime', CROSS_INTERACTION_ENABLED_KEY],
-            (res) => {
-              if (res[CROSS_INTERACTION_ENABLED_KEY] !== true) return;
+          // Có phiên mới: chạy ngay nếu đã quá chu kỳ cấu hình.
+          // (Chu kỳ/quota/delay nằm trong engagement settings, không hard-code.)
+          (async () => {
+            try {
+              const settings = await EngagementWorker.getEngagementSettings();
+              if (!settings.enabled) return;
+              const stored = await chrome.storage.local.get('lastAutoInteractionTime');
               const lastTime =
-                res.lastAutoInteractionTime || lastMemoryInteractionTime || 0;
-              if (now - lastTime > 15 * 60 * 1000) {
-                console.log("[Background] Detected new credentials and > 15 minutes since last interaction. Running immediately!");
-                lastMemoryInteractionTime = now;
-                chrome.storage.local.set({ lastAutoInteractionTime: now }, () => {
-                  runCrossInteraction(false);
-                });
+                stored.lastAutoInteractionTime || lastMemoryInteractionTime || 0;
+              if (Date.now() - lastTime > settings.intervalMinutes * 60 * 1000) {
+                console.log("[Background] New credentials after interval, running engagement cycle.");
+                lastMemoryInteractionTime = Date.now();
+                runCrossInteraction(false);
               }
+            } catch (error) {
+              console.warn("[Background] Engagement auto-run check failed:", error);
             }
-          );
+          })();
         }
       );
     } else {
@@ -528,6 +520,22 @@ const ADMIN_ONLY_ACTIONS = new Set([
   "getUsersOverview",
   "updateUserStatus",
   "deleteUser",
+  // Engagement admin: campaign / kịch bản / vận hành (chỉ máy admin).
+  "saveEngagementSettings",
+  "engagementPlanCampaign",
+  "engagementPauseCampaign",
+  "engagementResumeCampaign",
+  "engagementCancelCampaign",
+  "engagementGetCampaigns",
+  "engagementGetThreads",
+  "engagementListTasks",
+  "engagementImportThreads",
+  "engagementUpdateTurn",
+  "engagementRetryTurn",
+  "engagementGetOpsStats",
+  "engagementCleanupEvents",
+  "engagementSetKillSwitch",
+  "engagementRevokeDevice",
 ]);
 
 /**
@@ -650,6 +658,187 @@ function handlePopupMessage(request, sendResponse) {
   if (request.action === "setCrossInteractionEnabled") {
     setCrossInteractionEnabled(!!request.enabled)
       .then((enabled) => sendResponse({ success: true, enabled }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  // ---- Tương tác chéo giữa các user (lớp user: mọi tài khoản hợp lệ) ----
+  if (request.action === "getEngagementState") {
+    EngagementWorker.ensureEngagementUserAllowed()
+      .then(() => Promise.all([
+        EngagementWorker.getEngagementSettings(),
+        EngagementWorker.getEngagementStatus(),
+      ]))
+      .then(([settings, status]) =>
+        sendResponse({
+          success: true,
+          settings,
+          status,
+          queueConfigured: EngagementClient.isEngagementQueueConfigured(),
+        })
+      )
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "setEngagementEnabled") {
+    EngagementWorker.ensureEngagementUserAllowed()
+      .then(() => EngagementWorker.saveEngagementSettings({ enabled: !!request.enabled }))
+      .then((settings) => sendResponse({ success: true, settings }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "runEngagementOnce") {
+    EngagementWorker.ensureEngagementUserAllowed()
+      .then(() => EngagementWorker.runEngagementCycle({ manual: true }))
+      .then((result) => EngagementWorker.getEngagementStatus()
+        .then((status) => sendResponse({ success: true, result, status })))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "checkTechHubSession") {
+    // Chỉ gọi khi user chủ động mở panel (chế độ chạy im lặng).
+    EngagementWorker.checkTechHubSession()
+      .then((result) => EngagementWorker.getEngagementStatus()
+        .then((status) => sendResponse({ success: true, ...result, status })))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "getEngagementQueueStatus") {
+    EngagementWorker.ensureEngagementUserAllowed()
+      .then(() => EngagementClient.engagementGetStatus())
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  // ---- Tương tác chéo (lớp admin: đã qua ensureActionAllowed) ----
+  if (request.action === "saveEngagementSettings") {
+    EngagementWorker.saveEngagementSettings(request.settings || {})
+      .then((settings) => sendResponse({ success: true, settings }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementPlanCampaign") {
+    EngagementClient.engagementAdmin("planCampaign", request.payload || {})
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (
+    request.action === "engagementPauseCampaign" ||
+    request.action === "engagementResumeCampaign" ||
+    request.action === "engagementCancelCampaign"
+  ) {
+    const apiAction =
+      request.action === "engagementPauseCampaign"
+        ? "pauseCampaign"
+        : request.action === "engagementResumeCampaign"
+          ? "resumeCampaign"
+          : "cancelCampaign";
+    EngagementClient.engagementAdmin(apiAction, { campaignId: request.campaignId })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementGetCampaigns") {
+    EngagementClient.engagementAdmin("getCampaigns", {})
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementGetThreads") {
+    EngagementClient.engagementAdmin("getThreads", {
+      status: request.status,
+      limit: request.limit,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementListTasks") {
+    EngagementClient.engagementAdmin("listTasks", {
+      status: request.status,
+      actor: request.actor,
+      campaignId: request.campaignId,
+      taskAction: request.taskAction,
+      limit: request.limit,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementImportThreads") {
+    EngagementClient.engagementAdmin("importThreads", {
+      threads: request.threads,
+      defaults: request.defaults || {},
+      campaignId: request.campaignId || null,
+      dryRun: request.dryRun === true,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementUpdateTurn") {
+    EngagementClient.engagementAdmin("updateTurn", {
+      turnId: request.turnId,
+      content: request.content,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementRetryTurn") {
+    EngagementClient.engagementAdmin("retryTurn", {
+      turnId: request.turnId,
+      content: request.content,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementGetOpsStats") {
+    EngagementClient.engagementAdmin("getOpsStats", {})
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementCleanupEvents") {
+    EngagementClient.engagementAdmin("cleanupEvents", {
+      olderThanDays: request.olderThanDays,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementSetKillSwitch") {
+    EngagementClient.engagementAdmin("setKillSwitch", { enabled: !!request.enabled })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementRevokeDevice") {
+    EngagementClient.engagementAdmin("revokeDevice", {
+      deviceId: request.deviceId,
+      username: request.username,
+      revoked: request.revoked !== false,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;
   }
@@ -1035,12 +1224,10 @@ function setupAlarms() {
   syncCrossInteractionAlarm().catch((error) => {
     console.error("[Background] Could not sync cross interaction alarm:", error);
   });
-  chrome.alarms.get("keepAliveAlarm", (alarm) => {
-    if (!alarm) {
-      console.log("[Background] Creating keepAliveAlarm (15m)");
-      chrome.alarms.create("keepAliveAlarm", { periodInMinutes: 15 });
-    }
-  });
+  // Chế độ chạy im lặng: không ping profile định kỳ. Session chỉ được kiểm
+  // tra khi user mở panel; hết phiên phát hiện qua HTTP 401/403 khi chạy task.
+  // Dọn alarm keep-alive của bản cũ nếu còn sót.
+  chrome.alarms.clear("keepAliveAlarm").catch(() => {});
   chrome.alarms.get(AUTO_REPLY_ALARM, (alarm) => {
     if (!alarm && autoReplyState.enabled) {
       scheduleNextAutoReply().catch((error) => {
@@ -1125,11 +1312,9 @@ restoreScheduledDeletes().catch((err) => {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === CROSS_INTERACTION_ALARM) {
-    getCrossInteractionEnabled().then((enabled) => {
-      if (enabled) runCrossInteraction();
+    runCrossInteraction(false).catch((err) => {
+      console.error("[Background] Engagement cycle failed:", err);
     });
-  } else if (alarm.name === "keepAliveAlarm") {
-    pingTechHubToKeepAlive();
   } else if (alarm.name === AUTO_REPLY_ALARM) {
     // Chờ restore xong, nếu không state vẫn là mặc định (enabled = false) và job sẽ tự tắt.
     autoReplyRestorePromise
@@ -1172,23 +1357,6 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 async function runAutoJobsFromAlarm() {
   // Giữ hàm để tương thích cũ; auto-reply giờ dùng alarm one-shot riêng.
-}
-
-async function pingTechHubToKeepAlive() {
-  console.log("[Background] Pinging TechHub to keep session alive...");
-  try {
-    const res = await fetch("https://techhub.fpt.net/api/v1/accounts/profile", {
-      method: "GET",
-      credentials: "include" 
-    });
-    if (res.ok) {
-      console.log("[Background] Keep-alive ping successful!");
-    } else {
-      console.log("[Background] Keep-alive ping failed with status:", res.status);
-    }
-  } catch (error) {
-    console.error("[Background] Keep-alive ping error:", error);
-  }
 }
 
 async function interactWithTechHub(post, type, content, credentials, signal = undefined, options = {}) {
@@ -1820,11 +1988,19 @@ async function runAutoCommentTick(generation) {
     autoCommentState.lastCommentAt = new Date().toISOString();
     autoCommentState.lastError = null;
     await saveAutoCommentState();
-    await supabase.recordInteraction(
-      username,
-      autoCommentState.techhubId,
-      "comment"
-    );
+    try {
+      await supabase.recordInteraction(
+        username,
+        autoCommentState.techhubId,
+        "comment"
+      );
+    } catch (error) {
+      // Đã đăng thành công nhưng chưa lưu lịch sử → báo rõ để xử lý, không nuốt lỗi.
+      broadcastAutoCommentProgress(
+        `Đã comment nhưng chưa lưu được lịch sử: ${error.message}`,
+        "error"
+      );
+    }
 
     const reached =
       autoCommentState.targetCount > 0 &&
@@ -3103,12 +3279,20 @@ async function runAutoReply({
     }
 
     await supabase.updateReplyDraftStatus(draft.id, "used");
-    await supabase.recordInteraction(
-      username,
-      post.techhub_id,
-      "reply",
-      draft.parent_comment_id
-    );
+    try {
+      await supabase.recordInteraction(
+        username,
+        post.techhub_id,
+        "reply",
+        draft.parent_comment_id
+      );
+    } catch (error) {
+      // Reply đã đăng (draft đã used) nhưng chưa lưu lịch sử → báo rõ, không retry mù.
+      broadcastAutoReplyProgress(
+        `Đã reply nhưng chưa lưu được lịch sử: ${error.message}`,
+        "error"
+      );
+    }
     replied = 1;
     if (!manual) autoReplyState.completedCount = nextNumber;
 
@@ -3654,11 +3838,18 @@ async function runAutoDiscussion({
     }
 
     await supabase.updateDiscussionDraftStatus(draft.id, "used");
-    await supabase.recordInteraction(
-      username,
-      post.techhub_id,
-      "self_discussion"
-    );
+    try {
+      await supabase.recordInteraction(
+        username,
+        post.techhub_id,
+        "self_discussion"
+      );
+    } catch (error) {
+      broadcastAutoDiscussionProgress(
+        `Đã đăng nhưng chưa lưu được lịch sử: ${error.message}`,
+        "error"
+      );
+    }
     discussed = 1;
     if (!manual) autoDiscussionState.completedCount = nextNumber;
     autoDiscussionState.lastPostDiscussionCount =
@@ -4089,11 +4280,18 @@ async function runAutoExternalDiscussion({ manual = false, techhubId = null } = 
     }
 
     await supabase.updateDiscussionDraftStatus(draft.id, "used");
-    await supabase.recordInteraction(
-      actorUsername,
-      post.techhub_id,
-      "external_discussion"
-    );
+    try {
+      await supabase.recordInteraction(
+        actorUsername,
+        post.techhub_id,
+        "external_discussion"
+      );
+    } catch (error) {
+      broadcastAutoExternalDiscussionProgress(
+        `Đã đăng nhưng chưa lưu được lịch sử: ${error.message}`,
+        "error"
+      );
+    }
     discussed = 1;
     if (!manual) autoExternalDiscussionState.completedCount = nextNumber;
     const reachedTarget =
@@ -4141,199 +4339,47 @@ async function runAutoExternalDiscussion({ manual = false, techhubId = null } = 
   }
 }
 
+// Tương tác chéo — giữ tên hàm cũ để tương thích, ủy quyền cho EngagementWorker.
+// Chu kỳ/quota/delay nằm trong engagement settings (xem engagement-worker.js).
+
 async function getCrossInteractionEnabled() {
-  const stored = await chrome.storage.local.get(CROSS_INTERACTION_ENABLED_KEY);
-  return stored[CROSS_INTERACTION_ENABLED_KEY] === true;
+  const settings = await EngagementWorker.getEngagementSettings();
+  return settings.enabled === true;
 }
 
 async function syncCrossInteractionAlarm() {
-  const enabled = await getCrossInteractionEnabled();
+  const settings = await EngagementWorker.getEngagementSettings();
   const alarm = await chrome.alarms.get(CROSS_INTERACTION_ALARM);
-  if (enabled && !alarm) {
-    chrome.alarms.create(CROSS_INTERACTION_ALARM, { periodInMinutes: 15 });
-  } else if (!enabled && alarm) {
+  if (settings.enabled) {
+    // Dựng lại alarm khi chu kỳ đổi (periodInMinutes không cập nhật tại chỗ).
+    const period = settings.intervalMinutes;
+    const currentPeriod = alarm ? Math.round((alarm.periodInMinutes || 0) * 100) / 100 : null;
+    if (!alarm || currentPeriod !== period) {
+      await chrome.alarms.clear(CROSS_INTERACTION_ALARM);
+      chrome.alarms.create(CROSS_INTERACTION_ALARM, { periodInMinutes: period });
+    }
+  } else if (alarm) {
     await chrome.alarms.clear(CROSS_INTERACTION_ALARM);
   }
-  return enabled;
+  return settings.enabled;
 }
 
 async function setCrossInteractionEnabled(enabled) {
-  await chrome.storage.local.set({ [CROSS_INTERACTION_ENABLED_KEY]: enabled });
-  await syncCrossInteractionAlarm();
-  return enabled;
+  const settings = await EngagementWorker.saveEngagementSettings({ enabled: !!enabled });
+  return settings.enabled;
 }
 
 async function runCrossInteraction(isManual = false) {
-  if (!isManual && !(await getCrossInteractionEnabled())) {
-    console.log("[Background] Skipping disabled automatic cross interaction");
-    return;
+  // Nhường các job đơn-bài đang chạy để không tranh phiên/CSRF.
+  if (!isManual && autoCommentState.active) {
+    return { ran: false, skipped: true, reason: "auto_comment_active" };
   }
-  if (autoCommentState.active) {
-    console.log("[Background] Skipping cross interaction while auto comment is active");
-    broadcastProgress("Bỏ qua tương tác chéo vì auto comment đang chạy.", "info");
-    return;
+  if (!isManual && autoReplyRunning) {
+    return { ran: false, skipped: true, reason: "auto_reply_running" };
   }
-  if (autoReplyRunning || autoReplyState.enabled) {
-    // Không chặn hoàn toàn khi enabled nhưng đang idle; chỉ skip nếu đang reply
-    if (autoReplyRunning) {
-      broadcastProgress("Bỏ qua tương tác chéo vì auto-reply đang chạy.", "info");
-      return;
-    }
-  }
-
-  console.log("[Background] Running cross interaction...");
-  
-  // Cập nhật lại thời gian lastAutoInteractionTime
-  const now = Date.now();
-  lastMemoryInteractionTime = now;
-  chrome.storage.local.set({ lastAutoInteractionTime: now });
-  
-  broadcastProgress("Bắt đầu tiến trình tương tác...", "info");
-  
-  const result = await chrome.storage.local.get(['techhubCredentials', 'userProfile']);
-  
-  if (!result.techhubCredentials || !result.userProfile) {
-    console.log("[Background] Missing credentials/profile");
-    broadcastProgress("Lỗi: Thiếu thông tin profile hoặc credentials.", "error");
-    if (!isManual) {
-      chrome.notifications.create({
-        type: "basic",
-        iconUrl: "icons/coin.png",
-        title: "Lỗi TechHub Sync",
-        message: "Thiếu thông tin. Vui lòng mở tab TechHub để đồng bộ lại."
-      });
-    }
-    return;
-  }
-
-  const { techhubCredentials: creds, userProfile } = result;
-  const username = userProfile.username;
-
-  // Refresh CSRF Token before interacting
-  const freshCsrf = await refreshCSRFToken();
-  if (freshCsrf) {
-    console.log("[Background] Obtained fresh CSRF token",freshCsrf);
-    creds.csrfToken = freshCsrf;
-    chrome.storage.local.set({ techhubCredentials: creds });
-  } else {
-    console.log("[Background] Could not refresh CSRF token, using old one");
-  }
-
-  try {
-    // 1. Get comment templates
-    const templates = await supabase.getCommentTemplates({ kind: "comment" });
-    if (!templates || templates.length === 0) {
-      console.log("[Background] No comment templates found");
-      broadcastProgress("Lỗi: Không tìm thấy mẫu bình luận.", "error");
-      return;
-    }
-
-    // 2. Get uninteracted posts
-    const limit = 5; // Cập nhật: Lấy tối đa 5 bài cho cả tương tác tự động và thủ công
-    const posts = await supabase.getUninteractedPosts(username, limit);
-    if (!posts || posts.length === 0) {
-      console.log("[Background] No uninteracted posts found");
-      broadcastProgress("Không có bài viết mới nào cần tương tác.", "info");
-      return;
-    }
-
-    broadcastProgress(`Tìm thấy ${posts.length} bài viết cần tương tác.`, "info");
-
-    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-    for (let i = 0; i < posts.length; i++) {
-      const post = posts[i];
-      
-      if (i > 0) {
-        broadcastProgress("Đang chờ 5s trước khi tương tác bài tiếp theo...", "info");
-        await delay(5000);
-      }
-
-      if (!post.techhub_uuid) {
-        console.log(`[Background] Post ${post.techhub_id} is missing techhub_uuid. Skipping.`);
-        continue;
-      }
-
-      broadcastProgress(`Đang xử lý: ${post.title}`, "info");
-      
-      const template = templates[Math.floor(Math.random() * templates.length)];
-      
-      // 3. Comment on post
-      const commentRes = await interactWithTechHub(post, 'comment', template.content, creds);
-      if (commentRes && commentRes.ok) {
-        console.log("[Background] Comment successful");
-        await supabase.recordInteraction(username, post.techhub_id, 'comment');
-        broadcastProgress(`- Đã bình luận: ${post.title}`, "success");
-      } else {
-        const status = commentRes ? commentRes.status : 'Unknown';
-        console.error(`[Background] Comment failed with status ${status}`);
-        broadcastProgress(`- Lỗi bình luận: ${post.title}`, "error");
-        
-        if (status === 401 || status === 403) {
-          broadcastProgress("Token hết hạn. Đang tự động nạp lại (mở tab ẩn trong 3s)...", "warn");
-          
-          chrome.tabs.create({ url: "https://techhub.fpt.net/", active: false }, (tab) => {
-            setTimeout(() => {
-              chrome.tabs.remove(tab.id);
-            }, 3000);
-          });
-          
-          chrome.notifications.create({
-            type: "basic",
-            iconUrl: "icons/coin.png",
-            title: "TechHub - Đang lấy lại Token",
-            message: "Phát hiện Token hết hạn. Đang tự động mở tab ẩn để lấy lại Token!"
-          });
-          break; // Stop loop if unauthorized
-        }
-      }
-      
-      // 4. Like post
-      let likeRes = await interactWithTechHub(post, 'like', null, creds);
-      if (likeRes && likeRes.ok) {
-        const likeData = await likeRes.json();
-        if (likeData.result === "destroy") {
-          console.log("[Background] Toggled to unlike. Calling again to re-like...");
-          likeRes = await interactWithTechHub(post, 'like', null, creds);
-        }
-        
-        if (likeRes && likeRes.ok) {
-          console.log("[Background] Like successful");
-          await supabase.recordInteraction(username, post.techhub_id, 'like');
-          broadcastProgress(`- Đã thích: ${post.title}`, "success");
-        } else {
-          broadcastProgress(`- Lỗi thích bài: ${post.title}`, "error");
-        }
-      } else {
-        broadcastProgress(`- Lỗi thích bài: ${post.title}`, "error");
-      }
-    }
-    
-    broadcastProgress("Hoàn tất tương tác chéo.", "success");
-    
-    // Show system notification when done
-    if (!isManual) {
-      chrome.notifications.create({
-        type: "basic",
-        iconUrl: "icons/coin.png",
-        title: "TechHub Profile Sync",
-        message: `Đã tự động tương tác ${posts.length} bài viết!`
-      });
-    }
-    
-  } catch (err) {
-    console.error("[Background] Error in cross interaction:", err);
-    broadcastProgress("Lỗi hệ thống: " + err.message, "error");
-    if (!isManual) {
-      chrome.notifications.create({
-        type: "basic",
-        iconUrl: "icons/coin.png",
-        title: "Lỗi TechHub Sync",
-        message: `Có lỗi xảy ra: ${err.message}`
-      });
-    }
-  }
+  return EngagementWorker.runEngagementCycle({ manual: !!isManual });
 }
+
 
 // Bỏ qua lỗi CSRF bằng cách ghi đè Origin và Referer cho các API của TechHub
 chrome.declarativeNetRequest.updateDynamicRules({
