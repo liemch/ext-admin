@@ -60,13 +60,24 @@ API key NVIDIA: https://build.nvidia.com/settings/api-keys
 
 ### 2. Setup Supabase
 
-Trong SQL Editor, chạy lần lượt:
+**Cách nhanh (khuyên dùng):** chạy script một phát — deploy 2 edge functions
+(`nvidia-proxy` che NVIDIA key, `admin-api` quản lý user), set secrets, áp
+migration `011` (chặn anon tự cấp `is_admin`), test và in sẵn khối `config.js`:
+
+```bash
+bash scripts/setup-supabase.sh
+```
+
+**Thủ công:** trong SQL Editor, chạy lần lượt:
 
 1. `supabase/migrations/001_init_schema.sql`
 2. `supabase/migrations/002_seed_settings_and_templates.sql` (sửa `YOUR_TECHHUB_USERNAME`)
 3. `supabase/migrations/003_auto_reply.sql` (chỉ khi upgrade DB cũ)
 4. `supabase/migrations/004_ai_reply_drafts.sql`
 5. `supabase/migrations/005_ai_discussion.sql`
+6. `006` → `010` (thảo luận gốc, medals, queue draft, community)
+7. `supabase/migrations/011_restrict_users_writes.sql` — **bắt buộc**: chặn anon
+   tự cấp `is_admin` / xóa user (cần deploy `admin-api` trước — script trên làm sẵn)
 
 Chi tiết bảng / kiểm tra: xem [`supabase/README.md`](supabase/README.md).
 

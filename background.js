@@ -553,6 +553,33 @@ async function ensureActionAllowed() {
   }
 }
 
+/**
+ * Gọi edge function admin-api (service role) cho các thao tác quản lý user.
+ * ADMIN_TOKEN chỉ nằm trong config.js của máy quản trị viên —
+ * sinh bởi scripts/setup-supabase.sh.
+ */
+async function adminApiRequest(action, payload = {}) {
+  const cfg = typeof ADMIN_API_CONFIG !== "undefined" ? ADMIN_API_CONFIG : {};
+  if (!cfg.url || !cfg.token || cfg.url === "YOUR_ADMIN_API_URL") {
+    throw new Error(
+      "Chưa cấu hình ADMIN_API_CONFIG trong config.js — chạy scripts/setup-supabase.sh để thiết lập"
+    );
+  }
+  const response = await fetch(cfg.url.replace(/\/+$/, ""), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${cfg.token}`,
+    },
+    body: JSON.stringify({ action, ...payload }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data?.error) {
+    throw new Error(data?.error || `Admin API HTTP ${response.status}`);
+  }
+  return data;
+}
+
 function handlePopupMessage(request, sendResponse) {
   if (request.action === "getCredentials") {
     // Trả về credentials đã capture
@@ -973,32 +1000,24 @@ function handlePopupMessage(request, sendResponse) {
   }
 
   if (request.action === "getUsersOverview") {
-    Promise.all([
-      supabase.getAllUsers(),
-      supabase.getPostCountsByUsername(),
-      supabase.getTodayInteractionsStats(),
-    ])
-      .then(([users, postCounts, todayInteractionCounts]) =>
-        sendResponse({ success: true, users, postCounts, todayInteractionCounts })
-      )
+    adminApiRequest("getUsersOverview")
+      .then((result) => sendResponse({ success: true, ...result }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;
   }
 
   if (request.action === "updateUserStatus") {
-    const updates = {};
-    if (request.isAdmin !== undefined) updates.is_admin = !!request.isAdmin;
-    if (request.isLocked !== undefined) updates.is_locked = !!request.isLocked;
-    supabase
-      .updateUserStatus(request.username, updates)
-      .then((user) => sendResponse({ success: true, user }))
+    const payload = { username: request.username };
+    if (request.isAdmin !== undefined) payload.isAdmin = !!request.isAdmin;
+    if (request.isLocked !== undefined) payload.isLocked = !!request.isLocked;
+    adminApiRequest("updateUserStatus", payload)
+      .then((result) => sendResponse({ success: true, user: result.user || null }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;
   }
 
   if (request.action === "deleteUser") {
-    supabase
-      .deleteUserByUsername(request.username)
+    adminApiRequest("deleteUser", { username: request.username })
       .then(() => sendResponse({ success: true }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;

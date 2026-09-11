@@ -25,6 +25,15 @@
 | `reply_drafts` | Draft AI gen trước khi reply |
 | `discussion_drafts` | Draft AI gen cho comment thảo luận độc lập |
 
+## Edge Functions
+
+| Function | Việc | Bảo vệ |
+|---|---|---|
+| `nvidia-proxy` | Proxy AI NVIDIA — key nằm trong secret, không nằm trong extension | `PROXY_TOKEN` |
+| `admin-api` | Quản lý user (danh sách / cấp-thu quyền / khóa / xóa) qua service role, bypass RLS sau migration 011 | `ADMIN_TOKEN` — **chỉ máy admin được giữ** |
+
+Deploy + set secrets + áp migration 011 một phát: `bash scripts/setup-supabase.sh`.
+
 ## Setup project mới
 
 1. Tạo project Supabase → lấy URL + anon key

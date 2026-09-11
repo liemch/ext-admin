@@ -13,6 +13,15 @@ const SUPABASE_CONFIG = {
   tableName: "users",
 };
 
+// Admin API — edge function quản lý user (danh sách / cấp-thu quyền / khóa / xóa)
+// ⚠️ CHỈ điền trên máy quản trị viên. Token (ADMIN_TOKEN) sinh bởi
+// scripts/setup-supabase.sh — tuyệt đối không gửi cho user thường.
+// User thường để: { url: "", token: "" }
+const ADMIN_API_CONFIG = {
+  url: "https://xxxxx.supabase.co/functions/v1/admin-api",
+  token: "your-admin-token",
+};
+
 // NVIDIA NIM (AI trả lời / thảo luận)
 //
 // Có 2 chế độ:
