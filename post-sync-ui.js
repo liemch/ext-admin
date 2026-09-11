@@ -209,13 +209,8 @@
       return;
     }
     try {
-      const url =
-        `${SUPABASE_CONFIG.url.replace(/\/+$/, "")}/rest/v1/posts` +
-        `?username=eq.${encodeURIComponent(username)}&order=created_at.desc&limit=20`;
-      const res = await fetch(url, {
-        headers: { apikey: SUPABASE_CONFIG.anonKey, Authorization: `Bearer ${SUPABASE_CONFIG.anonKey}` },
-      });
-      const posts = await res.json();
+      const data = await PostSyncClient.getMySyncedPosts({ username, limit: 20, days: 30 });
+      const posts = data.posts || [];
       if (!posts || posts.length === 0) {
         container.innerHTML = `<p class="muted">Chưa có bài nào trong cache. Mở bài để gửi hint hoặc chờ leader quét.</p>`;
         return;

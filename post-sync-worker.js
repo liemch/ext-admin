@@ -95,14 +95,18 @@
   // ---------- leader device id ----------
 
   async function getLeaderDeviceId() {
-    const stored = await chrome.storage.local.get(POST_SYNC_LEADER_KEY);
-    let id = stored[POST_SYNC_LEADER_KEY]?.deviceId;
-    if (id) return id;
-    id =
-      (global.crypto && global.crypto.randomUUID && global.crypto.randomUUID()) ||
-      `psync-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-    await chrome.storage.local.set({ [POST_SYNC_LEADER_KEY]: { deviceId: id, createdAt: new Date().toISOString() } });
-    return id;
+    const stored = await chrome.storage.local.get(["engagementDevice", POST_SYNC_LEADER_KEY]);
+    const engagementDeviceId = stored.engagementDevice?.deviceId;
+    if (!engagementDeviceId || !stored.engagementDevice?.token) {
+      throw new Error("Máy admin chưa đăng ký engagement device để làm post-sync leader.");
+    }
+    const previous = stored[POST_SYNC_LEADER_KEY]?.deviceId;
+    if (previous !== engagementDeviceId) {
+      await chrome.storage.local.set({
+        [POST_SYNC_LEADER_KEY]: { deviceId: engagementDeviceId, updatedAt: new Date().toISOString() },
+      });
+    }
+    return engagementDeviceId;
   }
 
   // ---------- TechHub fetching helpers ----------
@@ -120,7 +124,14 @@
   async function fetchArticleDetailSafe(uuid) {
     // fetchArticleDetail định nghĩa ở background.js, trả về JSON detail.
     if (typeof fetchArticleDetail !== "function") throw new Error("fetchArticleDetail chưa sẵn sàng");
-    const data = await fetchArticleDetail(uuid);
+    const stored = await chrome.storage.local.get("techhubCredentials");
+    const credentials = stored.techhubCredentials;
+    if (!credentials?.csrfToken) {
+      const error = new Error("Phiên TechHub không có CSRF token.");
+      error.httpStatus = 401;
+      throw error;
+    }
+    const data = await fetchArticleDetail(uuid, credentials);
     return data;
   }
 
@@ -193,9 +204,10 @@
       if (!/(^|\.)techhub\.fpt\.net$/i.test(url.hostname)) return null;
       const path = url.pathname.replace(/\/+/g, "/");
       // /p/<username>/<uuid>/<slug> hoặc /c/<community>/<uuid>/<slug>
-      const m = path.match(/\/[pc]\/(?:[^/]+\/)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
-      if (!m) return null;
-      const uuid = m[1].toLowerCase();
+      const profileMatch = path.match(/\/p\/([^/]+)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/|$)/i);
+      const communityMatch = path.match(/\/c\/[^/]+\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/|$)/i);
+      if (!profileMatch && !communityMatch) return null;
+      const uuid = (profileMatch?.[2] || communityMatch?.[1]).toLowerCase();
       // Tìm id ở query ?id=123 (ít gặp) hoặc từ path cuối.
       const idMatch = url.searchParams.get("id");
       const techhubId = idMatch ? Number(idMatch) : null;
@@ -203,6 +215,7 @@
         techhubUuid: uuid,
         techhubId: Number.isInteger(techhubId) ? techhubId : null,
         url: url.toString(),
+        authorUsername: profileMatch ? decodeURIComponent(profileMatch[1]) : null,
       };
     } catch {
       return null;
@@ -213,6 +226,15 @@
     if (!PostSyncClient.isPostSyncConfigured()) return null;
     const identifier = extractArticleIdentifierFromUrl(tabUrl);
     if (!identifier) return null;
+    const stored = await chrome.storage.local.get(["userProfile", "engagementDevice"]);
+    const currentUsername = String(
+      stored.userProfile?.username || stored.engagementDevice?.username || ""
+    ).trim().toLowerCase();
+    const observedAuthor = String(identifier.authorUsername || extra.authorUsername || "")
+      .trim().toLowerCase();
+    // Một URL community không cho biết tác giả; không gán mù bài người khác cho
+    // device hiện tại. Những bài đó được feed discovery xử lý.
+    if (!currentUsername || !observedAuthor || currentUsername !== observedAuthor) return null;
     const key = identifier.techhubUuid ? `uuid:${identifier.techhubUuid}` : identifier.url;
     if (!(await shouldSubmitHint(key))) return null;
     // Không gửi hint nếu không tìm ra username (không đọc profile qua API ở đây).
@@ -242,7 +264,12 @@
         ? await fetchArticleDetailSafe(techhubUuid)
         : await supabase.fetchTechHubArticleById(techhubId);
     } catch (error) {
-      return { ok: false, error: error.message, httpStatus: error.httpStatus || 0 };
+      return {
+        ok: false,
+        error: error.message,
+        httpStatus: error.httpStatus || 0,
+        retryAfterSeconds: error.retryAfterSeconds || null,
+      };
     }
     if (!detail) {
       return { ok: false, error: "không tìm thấy bài", httpStatus: 404, permanent: true, rejected: true, reason: "not_found" };
@@ -302,23 +329,33 @@
       await (async () => {
         try {
           const users = await supabase.getAllUsers();
-          return (users || []).map((u) => u.username).filter(Boolean);
+          return (users || [])
+            .filter((u) => u.is_locked !== true)
+            .map((u) => String(u.username || "").toLowerCase())
+            .filter(Boolean);
         } catch {
           return [];
         }
       })()
     );
-    const lockedUsers = new Set();
-
-    while (page <= HARD_LIMITS.maxPagesPerSource && requestCount < HARD_LIMITS.maxRequestsPerRun) {
+    let pagesFetched = 0;
+    while (pagesFetched < HARD_LIMITS.maxPagesPerSource && requestCount < HARD_LIMITS.maxRequestsPerRun) {
       runContext.requestCount += 1;
       requestCount += 1;
       let data;
       try {
         data = await fetchCommunityArticlesPage(communitySlug, { page });
+        pagesFetched += 1;
+        await runContext.extendLease?.();
         await delay(HARD_LIMITS.requestDelayMs + Math.random() * 500);
       } catch (error) {
-        return { ok: false, error: error.message, httpStatus: error.httpStatus || 0, requestCount };
+        return {
+          ok: false,
+          error: error.message,
+          httpStatus: error.httpStatus || 0,
+          retryAfterSeconds: error.retryAfterSeconds || null,
+          requestCount,
+        };
       }
       const rows = extractArticleRows(data);
       let sawOld = false;
@@ -332,8 +369,7 @@
         }
         const author = articleAuthorUsername(a);
         if (!author) continue;
-        if (!knownUsernames.has(author)) continue;
-        if (lockedUsers.has(author)) continue;
+        if (!knownUsernames.has(author.toLowerCase())) continue;
         seenIds.add(id);
         const p = supabase.buildTechHubPostPayload(a);
         if (p) articles.push(p);
@@ -354,9 +390,9 @@
       updatedCount: articles.length,
       unchangedCount: 0,
       requestCount,
-      pageCount: page - 1,
-      cursor: !reachedEnd && requestCount >= HARD_LIMITS.maxRequestsPerRun ? lastCursor : null,
-      budgetExhausted: !reachedEnd && requestCount >= HARD_LIMITS.maxRequestsPerRun,
+      pageCount: pagesFetched,
+      cursor: !reachedEnd && lastCursor ? lastCursor : null,
+      budgetExhausted: !reachedEnd && !!lastCursor,
     };
   }
 
@@ -371,15 +407,24 @@
     let reachedEnd = false;
     let lastCursor = null;
 
-    while (page <= HARD_LIMITS.maxPagesPerSource && requestCount < HARD_LIMITS.maxRequestsPerRun) {
+    let pagesFetched = 0;
+    while (pagesFetched < HARD_LIMITS.maxPagesPerSource && requestCount < HARD_LIMITS.maxRequestsPerRun) {
       runContext.requestCount += 1;
       requestCount += 1;
       let data;
       try {
         data = await fetchUserArticlesPage(username, page);
+        pagesFetched += 1;
+        await runContext.extendLease?.();
         await delay(HARD_LIMITS.requestDelayMs + Math.random() * 500);
       } catch (error) {
-        return { ok: false, error: error.message, httpStatus: error.httpStatus || 0, requestCount };
+        return {
+          ok: false,
+          error: error.message,
+          httpStatus: error.httpStatus || 0,
+          retryAfterSeconds: error.retryAfterSeconds || null,
+          requestCount,
+        };
       }
       const rows = extractArticleRows(data);
       let sawOld = false;
@@ -416,9 +461,9 @@
       updatedCount: articles.length,
       unchangedCount: 0,
       requestCount,
-      pageCount: page - 1,
-      cursor: !reachedEnd && requestCount >= HARD_LIMITS.maxRequestsPerRun ? lastCursor : null,
-      budgetExhausted: !reachedEnd && requestCount >= HARD_LIMITS.maxRequestsPerRun,
+      pageCount: pagesFetched,
+      cursor: !reachedEnd && lastCursor ? lastCursor : null,
+      budgetExhausted: !reachedEnd && !!lastCursor,
     };
   }
 
@@ -463,9 +508,12 @@
         await savePostSyncStatus({
           lastRunAt: startedAt,
           lastOutcome: "idle",
-          lastMessage: "Không có job sync nào tới hạn.",
+          lastMessage: claim?.isLeader === false
+            ? "Máy admin khác đang giữ leader lease."
+            : "Không có job sync nào tới hạn.",
           leaderDeviceId: deviceId,
-          leaderActive: true,
+          leaderActive: claim?.isLeader !== false,
+          leaseExpiry: claim?.leader?.lease_until || null,
           lastError: null,
         });
         return { ran: true, handled: 0 };
@@ -481,6 +529,13 @@
         runId = runRes.runId || null;
       } catch (error) {
         broadcast(`startPostSyncRun lỗi: ${error.message}`, "error");
+        await savePostSyncStatus({
+          lastRunAt: startedAt,
+          lastOutcome: "error",
+          lastError: error.message,
+          lastMessage: `Không thể bắt đầu run #${job.id}: ${error.message}`,
+        });
+        return { ran: false, error: error.message };
       }
 
       // Gia hạn lease giữa chừng (setTimeout không ổn định trong MV3; chỉ extend
@@ -494,7 +549,7 @@
         } catch (_) {}
       };
 
-      const runContext = { requestCount: 0, pageCount: 0 };
+      const runContext = { requestCount: 0, pageCount: 0, extendLease: maybeExtend };
       let result;
       try {
         if (job.type === "verify_hint") result = await executeVerifyHint(job, runContext);
@@ -516,6 +571,7 @@
             error: result.error || "unknown_error",
             httpStatus: result.httpStatus || null,
             permanent: !!result.permanent || !!result.rejected,
+            retryAfterSeconds: result.retryAfterSeconds || null,
           });
         } catch (e) {
           broadcast(`failPostSyncJob lỗi: ${e.message}`, "error");

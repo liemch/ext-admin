@@ -125,7 +125,10 @@
       if (!response?.success) throw new Error(response?.error || "Không tải được trạng thái.");
 
       const { settings, status, queueConfigured } = response;
-      if ($("engagementEnabled")) $("engagementEnabled").checked = !!settings.enabled;
+      if ($("engagementEnabled")) {
+        $("engagementEnabled").checked = !!settings.enabled;
+        $("engagementEnabled").disabled = true;
+      }
       if ($("engIntervalMinutes")) $("engIntervalMinutes").value = settings.intervalMinutes;
       if ($("engTasksPerWake")) $("engTasksPerWake").value = settings.tasksPerWake;
       if ($("engDelaySec")) $("engDelaySec").value = settings.delayBetweenTasksSec;
@@ -172,6 +175,16 @@
         try {
           const queue = await sendMessage({ action: "getEngagementQueueStatus" });
           if (queue?.success) {
+            const globallyEnabled = queue.engagementEnabled !== false;
+            if ($("engagementEnabled")) {
+              $("engagementEnabled").checked = globallyEnabled;
+              $("engagementEnabled").disabled = true;
+            }
+            if ($("engagementOnlineState")) {
+              $("engagementOnlineState").textContent = queue.killSwitch
+                ? "Admin đang tạm dừng"
+                : globallyEnabled ? "Admin đã bật — đang nhận task" : "Admin đã tắt";
+            }
             if ($("engagementVotesToday")) {
               $("engagementVotesToday").textContent = queue.today?.vote ?? 0;
             }
@@ -638,6 +651,9 @@
       const response = await sendMessage({ action: "engagementGetOpsStats" });
       if (!response?.success) throw new Error(response?.error || "Không tải được số liệu.");
       if ($("killSwitchToggle")) $("killSwitchToggle").checked = response.killSwitch === true;
+      if ($("engagementGlobalToggle")) {
+        $("engagementGlobalToggle").checked = response.engagementEnabled !== false;
+      }
 
       const byStatus = response.byStatus || {};
       const statusLine = Object.keys(byStatus).length
@@ -784,9 +800,7 @@
   // ---------------------------------------------------------- init
 
   function bindEvents() {
-    if ($("engagementEnabled")) {
-      $("engagementEnabled").addEventListener("change", toggleEnabled);
-    }
+    // User participation is read-only; only the admin global control changes it.
     if ($("refreshEngagementBtn")) {
       $("refreshEngagementBtn").addEventListener("click", () => loadEngagementState());
     }
@@ -864,6 +878,27 @@
     }
     if ($("killSwitchToggle")) {
       $("killSwitchToggle").addEventListener("change", toggleKillSwitch);
+    }
+    if ($("engagementGlobalToggle")) {
+      $("engagementGlobalToggle").addEventListener("change", async (event) => {
+        const checkbox = event.currentTarget;
+        checkbox.disabled = true;
+        try {
+          const response = await sendMessage({
+            action: "engagementSetEnabled",
+            enabled: checkbox.checked,
+          });
+          if (!response?.success) throw new Error(response?.error || "Không cập nhật được.");
+          showAdminMsg($("opsMessage"), checkbox.checked
+            ? "Đã bật tương tác cho mọi user."
+            : "Đã tắt tương tác cho mọi user.", checkbox.checked ? "success" : "muted");
+        } catch (error) {
+          checkbox.checked = !checkbox.checked;
+          showAdminMsg($("opsMessage"), `Lỗi: ${error.message}`, "error");
+        } finally {
+          checkbox.disabled = false;
+        }
+      });
     }
     if ($("cleanupEventsBtn")) {
       $("cleanupEventsBtn").addEventListener("click", cleanupEvents);

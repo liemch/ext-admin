@@ -90,6 +90,7 @@ bash scripts/setup-supabase.sh
 7. `supabase/migrations/011_restrict_users_writes.sql` — **bắt buộc**: chặn anon
    tự cấp `is_admin` / xóa user (cần deploy `admin-api` trước — script trên làm sẵn)
 8. `supabase/migrations/012_cross_user_engagement.sql` — hàng đợi tương tác chéo
+9. `supabase/migrations/013_post_sync.sql` và `20260911100410_post_sync_hardening.sql` — đồng bộ bài, khóa quyền client và leader lease
    (`engagement_*`, `discussion_threads/turns`) + RPC claim atomic (cần deploy
    `engagement-api` — xem [`supabase/functions/engagement-api/README.md`](supabase/functions/engagement-api/README.md))
 

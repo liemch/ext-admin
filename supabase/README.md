@@ -34,7 +34,7 @@
 | `post_sync_runs` | Lịch sử chạy từng lượt (request count, số bài mới/cập nhật, lỗi) |
 | `post_sync_sources` | Nguồn quét (community/user) — lưu con trỏ trang, thời gian kế tiếp |
 
-Cột bổ sung trên `posts` (migration 013): `verification_status` (unverified/verified/stale/rejected), `discovered_by` (post_hint/feed_discovery/user_reconcile/legacy), `first_seen_at`, `last_verified_at`, `sync_run_id`, `sync_error`.
+Cột bổ sung trên `posts` (migration 013): `verification_status` (unverified/verified/stale/rejected), `discovered_by` (post_hint/feed_discovery/user_reconcile/legacy), `first_seen_at`, `last_verified_at`, `sync_run_id`, `sync_error`. Migration `20260911100410_post_sync_hardening.sql` khóa quyền ghi từ client và bổ sung global leader lease cùng RPC hoàn tất atomic.
 
 ## Edge Functions
 
@@ -45,12 +45,12 @@ Cột bổ sung trên `posts` (migration 013): `verification_status` (unverified
 | `engagement-api` | Hàng đợi tương tác chéo (heartbeat/claim/complete/campaign/kịch bản) — chỉ phân bổ bài `verification_status = verified` | `ADMIN_TOKEN` cho admin; máy user dùng device token tự sinh |
 | `post-sync-api` | Đồng bộ bài viết: nhận hint từ user, leader claim job để quét feed / verify hint / reconcile user, trả danh sách bài đã xác minh | `ADMIN_TOKEN` cho leader (quét/ghi); máy user gọi `submitPostHint` + `listNewPosts` bằng device token |
 
-Deploy + set secrets + áp migration 011 + 012 + 013 một phát: `bash scripts/setup-supabase.sh`.
+Deploy + set secrets + áp migration 011 + 012 + 013 + hardening một phát: `bash scripts/setup-supabase.sh`.
 
 ## Setup project mới
 
 1. Tạo project Supabase → lấy URL + anon key
-2. SQL Editor → Run `migrations/001` → `002` → (`003` nếu upgrade) → `004_ai_reply_drafts.sql` → `005_ai_discussion.sql` → `006_root_self_discussion.sql` → `007_posts_medals_count.sql` → `008_discussion_draft_queue.sql` → `009_reply_draft_queue.sql` → `010` (community) → `011_restrict_users_writes.sql` → `012_cross_user_engagement.sql` → `013_post_sync.sql`
+2. SQL Editor → Run `migrations/001` → `002` → (`003` nếu upgrade) → `004_ai_reply_drafts.sql` → `005_ai_discussion.sql` → `006_root_self_discussion.sql` → `007_posts_medals_count.sql` → `008_discussion_draft_queue.sql` → `009_reply_draft_queue.sql` → `010` (community) → `011_restrict_users_writes.sql` → `012_cross_user_engagement.sql` → `013_post_sync.sql` → `20260911100410_post_sync_hardening.sql`
 3. Sửa `YOUR_TECHHUB_USERNAME` trong `002` → Run
 4. Điền `NVIDIA_CONFIG.apiKey` trong `config.js` (lấy tại https://build.nvidia.com/settings/api-keys)
 5. Reload extension

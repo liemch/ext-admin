@@ -39,13 +39,26 @@
       if (!device?.token) throw new Error("Thiếu device token. Hãy heartbeat engagement trước.");
       token = device.token;
     }
+    let requestPayload = payload;
+    if (options.useLeaderDevice) {
+      const stored = await chrome.storage.local.get("engagementDevice");
+      const device = stored.engagementDevice;
+      if (!device?.deviceId || !device?.token) {
+        throw new Error("Máy leader chưa đăng ký device engagement.");
+      }
+      requestPayload = {
+        ...payload,
+        deviceId: device.deviceId,
+        leaderDeviceToken: device.token,
+      };
+    }
     const response = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ action, ...payload }),
+      body: JSON.stringify({ action, ...requestPayload }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data?.error) {
@@ -67,27 +80,30 @@
   }
 
   // ---- Admin/Leader actions ----
-  function postSyncAdmin(action, payload = {}) {
-    return callPostSyncApi(action, payload, { useAdmin: true });
+  function postSyncAdmin(action, payload = {}, options = {}) {
+    return callPostSyncApi(action, payload, {
+      useAdmin: true,
+      useLeaderDevice: options.useLeaderDevice === true,
+    });
   }
 
   function requestPostSync(scope, extra = {}) {
     return postSyncAdmin("requestPostSync", { scope, ...extra });
   }
   function claimPostSyncJob(deviceId, leaseSeconds) {
-    return postSyncAdmin("claimPostSyncJob", { deviceId, leaseSeconds });
+    return postSyncAdmin("claimPostSyncJob", { deviceId, leaseSeconds }, { useLeaderDevice: true });
   }
   function startPostSyncRun(jobId, sourceId, deviceId) {
-    return postSyncAdmin("startPostSyncRun", { jobId, sourceId, deviceId });
+    return postSyncAdmin("startPostSyncRun", { jobId, sourceId, deviceId }, { useLeaderDevice: true });
   }
   function extendPostSyncLease(jobId, deviceId, leaseSeconds) {
-    return postSyncAdmin("extendPostSyncLease", { jobId, deviceId, leaseSeconds });
+    return postSyncAdmin("extendPostSyncLease", { jobId, deviceId, leaseSeconds }, { useLeaderDevice: true });
   }
   function completePostSyncJob(result) {
-    return postSyncAdmin("completePostSyncJob", result);
+    return postSyncAdmin("completePostSyncJob", result, { useLeaderDevice: true });
   }
   function failPostSyncJob(result) {
-    return postSyncAdmin("failPostSyncJob", result);
+    return postSyncAdmin("failPostSyncJob", result, { useLeaderDevice: true });
   }
   function getPostSyncStatus() {
     return postSyncAdmin("getPostSyncStatus", {});

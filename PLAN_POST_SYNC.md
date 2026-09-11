@@ -30,6 +30,7 @@ Không tiếp tục đưa logic sync vào `engagement-api`. `post-sync-api` qu�
 ### 2.2 Tạo migration mới
 
 Tạo `supabase/migrations/013_post_sync.sql`. Không sửa migration 012 đã chạy.
+Sau rollout ban đầu, áp dụng thêm migration `20260911100410_post_sync_hardening.sql` để khóa quyền ghi cache, giới hạn bảng điều phối ở service role, bổ sung global leader lease và các RPC claim/start/complete atomic.
 
 ### 2.3 Ba nguồn phát hiện
 
@@ -60,7 +61,7 @@ Các file cần sửa:
 - `popup.css`: style trạng thái sync, run và bài mới.
 - `popup.js`: user mở panel chỉ đọc cache, không quét TechHub.
 - `config.example.js`: thêm `POST_SYNC_API_CONFIG`.
-- `scripts/setup-supabase.sh`: deploy function thứ tư, chạy migration 013 và in config mới.
+- `scripts/setup-supabase.sh`: deploy function thứ tư, chạy migration 013 và migration hardening, rồi in config mới.
 - `README.md` và `supabase/README.md`: hướng dẫn setup và vận hành.
 
 ## 4. Luồng nghiệp vụ
@@ -394,7 +395,7 @@ Backoff: 5 phút → 15 phút → 1 giờ → 6 giờ; 429 ưu tiên header serv
 
 ### Phase 1 — Database và API nền
 
-1. Migration 013 và RPC claim.
+1. Migration 013, migration hardening và các RPC claim/start/complete.
 2. `post-sync-api`: auth, hint, enqueue, claim, complete/fail.
 3. Test RLS, ownership và claim concurrency.
 
@@ -421,7 +422,7 @@ Backoff: 5 phút → 15 phút → 1 giờ → 6 giờ; 429 ưu tiên header serv
 
 ### Phase 5 — Deploy
 
-1. Chạy migration 013.
+1. Chạy migration 013, sau đó `20260911100410_post_sync_hardening.sql`.
 2. Deploy `post-sync-api`.
 3. Cập nhật config admin/user.
 4. Reload máy admin, xác nhận leader.
@@ -461,7 +462,7 @@ End-to-end:
 
 ## 13. Definition of Done
 
-- Migration 013 áp thành công; advisor không có lỗi bảo mật nghiêm trọng mới.
+- Migration 013 và migration hardening áp thành công; advisor không có lỗi bảo mật nghiêm trọng mới.
 - `post-sync-api` deploy; test auth/RLS/claim pass.
 - User thường không còn quét toàn bộ bài TechHub.
 - Feed discovery/reconcile ghi đủ run metrics.
@@ -471,5 +472,4 @@ End-to-end:
 - UI admin xem được leader, queue, bài mới và run history.
 - Campaign chỉ dùng bài verified.
 - Không notification hoặc tab tự mở khi session hết hạn.
-- README và setup script có migration 013, function thứ tư và config mới.
-
+- README và setup script có migration 013, migration hardening, function thứ tư và config mới.

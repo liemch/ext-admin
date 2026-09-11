@@ -388,10 +388,10 @@
                 <div class="field-list">
                   <div class="field">
                     <div class="field-text">
-                      <label for="engagementEnabled">Nhận nhiệm vụ</label>
-                      <span>Bật để máy này tự nhận task vote/comment theo lịch</span>
+                      <label for="engagementEnabled">Chế độ tương tác</label>
+                      <span>Admin bật/tắt cho toàn hệ thống; user không thể tự thay đổi</span>
                     </div>
-                    <input id="engagementEnabled" class="switch" type="checkbox" />
+                    <input id="engagementEnabled" class="switch" type="checkbox" disabled />
                   </div>
                 </div>
 
@@ -701,6 +701,13 @@
                       <span>Bật = dừng phát task mới cho mọi máy</span>
                     </div>
                     <input id="killSwitchToggle" class="switch" type="checkbox" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="engagementGlobalToggle">Bật tương tác cho mọi user</label>
+                      <span>Admin quản lý tập trung; mặc định bật</span>
+                    </div>
+                    <input id="engagementGlobalToggle" class="switch" type="checkbox" />
                   </div>
                   <div class="field">
                     <div class="field-text">
@@ -1475,6 +1482,7 @@
     <script src="config.js"></script>
     <script src="supabase-client.js"></script>
     <script src="discussion-import.js"></script>
+    <script src="post-sync-client.js"></script>
     <script src="post-sync-ui.js"></script>
     <script src="popup.js"></script>
     <script src="engagement-ui.js"></script>

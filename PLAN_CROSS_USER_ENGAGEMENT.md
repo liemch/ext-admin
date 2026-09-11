@@ -207,11 +207,11 @@ Chỉ tạo reply task sau khi comment trước thành công và có `techhub_co
 
 Tách thành hai menu độc lập:
 
-- **Bài viết của tôi** dành cho mọi user: danh sách bài cache, số comment/vote, thời gian đồng bộ gần nhất, bật/tắt tham gia thảo luận và hoạt động của chính tài khoản.
+- **Bài viết của tôi** dành cho mọi user: danh sách bài cache, số comment/vote, thời gian đồng bộ gần nhất và hoạt động của chính tài khoản. Trạng thái tham gia thảo luận do admin bật/tắt toàn hệ thống; user chỉ xem trạng thái và không có quyền thay đổi.
 - **Chiến dịch** chỉ dành cho admin: tạo campaign, chọn bài, nhập JSON, chọn vote/comment/reply, quota, cooldown, lịch chạy, pause/cancel và xem tiến độ toàn hệ thống.
 - **Đồng bộ bài viết** là menu admin riêng theo [PLAN_POST_SYNC.md](PLAN_POST_SYNC.md); plan engagement chỉ dùng kết quả bài đã verified.
 
-User thường không cần thấy khái niệm campaign, task lease, device token hoặc vận hành. Switch nên đặt tên dễ hiểu như “Cho phép tài khoản tham gia thảo luận”. Khi tắt, server ngừng phân task mới; task đang claim được release về queue.
+User thường không cần thấy khái niệm campaign, task lease, device token hoặc vận hành. User thấy trạng thái “Đang nhận task” hoặc “Admin đã tắt”; khi tắt, server ngừng phân task mới và task đang claim được release về queue. Admin có công tắc toàn hệ thống trong khu vực vận hành.
 
 Số comment/vote của user nên lấy từ `engagement_tasks`/`engagement_events`, không gọi TechHub để đếm lại mỗi lần mở extension. Danh sách bài và tổng số liệu thật dùng cache `posts`; UI luôn hiển thị thời điểm cache được cập nhật.
 - Admin có ô dán JSON, nút “Kiểm tra”, preview từng thread/turn, chọn bài đích và nút “Nhập kịch bản”. Lỗi JSON phải chỉ rõ thread và turn.

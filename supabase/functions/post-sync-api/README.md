@@ -20,8 +20,10 @@ dễ vận hành).
 - `Authorization: Bearer <device-token>` → device action: `submitPostHint` +
   `listNewPosts` (chỉ trả về bài `verification_status = verified` của chính device).
   Device phải đã đăng ký qua `engagement-api` (bảng `engagement_devices`) và chưa bị thu hồi.
-- `Authorization: Bearer <ADMIN_TOKEN>` → admin/leader action (enqueue, claim,
-  complete, fail, read trạng thái, …).
+- `Authorization: Bearer <ADMIN_TOKEN>` → admin action. Các action leader
+  (`claim/start/extend/complete/fail`) đồng thời cần `deviceId` và
+  `leaderDeviceToken` của thiết bị đã đăng ký trong `engagement_devices`; server
+  dùng singleton lease để chỉ cho một leader chạy tại một thời điểm.
 - Không nhận cookie/CSRF và không log token.
 
 ## Actions

@@ -4,7 +4,7 @@
 // Không cần Supabase/TechHub: chỉ kiểm tra tính nhất quán giữa
 //   post-sync-client.js, post-sync-worker.js, post-sync-ui.js,
 //   background.js, popup.html, supabase/functions/post-sync-api/index.ts,
-//   supabase/migrations/013_post_sync.sql.
+//   supabase/migrations/013_post_sync.sql và migration hardening.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -70,6 +70,7 @@ const reqFiles = [
   "supabase/functions/post-sync-api/index.ts",
   "supabase/functions/post-sync-api/README.md",
   "supabase/migrations/013_post_sync.sql",
+  "supabase/migrations/20260911100410_post_sync_hardening.sql",
   "scripts/test-post-sync.mjs",
 ];
 for (const f of reqFiles) {
@@ -244,6 +245,16 @@ assert(mig.includes("GRANT EXECUTE ON FUNCTION public.claim_post_sync_job") && m
   "grant execute claim_post_sync_job cho service_role");
 assert(mig.includes("verification_status"), "bổ sung cột verification_status trên posts");
 assert(mig.includes("discovered_by"), "bổ sung cột discovered_by (chú thích trong plan §1.2)");
+
+// ---------------------------------------------------------------- 7b. Hardening migration
+section("Migration hardening — quyền ghi + leader lease + complete atomic");
+const hardening = read("supabase/migrations/20260911100410_post_sync_hardening.sql");
+assert(hardening.includes("post_sync_leader_lease"), "có singleton global leader lease");
+assert(hardening.includes("start_post_sync_run") && hardening.includes("complete_post_sync_job"),
+  "có RPC start/complete atomic");
+assert(hardening.includes("FOR UPDATE SKIP LOCKED"), "hardening claim giữ SKIP LOCKED");
+assert(hardening.includes("REVOKE INSERT, UPDATE, DELETE"), "client bị chặn quyền ghi posts");
+assert(hardening.includes("ON CONFLICT (techhub_id) DO UPDATE"), "complete upsert idempotent theo techhub_id");
 
 // ---------------------------------------------------------------- 8. Engagement integration (plan §4)
 section("Tích hợp engagement — campaign filter + skip bài invalid");

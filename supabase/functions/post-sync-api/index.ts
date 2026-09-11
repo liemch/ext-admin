@@ -165,6 +165,30 @@ function requireDevice(auth: Auth): Device {
   if (auth.kind !== "device") throw new HttpError("Unauthorized (thiếu device token).", 401);
   return auth.device;
 }
+async function requireLeaderDevice(
+  rest: Rest,
+  auth: Auth,
+  body: Record<string, unknown>
+): Promise<Device> {
+  requireAdmin(auth);
+  const deviceId = String(body.deviceId || body.leaderDeviceId || "").trim();
+  const deviceToken = String(body.leaderDeviceToken || "").trim();
+  if (!deviceId || !deviceToken) {
+    throw new HttpError("Leader cần deviceId và device token.", 401);
+  }
+  const tokenHash = await sha256Hex(deviceToken);
+  const devices = await rest.getJson<Device[]>("engagement_devices", {
+    device_id: `eq.${deviceId}`,
+    token_hash: `eq.${tokenHash}`,
+    select: "id,device_id,username,token_hash,revoked",
+    limit: "1",
+  });
+  const device = firstRow(devices);
+  if (!device || device.revoked) {
+    throw new HttpError("Leader device không tồn tại hoặc đã bị thu hồi.", 403);
+  }
+  return device;
+}
 function firstRow<T>(rows: T[] | T | null): T | null {
   if (!rows) return null;
   return Array.isArray(rows) ? rows[0] ?? null : rows;
@@ -443,12 +467,18 @@ async function handleRequestPostSync(rest: Rest, auth: Auth, body: Record<string
     }
     const feedInterval = await readSettingNumber(rest, "post_sync_feed_interval_minutes", 60, 10, 1440);
     const src = await ensureSource(rest, "community", communitySlug, feedInterval);
+    const sourceRows = await rest.getJson<Array<{ cursor: unknown }>>("post_sync_sources", {
+      id: `eq.${src.id}`,
+      select: "cursor",
+      limit: "1",
+    });
+    const sourceCursor = firstRow(sourceRows)?.cursor || null;
     const timeBucket = hourBucket(now);
     const { id, created } = await enqueueJob(rest, {
       type: "feed_discovery",
       idempotencyKey: `feed:${communitySlug}:${timeBucket}`,
       sourceId: src.id,
-      payload: { communitySlug, timeBucket, force: true },
+      payload: { communitySlug, timeBucket, force: true, cursor: sourceCursor },
     });
     jobs.push({ id, scope: `feed:${communitySlug}`, created });
   } else if (scope === "user") {
@@ -479,36 +509,61 @@ async function handleRequestPostSync(rest: Rest, auth: Auth, body: Record<string
     jobs.push({ id, scope: `user:${username}`, created });
   } else if (scope === "due_users") {
     const recInterval = await readSettingNumber(rest, "post_sync_reconcile_interval_minutes", 1440, 60, 4320);
-    const due = await rest.getJson<Array<{ source_key: string }>>("post_sync_sources", {
-      type: "eq.user",
-      enabled: "eq.true",
-      next_check_at: `lte.${now.toISOString()}`,
-      select: "source_key",
-      limit: "100",
+    // Một lần kiểm tra phiên thành công sẽ mở lại các job đã dừng vì 401/403.
+    await rest.patch("post_sync_jobs", { status: "eq.session_required" }, {
+      status: "retry_wait",
+      scheduled_at: now.toISOString(),
+      last_error: null,
+      updated_at: now.toISOString(),
     });
-    // Sẵn sàng xếp hàng reconcile cho mọi user trong bảng users chưa có source.
+
+    // Tạo source còn thiếu theo lô, sau đó chỉ lấy source thật sự tới hạn.
     const allUsers = await rest.getJson<Array<{ username: string }>>("users", {
       is_locked: "eq.false",
       select: "username",
       limit: "1000",
     });
-    const userSet = new Set((allUsers || []).map((r) => r.username).filter(Boolean));
-    for (const row of due || []) {
-      if (row.source_key) userSet.add(row.source_key);
+    const allowedUsers = new Set((allUsers || []).map((r) => r.username).filter(Boolean));
+    const existingSources = await rest.getJson<Array<{ source_key: string }>>("post_sync_sources", {
+      type: "eq.user",
+      select: "source_key",
+      limit: "2000",
+    });
+    const existingKeys = new Set((existingSources || []).map((row) => row.source_key));
+    const missingSources = Array.from(allowedUsers)
+      .filter((username) => !existingKeys.has(username))
+      .map((username) => ({
+        type: "user",
+        source_key: username,
+        enabled: true,
+        interval_minutes: recInterval,
+        next_check_at: now.toISOString(),
+      }));
+    if (missingSources.length > 0) {
+      await rest.postJson("post_sync_sources", missingSources, "resolution=ignore-duplicates");
     }
+    const due = await rest.getJson<Array<{ id: number; source_key: string; cursor: unknown }>>("post_sync_sources", {
+      type: "eq.user",
+      enabled: "eq.true",
+      next_check_at: `lte.${now.toISOString()}`,
+      select: "id,source_key,cursor,next_check_at",
+      order: "next_check_at.asc,source_key.asc",
+      limit: "1000",
+    });
     const maxConcurrency = await readSettingNumber(rest, "post_sync_max_concurrency", 3, 1, 10);
     let queued = 0;
-    for (const username of Array.from(userSet)) {
+    for (const row of due || []) {
       if (queued >= maxConcurrency) break;
-      const src = await ensureSource(rest, "user", username, recInterval);
+      const username = row.source_key;
+      if (!allowedUsers.has(username)) continue;
       const { id, created } = await enqueueJob(rest, {
         type: "user_reconcile",
         idempotencyKey: `user:${username}:${dateBucket(now)}`,
-        sourceId: src.id,
+        sourceId: Number(row.id),
         username,
-        payload: { username },
+        payload: { username, cursor: row.cursor || null },
       });
-      if (id) {
+      if (id && created) {
         jobs.push({ id, scope: `user:${username}`, created });
         queued += 1;
       }
@@ -524,9 +579,9 @@ async function handleRequestPostSync(rest: Rest, auth: Auth, body: Record<string
     if (defaultCommunity) {
       const slug = String(defaultCommunity);
       const src = await ensureSource(rest, "community", slug, await readSettingNumber(rest, "post_sync_feed_interval_minutes", 60, 10, 1440));
-      const last = await rest.getJson<Array<{ last_checked_at: string | null }>>("post_sync_sources", {
+      const last = await rest.getJson<Array<{ last_checked_at: string | null; next_check_at: string | null; cursor: unknown }>>("post_sync_sources", {
         id: `eq.${src.id}`,
-        select: "last_checked_at,next_check_at",
+        select: "last_checked_at,next_check_at,cursor",
         limit: "1",
       });
       const srcRow = firstRow(last);
@@ -537,7 +592,7 @@ async function handleRequestPostSync(rest: Rest, auth: Auth, body: Record<string
             type: "feed_discovery",
             idempotencyKey: `feed:${slug}:${hourBucket(now)}`,
             sourceId: src.id,
-            payload: { communitySlug: slug, scheduled: true },
+            payload: { communitySlug: slug, scheduled: true, cursor: srcRow.cursor || null },
           });
           jobs.push({ id, scope: `feed:${slug}`, created });
         }
@@ -552,7 +607,7 @@ async function handleRequestPostSync(rest: Rest, auth: Auth, body: Record<string
 // ---------------- Leader actions ----------------
 
 async function handleClaimPostSyncJob(rest: Rest, auth: Auth, body: Record<string, unknown>) {
-  requireAdmin(auth);
+  await requireLeaderDevice(rest, auth, body);
   const deviceId = String(body.deviceId || body.leaderDeviceId || "").trim();
   if (!deviceId) throw new HttpError("Thiếu deviceId.", 400);
   const leaseSeconds = Math.max(60, Number(body.leaseSeconds) || (await readSettingNumber(rest, "post_sync_lease_seconds", 600, 60, 3600)));
@@ -562,54 +617,101 @@ async function handleClaimPostSyncJob(rest: Rest, auth: Auth, body: Record<strin
     p_now: new Date().toISOString(),
   });
   const job = Array.isArray(rows) ? rows[0] || null : null;
-  if (!job) return json({ job: null, serverTime: new Date().toISOString() });
-  await rest.patch("post_sync_jobs", { id: `eq.${job.id}` }, {
+  const leaderRows = await rest.getJson<Array<{ device_id: string | null; lease_until: string | null }>>("post_sync_leader_lease", {
+    singleton: "eq.true",
+    select: "device_id,lease_until",
+    limit: "1",
+  });
+  const leader = firstRow(leaderRows);
+  const isLeader = leader?.device_id === deviceId;
+  if (!job) return json({ job: null, isLeader, leader, serverTime: new Date().toISOString() });
+  const updated = await rest.patchJson<Array<Record<string, unknown>>>("post_sync_jobs", { id: `eq.${job.id}` }, {
     status: "running",
     updated_at: new Date().toISOString(),
   });
-  return json({ job, serverTime: new Date().toISOString(), leaseSeconds });
+  return json({ job: firstRow(updated) || { ...job, status: "running" }, isLeader, leader, serverTime: new Date().toISOString(), leaseSeconds });
 }
 
 async function handleStartPostSyncRun(rest: Rest, auth: Auth, body: Record<string, unknown>) {
-  requireAdmin(auth);
+  await requireLeaderDevice(rest, auth, body);
   const jobId = Number(body.jobId);
   const sourceId = body.sourceId ? Number(body.sourceId) : null;
   const deviceId = String(body.deviceId || body.leaderDeviceId || "").trim();
   if (!Number.isInteger(jobId) || jobId <= 0) throw new HttpError("jobId không hợp lệ.", 400);
-  const rows = await rest.postJson<Array<{ id: number }>>("post_sync_runs", {
-    job_id: jobId,
-    source_id: sourceId,
-    leader_device_id: deviceId,
-    outcome: null,
+  const runId = await rest.rpc<number>("start_post_sync_run", {
+    p_job_id: jobId,
+    p_source_id: sourceId,
+    p_device_id: deviceId,
+    p_now: new Date().toISOString(),
   });
-  const run = firstRow(rows);
-  if (!run) throw new HttpError("Không tạo được run.", 500);
-  await rest.patch("post_sync_jobs", { id: `eq.${jobId}` }, {
-    status: "running",
-    started_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  });
-  return json({ ok: true, runId: run.id });
+  return json({ ok: true, runId });
 }
 
 async function handleExtendPostSyncLease(rest: Rest, auth: Auth, body: Record<string, unknown>) {
-  requireAdmin(auth);
+  await requireLeaderDevice(rest, auth, body);
   const jobId = Number(body.jobId);
   const deviceId = String(body.deviceId || "").trim();
   if (!Number.isInteger(jobId) || jobId <= 0) throw new HttpError("jobId không hợp lệ.", 400);
   const leaseSeconds = Math.max(60, Number(body.leaseSeconds) || 600);
   const now = new Date().toISOString();
-  await rest.patch("post_sync_jobs", {
+  const rows = await rest.patchJson<Array<Record<string, unknown>>>("post_sync_jobs", {
     id: `eq.${jobId}`,
     claimed_by_device: `eq.${deviceId}`,
     status: "eq.running",
   }, { lease_until: new Date(Date.now() + leaseSeconds * 1000).toISOString(), updated_at: now });
+  if (!firstRow(rows)) throw new HttpError("Không thể gia hạn lease không thuộc device.", 409);
   return json({ ok: true, leaseUntil: new Date(Date.now() + leaseSeconds * 1000).toISOString() });
 }
 
-// Complete: upsert bài theo payload chuẩn hóa từ leader, ghi run, đánh dấu
-// hints verified, cập nhật source cursor + next_check_at.
+// Complete atomically in Postgres: article upsert, metrics, source cursor,
+// continuation and terminal job state commit together.
 async function handleCompletePostSyncJob(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  await requireLeaderDevice(rest, auth, body);
+  const jobId = Number(body.jobId);
+  const runId = Number(body.runId);
+  const deviceId = String(body.deviceId || "").trim();
+  if (!Number.isInteger(jobId) || jobId <= 0) throw new HttpError("jobId không hợp lệ.", 400);
+  if (!Number.isInteger(runId) || runId <= 0) throw new HttpError("runId không hợp lệ.", 400);
+
+  const articles = (Array.isArray(body.articles) ? body.articles : []).map((raw) => {
+    const article = (raw as Record<string, unknown>) || {};
+    return {
+      techhub_id: Number(article.techhubId ?? article.techhub_id),
+      techhub_uuid: article.techhubUuid ?? article.techhub_uuid ?? null,
+      username: article.username ?? null,
+      title: article.title ?? null,
+      status: article.status ?? "open",
+      url: article.url ?? null,
+      votes_score: Number(article.votesScore ?? article.votes_score ?? 0),
+      comments_count: Number(article.commentsCount ?? article.comments_count ?? 0),
+      medals_count: Number(article.medalsCount ?? article.medals_count ?? 0),
+      feed_score: Number(article.feedScore ?? article.feed_score ?? 0),
+      published_at: toIso(article.publishedAt ?? article.published_at),
+      community_slug: article.communitySlug ?? article.community_slug ?? null,
+      community_name: article.communityName ?? article.community_name ?? null,
+    };
+  });
+  const result = await rest.rpc<Record<string, unknown>>("complete_post_sync_job", {
+    p_job_id: jobId,
+    p_run_id: runId,
+    p_device_id: deviceId,
+    p_metrics: {
+      requestCount: Math.max(0, Math.floor(Number(body.requestCount) || 0)),
+      pageCount: Math.max(0, Math.floor(Number(body.pageCount) || 0)),
+      rejectedCount: Math.max(0, Math.floor(Number(body.rejectedCount) || 0)),
+      lastCursor: (body.cursor ?? body.lastCursor) || null,
+      budgetExhausted: body.budgetExhausted === true,
+      httpStatus: body.httpStatus ? Number(body.httpStatus) : 200,
+    },
+    p_articles: articles,
+    p_now: new Date().toISOString(),
+  });
+  return json(result);
+}
+
+// Kept temporarily as migration reference for deployments still on schema 013.
+// The router never calls this path after the post-sync hardening migration.
+async function handleCompletePostSyncJobLegacy(rest: Rest, auth: Auth, body: Record<string, unknown>) {
   requireAdmin(auth);
   const jobId = Number(body.jobId);
   const runId = body.runId ? Number(body.runId) : null;
@@ -813,7 +915,7 @@ async function handleCompletePostSyncJob(rest: Rest, auth: Auth, body: Record<st
 }
 
 async function handleFailPostSyncJob(rest: Rest, auth: Auth, body: Record<string, unknown>) {
-  requireAdmin(auth);
+  await requireLeaderDevice(rest, auth, body);
   const jobId = Number(body.jobId);
   const runId = body.runId ? Number(body.runId) : null;
   const deviceId = String(body.deviceId || "").trim();
@@ -829,6 +931,7 @@ async function handleFailPostSyncJob(rest: Rest, auth: Auth, body: Record<string
   const error = String(body.error || "unknown_error").slice(0, 1000);
   const httpStatus = Number.isFinite(Number(body.httpStatus)) ? Number(body.httpStatus) : null;
   const permanent = body.permanent === true;
+  const retryAfterSeconds = Math.max(0, Math.floor(Number(body.retryAfterSeconds) || 0));
   const isAuthError = httpStatus === 401 || httpStatus === 403;
   const exhausted = (Number(job.attempt_count) || 0) >= (Number(job.max_attempts) || 5);
   const isRetryable = !permanent && (httpStatus === null || httpStatus === 0 || httpStatus === 408 || httpStatus === 429 || httpStatus >= 500) && !exhausted;
@@ -849,8 +952,10 @@ async function handleFailPostSyncJob(rest: Rest, auth: Auth, body: Record<string
   } else if (isRetryable) {
     disposition = "retry";
     patch.status = "retry_wait";
-    const delayMin = backoffMinutes((Number(job.attempt_count) || 0) + 1);
-    patch.scheduled_at = new Date(Date.now() + delayMin * 60 * 1000).toISOString();
+    const delayMs = httpStatus === 429 && retryAfterSeconds > 0
+      ? retryAfterSeconds * 1000
+      : backoffMinutes(Number(job.attempt_count) || 1) * 60 * 1000;
+    patch.scheduled_at = new Date(Date.now() + delayMs).toISOString();
   } else {
     disposition = "failed";
     patch.status = "failed";
@@ -866,6 +971,20 @@ async function handleFailPostSyncJob(rest: Rest, auth: Auth, body: Record<string
       last_error: error,
       updated_at: now,
     });
+    if (httpStatus === 404) {
+      const payload = (job.payload as Record<string, unknown>) || {};
+      const filters: Record<string, string> = {};
+      if (payload.techhubId) filters.techhub_id = `eq.${Number(payload.techhubId)}`;
+      else if (payload.techhubUuid) filters.techhub_uuid = `eq.${String(payload.techhubUuid)}`;
+      if (Object.keys(filters).length > 0) {
+        await rest.patch("posts", filters, {
+          status: "deleted",
+          verification_status: "rejected",
+          sync_error: "not_found",
+          last_seen_at: now,
+        });
+      }
+    }
   }
 
   if (job.source_id) {
@@ -896,7 +1015,7 @@ async function handleGetPostSyncStatus(rest: Rest, auth: Auth) {
   requireAdmin(auth);
   const now = new Date();
   const since24h = new Date(now.getTime() - 24 * 3600 * 1000).toISOString();
-  const [queue, runs24h, activeLeaders, sessionJobs, sources] = await Promise.all([
+  const [queue, runs24h, leaderRows, sessionJobs, sources] = await Promise.all([
     rest.getJson<Array<{ status: string; type: string }>>("post_sync_jobs", {
       status: "in.(pending,claimed,running,retry_wait,session_required)",
       select: "id,status,type,scheduled_at,claimed_by_device,lease_until",
@@ -907,11 +1026,11 @@ async function handleGetPostSyncStatus(rest: Rest, auth: Auth) {
       select: "outcome,request_count,new_count,updated_count,http_status",
       limit: "1000",
     }),
-    rest.getJson<Array<{ claimed_by_device: string; lease_until: string }>>("post_sync_jobs", {
-      status: "in.(claimed,running)",
+    rest.getJson<Array<{ device_id: string | null; lease_until: string | null }>>("post_sync_leader_lease", {
+      singleton: "eq.true",
       lease_until: `gte.${now.toISOString()}`,
-      select: "claimed_by_device,lease_until,type",
-      limit: "20",
+      select: "device_id,lease_until,updated_at",
+      limit: "1",
     }),
     rest.getJson<Array<{ id: number }>>("post_sync_jobs", {
       status: "eq.session_required",
@@ -942,7 +1061,10 @@ async function handleGetPostSyncStatus(rest: Rest, auth: Auth) {
     serverTime: now.toISOString(),
     queue: byStatus,
     queueByType: byType,
-    activeLeaders: activeLeaders || [],
+    activeLeaders: (leaderRows || []).map((row) => ({
+      claimed_by_device: row.device_id,
+      lease_until: row.lease_until,
+    })),
     sessionRequiredCount: (sessionJobs || []).length,
     requestCount24h,
     newPosts24h,
@@ -993,7 +1115,14 @@ async function handleListNewPosts(rest: Rest, auth: Auth, body: Record<string, u
     limit: String(limit),
     offset: String(offset),
   };
-  params.or = `(and(verification_status.eq.verified,published_at.gte.${since}),and(verification_status.eq.verified,last_verified_at.gte.${since}))`;
+  const requestedStatus = auth.kind === "admin" && body.verificationStatus
+    ? String(body.verificationStatus)
+    : "verified";
+  if (!["unverified", "verified", "stale", "rejected"].includes(requestedStatus)) {
+    throw new HttpError("verificationStatus không hợp lệ.", 400);
+  }
+  params.verification_status = `eq.${requestedStatus}`;
+  params.or = `(published_at.gte.${since},last_seen_at.gte.${since},last_verified_at.gte.${since})`;
   if (auth.kind === "device" && auth.device?.username) {
     params.username = `eq.${auth.device.username}`;
   } else if (auth.kind === "admin" && body.username) {
@@ -1003,7 +1132,6 @@ async function handleListNewPosts(rest: Rest, auth: Auth, body: Record<string, u
   }
   if (auth.kind === "admin") {
     if (body.discoveredBy) params.discovered_by = `eq.${String(body.discoveredBy)}`;
-    if (body.verificationStatus) params.verification_status = `eq.${String(body.verificationStatus)}`;
     if (body.username) params.username = `eq.${String(body.username)}`;
   }
   const posts = await rest.getJson("posts", params);
@@ -1062,17 +1190,17 @@ async function handleEnqueueJobs(rest: Rest, auth: Auth, body: Record<string, un
 async function handleResubmitHint(rest: Rest, auth: Auth, body: Record<string, unknown>) {
   requireAdmin(auth);
   const hintId = Number(body.hintId);
-  if (!Number.isInteger(hintId)) throw new HttpError(400, "hintId không hợp lệ.");
+  if (!Number.isInteger(hintId)) throw new HttpError("hintId không hợp lệ.", 400);
   const hints = await rest.getJson<Array<Record<string, unknown>>>("post_hints", { id: `eq.${hintId}`, limit: "1" });
   const hint = hints?.[0];
-  if (!hint) throw new HttpError(404, "Không tìm thấy hint.");
+  if (!hint) throw new HttpError("Không tìm thấy hint.", 404);
   await rest.patch("post_hints", { id: `eq.${hintId}` }, { status: "pending", updated_at: new Date().toISOString(), attempt_count: 0, last_error: null });
   // Tạo job verify_hint mới.
   const job = await rest.postJson<Record<string, unknown>>(
     "post_sync_jobs",
     {
       type: "verify_hint",
-      source_id: hintId,
+      hint_id: hintId,
       username: hint.username ? String(hint.username) : null,
       payload: {
         techhubUuid: hint.techhub_uuid ? String(hint.techhub_uuid) : null,
@@ -1095,7 +1223,7 @@ async function handleResubmitHint(rest: Rest, auth: Auth, body: Record<string, u
 async function handleRetryJob(rest: Rest, auth: Auth, body: Record<string, unknown>) {
   requireAdmin(auth);
   const jobId = Number(body.jobId);
-  if (!Number.isInteger(jobId)) throw new HttpError(400, "jobId không hợp lệ.");
+  if (!Number.isInteger(jobId)) throw new HttpError("jobId không hợp lệ.", 400);
   const job = await rest.patchJson<Record<string, unknown>>(
     "post_sync_jobs",
     { id: `eq.${jobId}` },
@@ -1107,13 +1235,13 @@ async function handleRetryJob(rest: Rest, auth: Auth, body: Record<string, unkno
 async function handleCancelJob(rest: Rest, auth: Auth, body: Record<string, unknown>) {
   requireAdmin(auth);
   const jobId = Number(body.jobId);
-  if (!Number.isInteger(jobId)) throw new HttpError(400, "jobId không hợp lệ.");
+  if (!Number.isInteger(jobId)) throw new HttpError("jobId không hợp lệ.", 400);
   // PATCH không hỗ trợ OR/in filter dễ dàng; đọc trước rồi update các dòng đúng trạng thái.
   const rows = await rest.getJson<Array<{ id: number; status: string }>>("post_sync_jobs", { id: `eq.${jobId}`, select: "id,status", limit: "1" });
   const row = rows?.[0];
-  if (!row) throw new HttpError(404, "Không tìm thấy job.");
+  if (!row) throw new HttpError("Không tìm thấy job.", 404);
   if (!["pending", "retry_wait", "session_required"].includes(String(row.status))) {
-    throw new HttpError(400, `Không thể hủy job đang ở trạng thái ${row.status}.`);
+    throw new HttpError(`Không thể hủy job đang ở trạng thái ${row.status}.`, 400);
   }
   await rest.patch("post_sync_jobs", { id: `eq.${jobId}` }, { status: "cancelled", updated_at: new Date().toISOString() });
   return json({ ok: true });

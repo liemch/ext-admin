@@ -283,8 +283,16 @@ async function scanCommunityArticles(communitySlug, fromMonth, toMonth) {
     saved = stats.saved;
     communityColumnsMissing = stats.communityColumnsMissing;
   } catch (error) {
-    saveError = error.message;
-    console.error("[Background] Không lưu được bài chuyên mục:", error);
+    // Client key intentionally has no INSERT/UPDATE privilege after the
+    // post-sync hardening migration. Keep the freshly scanned list usable;
+    // the admin leader will persist it through post-sync-api.
+    if (/permission denied for table posts|42501/i.test(String(error?.message || error))) {
+      saveError = null;
+      console.info("[Background] Bỏ qua ghi cache phía user; leader admin sẽ đồng bộ.");
+    } else {
+      saveError = error.message;
+      console.error("[Background] Không lưu được bài chuyên mục:", error);
+    }
   }
 
   // Danh sách sau khi làm mới vẫn lấy toàn bộ cache, không thu hẹp theo tháng vừa quét.
@@ -535,6 +543,7 @@ const ADMIN_ONLY_ACTIONS = new Set([
   "engagementGetOpsStats",
   "engagementCleanupEvents",
   "engagementSetKillSwitch",
+  "engagementSetEnabled",
   "engagementRevokeDevice",
   // Post-sync admin (chỉ máy admin/leader).
   "postSyncGetStatus",
@@ -692,11 +701,8 @@ function handlePopupMessage(request, sendResponse) {
   }
 
   if (request.action === "setEngagementEnabled") {
-    EngagementWorker.ensureEngagementUserAllowed()
-      .then(() => EngagementWorker.saveEngagementSettings({ enabled: !!request.enabled }))
-      .then((settings) => sendResponse({ success: true, settings }))
-      .catch((error) => sendResponse({ success: false, error: error.message }));
-    return true;
+    sendResponse({ success: false, error: "Chế độ tương tác do admin quản lý cho toàn hệ thống." });
+    return false;
   }
 
   if (request.action === "runEngagementOnce") {
@@ -847,6 +853,15 @@ function handlePopupMessage(request, sendResponse) {
       deviceId: request.deviceId,
       username: request.username,
       revoked: request.revoked !== false,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementSetEnabled") {
+    EngagementClient.engagementAdmin("setEngagementEnabled", {
+      enabled: request.enabled !== false,
     })
       .then((result) => sendResponse({ success: true, ...result }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
@@ -1554,7 +1569,11 @@ async function fetchArticleDetail(articleUuid, credentials) {
     credentials: "include",
   });
   if (!response.ok) {
-    throw new Error(`Không lấy được nội dung bài (HTTP ${response.status})`);
+    const error = new Error(`Không lấy được nội dung bài (HTTP ${response.status})`);
+    error.httpStatus = response.status;
+    const retryAfter = Number(response.headers.get("Retry-After"));
+    if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfterSeconds = retryAfter;
+    throw error;
   }
   const data = await response.json();
   const article = data?.data || data;
@@ -2506,12 +2525,31 @@ async function syncMyPosts() {
     await chrome.storage.local.set({ userProfile: liveUserProfile });
   }
 
-  await supabase.syncUser(userProfile);
-  const result = await supabase.syncPosts(userProfile.username, (msg) => {
-    broadcastAutoReplyProgress(msg, "muted");
-  });
-  const posts = await supabase.getOwnPosts(userProfile.username, { limit: 100 });
-  return { ...result, posts, username: userProfile.username };
+  // User machines no longer write directly to `posts`; the admin leader owns
+  // persistence through post-sync-api. Fetch a live preview for this action.
+  const articles = [];
+  let page = 1;
+  let hasNext = true;
+  while (hasNext && page <= 50) {
+    broadcastAutoReplyProgress(`Đang tải trang ${page}...`, "muted");
+    const data = await supabase.fetchTechHubArticles(userProfile.username, page);
+    const rows = Array.isArray(data?.results) ? data.results : [];
+    articles.push(...rows);
+    hasNext = !!data?.next && rows.length > 0;
+    page += 1;
+  }
+  const posts = articles
+    .map((article) => supabase.buildTechHubPostPayload(article))
+    .filter(Boolean);
+  return {
+    created: 0,
+    updated: 0,
+    removed: 0,
+    readOnlyPreview: true,
+    message: "Đã tải bài từ TechHub. Admin leader sẽ lưu cache tập trung.",
+    posts,
+    username: userProfile.username,
+  };
 }
 
 async function getMyPostsForUi() {

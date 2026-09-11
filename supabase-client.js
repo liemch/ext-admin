@@ -870,7 +870,11 @@ class SupabaseClient {
       if (!response.ok) {
         const errorText = await response.text();
         console.error("[TechHub] API error:", errorText);
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const error = new Error(`HTTP error! status: ${response.status}`);
+        error.httpStatus = response.status;
+        const retryAfter = Number(response.headers.get("Retry-After"));
+        if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfterSeconds = retryAfter;
+        throw error;
       }
 
       const data = await response.json();

@@ -284,6 +284,12 @@ async function isKillSwitchOn(rest: Rest): Promise<boolean> {
   return value === true || value === "true" || value === 1 || value === "1";
 }
 
+async function isEngagementEnabled(rest: Rest): Promise<boolean> {
+  const value = await readSetting(rest, "engagement_enabled");
+  // Missing setting is enabled for backward compatibility and for new users.
+  return value === undefined || value === null || value === true || value === "true" || value === 1 || value === "1";
+}
+
 async function logEvent(
   rest: Rest,
   event: {
@@ -462,6 +468,7 @@ type PostRow = {
   title: string | null;
   status: string | null;
   published_at: string | null;
+  last_verified_at: string | null;
   created_at: string | null;
   community_slug: string | null;
 };
@@ -999,6 +1006,7 @@ async function handleHeartbeat(
       lastSeenAt: device.last_seen_at,
     },
     killSwitch,
+    engagementEnabled: await isEngagementEnabled(rest),
     pendingCount: pending?.length ?? 0,
     claimedCount: claimed?.length ?? 0,
     queuedTurns,
@@ -1039,7 +1047,7 @@ async function cancelTasksForInvalidPosts(rest: Rest, actorUsername: string) {
     }
     const st = String(p.status || "").toLowerCase();
     const vs = String(p.verification_status || "");
-    if (st !== "open" || vs === "rejected" || vs === "stale") badIds.add(tid);
+    if (st !== "open" || vs !== "verified") badIds.add(tid);
   }
   if (badIds.size === 0) return { cancelled: 0 };
   const cancelTaskIds = taskRows
@@ -1065,8 +1073,11 @@ async function cancelTasksForInvalidPosts(rest: Rest, actorUsername: string) {
 
 async function handleClaimTask(rest: Rest, auth: Auth) {
   const { device } = requireDevice(auth);
+  if (!(await isEngagementEnabled(rest))) {
+    return json({ task: null, engagementEnabled: false, killSwitch: false });
+  }
   if (await isKillSwitchOn(rest)) {
-    return json({ task: null, killSwitch: true });
+    return json({ task: null, engagementEnabled: true, killSwitch: true });
   }
   await assertUserActive(rest, device.username);
   const nowIso = new Date().toISOString();
@@ -1099,7 +1110,7 @@ async function handleClaimTask(rest: Rest, auth: Auth) {
   });
   const task = Array.isArray(rows) ? rows[0] : null;
   if (!task) {
-    return json({ task: null, killSwitch: false, serverTime: nowIso });
+    return json({ task: null, engagementEnabled: true, killSwitch: false, serverTime: nowIso });
   }
 
   let postTitle: string | null = null;
@@ -1603,6 +1614,7 @@ async function handleGetStatus(
     actor: username,
     serverTime: new Date().toISOString(),
     killSwitch: await isKillSwitchOn(rest),
+    engagementEnabled: await isEngagementEnabled(rest),
     online: true,
     pendingCount: pending?.length ?? 0,
     claimedCount: claimed?.length ?? 0,
@@ -1736,8 +1748,9 @@ async function handlePlanCampaign(
   const postParams: Record<string, string> = {
     status: "eq.open",
     verification_status: "eq.verified",
+    last_verified_at: "not.is.null",
     select:
-      "techhub_id,techhub_uuid,username,title,status,published_at,created_at,community_slug,verification_status",
+      "techhub_id,techhub_uuid,username,title,status,published_at,created_at,community_slug,verification_status,last_verified_at",
     order: "created_at.desc",
     limit: String(input.postScope.limit || 50),
   };
@@ -1751,12 +1764,16 @@ async function handlePlanCampaign(
   const cutoff = new Date(
     now.getTime() - (input.postScope.maxAgeDays || 60) * 24 * 3600 * 1000
   );
+  if (!input.postScope.excludePublished) {
+    postParams["published_at"] = `gte.${cutoff.toISOString()}`;
+  }
   let posts = await rest.getJson<PostRow[]>("posts", postParams);
   const lockedAuthors = await getLockedUsernames(rest);
   posts = (posts || []).filter((post) => {
     if (!post.techhub_uuid || !post.username) return false;
     if (lockedAuthors.has(post.username)) return false;
-    if (post.created_at && new Date(post.created_at) < cutoff) return false;
+    if (!post.last_verified_at) return false;
+    if (!input.postScope.excludePublished && (!post.published_at || new Date(post.published_at) < cutoff)) return false;
     return true;
   });
   if (posts.length === 0) {
@@ -2673,6 +2690,7 @@ async function handleGetOpsStats(rest: Rest, auth: Auth) {
   return json({
     serverTime: new Date().toISOString(),
     killSwitch: await isKillSwitchOn(rest),
+    engagementEnabled: await isEngagementEnabled(rest),
     tasks7d: total,
     successRate7d: total ? Math.round((succeeded / total) * 1000) / 10 : null,
     byStatus,
@@ -2728,6 +2746,35 @@ async function handleSetKillSwitch(
     });
   }
   return json({ ok: true, killSwitch: enabled });
+}
+
+async function handleSetEngagementEnabled(
+  rest: Rest,
+  auth: Auth,
+  body: Record<string, unknown>
+) {
+  requireAdmin(auth);
+  const enabled = body.enabled !== false;
+  const existing = await rest.getJson<Array<{ key: string }>>("settings", {
+    key: "eq.engagement_enabled",
+    select: "key",
+    limit: "1",
+  });
+  if (firstRow(existing)) {
+    const updated = await rest.patch("settings", { key: "eq.engagement_enabled" }, {
+      value: enabled,
+      updated_at: new Date().toISOString(),
+    });
+    if (!updated.ok) throw new HttpError("Không cập nhật được chế độ tương tác.", 500);
+  } else {
+    const created = await rest.post("settings", {
+      key: "engagement_enabled",
+      value: enabled,
+      description: "Admin controls engagement globally; users cannot opt in or out",
+    });
+    if (!created.ok) throw new HttpError("Không tạo được cấu hình tương tác.", 500);
+  }
+  return json({ ok: true, engagementEnabled: enabled });
 }
 
 async function handleRevokeDevice(
@@ -2846,6 +2893,8 @@ Deno.serve(async (req) => {
         return await handleCleanupEvents(rest, auth, body);
       case "setKillSwitch":
         return await handleSetKillSwitch(rest, auth, body);
+      case "setEngagementEnabled":
+        return await handleSetEngagementEnabled(rest, auth, body);
       case "revokeDevice":
         return await handleRevokeDevice(rest, auth, body);
       default:
