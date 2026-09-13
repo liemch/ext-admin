@@ -1,9 +1,10 @@
 # post-sync-api — Edge Function đồng bộ bài viết
 
 Edge Function thứ tư, tách riêng khỏi `engagement-api` theo
-[PLAN_POST_SYNC.md](../../../PLAN_POST_SYNC.md). Quản lý hint, sync job, lease,
-run history và quyền admin. Việc gọi TechHub vẫn chạy trên máy admin (leader)
-vì cookie/CSRF chỉ tồn tại trong trình duyệt.
+[PLAN_POST_SYNC.md](../../../PLAN_POST_SYNC.md). Luồng hiện hành cho phép mỗi user
+tự lấy bài của chính mình từ TechHub rồi lưu an toàn bằng device token. Các action
+hint, sync job, lease và run history vẫn được giữ để tương thích/bảo trì, nhưng
+không còn là đường chạy mặc định trong popup.
 
 ## Deploy
 
@@ -17,8 +18,9 @@ dễ vận hành).
 
 ## Phân quyền
 
-- `Authorization: Bearer <device-token>` → device action: `submitPostHint` +
-  `listNewPosts` (chỉ trả về bài `verification_status = verified` của chính device).
+- `Authorization: Bearer <device-token>` → device action: `saveMyScannedPosts`,
+  `reconcileMyScannedPosts`, `submitPostHint` và `listNewPosts` (chỉ ghi/đọc/xóa
+  bài của chính device).
   Device phải đã đăng ký qua `engagement-api` (bảng `engagement_devices`) và chưa bị thu hồi.
 - `Authorization: Bearer <ADMIN_TOKEN>` → admin action. Các action leader
   (`claim/start/extend/complete/fail`) đồng thời cần `deviceId` và
@@ -29,6 +31,15 @@ dễ vận hành).
 ## Actions
 
 ### Device
+
+- `saveMyScannedPosts` — Nhận tối đa 200 bài mỗi lô. Server lấy username từ
+  device token, bỏ payload sai tác giả, chặn ghi đè bài thuộc user khác và upsert
+  các bài hợp lệ vào `posts` với `verification_status = verified`.
+
+- `reconcileMyScannedPosts` — Chỉ gọi sau khi client đã tải đầy đủ mọi trang.
+  Server tự lấy username từ device token và xóa các dòng `posts` của đúng user
+  không còn trong danh sách ID TechHub. Danh sách rỗng hợp lệ và sẽ xóa toàn bộ
+  bài của user; vì vậy client dừng trước action này nếu response TechHub bất thường.
 
 - `submitPostHint` — Gửi tín hiệu bài mới từ hoạt động tự nhiên.
 
@@ -50,6 +61,8 @@ dễ vận hành).
   - `{ "scope": "feed", "communitySlug": "cai-tien-moi-ngay" }`
   - `{ "scope": "user", "username": "user01" }`
   - `{ "scope": "due_users" }`
+- `saveScannedPosts` — Admin quét tay và upsert ngay kết quả vào `posts`; không
+  đi qua cooldown/hàng đợi leader.
 
 ### Leader
 

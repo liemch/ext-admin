@@ -7,22 +7,29 @@ Chrome Extension (MV3) hỗ trợ quản lý bài viết trên [TechHub](https:/
 - Capture phiên TechHub (cookie / CSRF) trong background
 - Quét bài của user (bỏ bài đã `published_at`) → lưu Supabase
 - Hiển thị điểm bài: `1 cmt = 0.2` · `1 vote = 0.1` · `1 medal = 6`
-- **Tương tác chéo giữa các user**: hàng đợi trung tâm (`engagement-api`) chia task vote/comment
-  cho từng máy theo campaign — phân phối công bằng, cooldown, giới hạn ngày, claim atomic;
-  chạy nền im lặng, hết phiên TechHub thì dừng và báo đăng nhập lại trong panel
-- **Kịch bản thảo luận A/B**: import JSON 2–4 turn (hoặc format cũ `discussion`/`answer`),
-  máy khách và máy chủ bài thay phiên comment/reply nối chuỗi, admin sửa và chạy lại từng turn
+- **Tương tác chéo giữa các user**: admin điều phối pool, quota và cooldown; máy user
+  chỉ nhận task được giao và xem giá trị đã đóng góp/nhận lại. Mỗi task thành công cộng
+  điểm; đủ mốc nhận một lượt Ultra để user tự chọn bài của mình cần ưu tiên. Pool
+  chỉ chạy khi có ít nhất 2 thành viên hợp lệ và mỗi người có bài verified trong `posts`
+- **Kịch bản thảo luận A/B**: admin copy prompt sang ChatGPT/Gemini rồi nhập JSON
+  chuỗi ngẫu nhiên 2–3 turn. User thường cũng có thể tạo chuỗi cho bài verified của
+  chính mình; server giữ quota admin và tự chọn user khác đang online làm visitor
 - **AI trả lời comment**: đọc nội dung bài + chuỗi hội thoại → NVIDIA gen → lưu `reply_drafts` → reply
 - **AI tự thảo luận**: gen comment gốc trên chính bài viết, đếm mục tiêu từng bài,
   chạy ngẫu nhiên mỗi 1–5 phút → lưu `discussion_drafts`
-- **Auto comment** trên bài của mình hoặc nhập ID bài thành viên khác, tự chia nhịp để hoàn thành đủ số lượng trong thời gian đã chọn, chạy ngay hoặc hẹn giờ; có thể tự xóa cuốn chiếu và xem nhật ký xóa từng comment
+- **Auto comment** chọn cùng lúc tối đa 5 bài của mình (hoặc nhập một ID bài thành viên khác), tạo job riêng cho từng bài và chạy luân phiên để hoàn thành đủ số lượng trong thời gian đã chọn; hỗ trợ chạy ngay/hẹn giờ, tự xóa cuốn chiếu và nhật ký xóa từng comment
 - **Quản lý người dùng**: xem danh sách user dùng extension, cấp/thu quyền admin,
   khóa/mở khóa (user bị khóa không mở được panel), xem số bài đã lưu và comment hôm nay
-- **Hẹn xóa bài** qua `DELETE /api/v1/articles/{uuid}/`
-- **Đồng bộ bài viết (post-sync)** — máy admin/leader quét feed và verify hint tự động;
-  máy user chỉ gửi gợi ý nhẹ khi mở bài (không quét feed, không gây tải TechHub từ máy người dùng).
-  Campaign tương tác chéo chỉ chọn bài `verification_status = verified`, và tự hủy
-  các task nhắm vào bài đã đóng/xóa/rejected. Chi tiết: [`PLAN_POST_SYNC.md`](PLAN_POST_SYNC.md).
+- **Hẹn xóa bài**: chọn cùng lúc tối đa 5 bài, mỗi bài có lịch và trạng thái riêng;
+  “Xóa ngay” chỉ cho một bài để hạn chế thao tác nhầm
+- **Đồng bộ bài viết đơn giản** — mỗi user bấm **Đồng bộ bài** trong menu Bài viết
+  để lấy bài của chính mình từ TechHub và lưu vào `posts`; extension cũng tự chạy
+  im lặng mỗi 20 phút. Server đối chiếu tác giả với device token trước khi ghi và
+  đánh dấu bài `verified`; sau một lượt quét đầy đủ, bài đã xóa trên TechHub cũng
+  được xóa khỏi `posts`. Lượt quét lỗi hoặc thiếu trang tuyệt đối không chạy bước xóa.
+  User không cần hiểu leader, hint hay hàng đợi.
+  Campaign tương tác chéo chỉ chọn bài `verification_status = verified`. Chi tiết:
+  [`PLAN_POST_SYNC.md`](PLAN_POST_SYNC.md).
 - UI dashboard: sidebar tính năng, bảng bài viết có tìm kiếm, tự co gọn trong side panel;
   mở full tab bằng nút "Mở dạng tab"
 
@@ -69,9 +76,10 @@ API key NVIDIA: https://build.nvidia.com/settings/api-keys
 
 ### 2. Setup Supabase
 
-**Cách nhanh (khuyên dùng):** chạy script một phát — deploy 3 edge functions
+**Cách nhanh (khuyên dùng):** chạy script một phát — deploy 4 edge functions
 (`nvidia-proxy` che NVIDIA key, `admin-api` quản lý user, `engagement-api` hàng đợi
-tương tác chéo), set secrets, áp migration `011` (chặn anon tự cấp `is_admin`) và
+tương tác chéo, `post-sync-api` lưu bài cá nhân), set secrets, áp migration `011`
+(chặn anon tự cấp `is_admin`) và
 `012` (hàng đợi tương tác), test và in sẵn khối `config.js` (bản admin đủ token,
 bản user chỉ có URL):
 
@@ -90,9 +98,10 @@ bash scripts/setup-supabase.sh
 7. `supabase/migrations/011_restrict_users_writes.sql` — **bắt buộc**: chặn anon
    tự cấp `is_admin` / xóa user (cần deploy `admin-api` trước — script trên làm sẵn)
 8. `supabase/migrations/012_cross_user_engagement.sql` — hàng đợi tương tác chéo
-9. `supabase/migrations/013_post_sync.sql` và `20260911100410_post_sync_hardening.sql` — đồng bộ bài, khóa quyền client và leader lease
    (`engagement_*`, `discussion_threads/turns`) + RPC claim atomic (cần deploy
    `engagement-api` — xem [`supabase/functions/engagement-api/README.md`](supabase/functions/engagement-api/README.md))
+9. `supabase/migrations/013_post_sync.sql` và `20260911100410_post_sync_hardening.sql` — đồng bộ bài, khóa quyền client và leader lease
+10. `supabase/migrations/014_engagement_user_pool.sql` — policy admin, pool, điểm và Ultra
 
 Chi tiết bảng / kiểm tra: xem [`supabase/README.md`](supabase/README.md).
 
@@ -111,12 +120,17 @@ const ENGAGEMENT_API_CONFIG = {
   url: "https://<project-ref>.supabase.co/functions/v1/engagement-api",
   adminToken: "", // máy admin điền ADMIN_TOKEN, máy user để trống
 };
+
+const POST_SYNC_API_CONFIG = {
+  url: "https://<project-ref>.supabase.co/functions/v1/post-sync-api",
+  adminToken: "", // user thường chỉ cần URL; dùng chung device token tự sinh
+};
 ```
 
 Phân quyền theo bảng `users`:
 
 - `is_admin = true`: thấy toàn bộ menu (Tự động hóa, Bài người khác, Nguy hiểm, Người dùng)
-- `is_admin = false`: chỉ thấy Bài viết + Thống kê + Tương tác (bật/tắt máy mình, xem tiến độ)
+- `is_admin = false`: chỉ thấy Bài viết + Thống kê + Tương tác (xem tiến độ, dùng Ultra)
 - `is_locked = true`: bị chặn khỏi extension
 
 ## Cách dùng
@@ -127,10 +141,10 @@ Phân quyền theo bảng `users`:
 | **Người dùng** | Xem danh sách user, cấp/thu quyền admin, khóa/mở khóa, xóa user |
 | **AI trả lời** | Bật tự trả lời / chạy 1 lần (NVIDIA hoặc template), phạm vi tất cả bài hoặc chỉ bài đã chọn |
 | **AI thảo luận** | Bật / chạy 1 lần gen comment độc lập, có phạm vi như trên |
-| **Auto comment** | Chọn bài → nhập số cmt → Bắt đầu |
-| **Hẹn xóa bài** | Nhập `techhub_id` + thời gian, hoặc Xóa ngay |
-| **Tương tác** (mọi user) | Bật hàng đợi → máy tự nhận task vote/comment khi campaign chạy; hết phiên thì đăng nhập lại theo banner |
-| **Tương tác** (admin) | Tạo campaign, import kịch bản JSON, xem task/threads, vận hành (kill switch, thiết bị, dọn log) |
+| **Auto comment** | Chọn tối đa 5 bài → nhập số cmt mỗi bài → chạy ngay hoặc hẹn giờ |
+| **Hẹn xóa bài** | Chọn 1–5 bài + thời gian dùng chung; Xóa ngay yêu cầu đúng một bài |
+| **Tương tác** (mọi user) | Tạo chuỗi cho bài của mình, xem đóng góp/nhận lại và chọn bài dùng Ultra |
+| **Tương tác** (admin) | Điều phối pool/user, copy prompt + nhập JSON 2–3 lượt, Push comment, xử lý lỗi/lease |
 
 Chi tiết kiến trúc và phân phối task: xem [`PLAN_CROSS_USER_ENGAGEMENT.md`](PLAN_CROSS_USER_ENGAGEMENT.md).
 

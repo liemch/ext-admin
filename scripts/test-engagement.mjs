@@ -60,7 +60,6 @@ const NEW_FORMAT = [
       { actor: "A", content: "Quà về thế này chắc backlog tăng rồi anh." },
       { actor: "B", content: "Haha backlog lúc nào cũng có em." },
       { actor: "A", content: "Ưu tiên theo impact trước anh nhỉ?" },
-      { actor: "B", content: "Chuẩn em, xử lý impact cao trước." },
     ],
   },
   {
@@ -76,7 +75,7 @@ const NEW_FORMAT = [
 let result = di.validateThreads(JSON.stringify(NEW_FORMAT));
 assert(result.errors.length === 0, `format turns hợp lệ không lỗi (nhận ${JSON.stringify(result.errors)})`);
 assert(result.threads.length === 2, "parse được 2 thread");
-assert(result.threads[0].turns.length === 4, "thread 1 có 4 turn");
+assert(result.threads[0].turns.length === 3, "thread 1 có 3 turn");
 assert(result.threads[0].actors.A === "visitor", "actors.A = visitor");
 assert(result.threads[0].actors.B === "author", "actors.B = author");
 
@@ -99,11 +98,16 @@ const expectError = (input, snippet, label) => {
 expectError({ not: "array" }, "mảng", "từ chối JSON không phải mảng");
 expectError([], "rỗng", "từ chối mảng rỗng");
 expectError("not json{{", "không hợp lệ", "từ chối JSON sai cú pháp");
-expectError([{ turns: [{ actor: "A", content: "một" }] }], "2 đến 4", "từ chối 1 turn");
+expectError([{ turns: [{ actor: "A", content: "một" }] }], "2 hoặc 3", "từ chối 1 turn");
 expectError(
-  [{ turns: [1, 2, 3, 4, 5].map(() => ({ actor: "A", content: "x" })) }],
-  "2 đến 4",
-  "từ chối 5 turn"
+  [{ turns: [
+    { actor: "A", content: "x" },
+    { actor: "B", content: "y" },
+    { actor: "A", content: "z" },
+    { actor: "B", content: "w" },
+  ] }],
+  "2 hoặc 3",
+  "từ chối 4 turn"
 );
 expectError(
   [{ turns: [{ actor: "B", content: "x" }, { actor: "A", content: "y" }] }],
@@ -197,7 +201,7 @@ const htmlIds = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
 const uiIds = [...ui.matchAll(/\$\("([^"]+)"\)/g)].map((m) => m[1]);
 const missingIds = [...new Set(uiIds)].filter((id) => !htmlIds.has(id));
 assert(missingIds.length === 0, `mọi $("...") trong engagement-ui.js đều có trong popup.html (thiếu: ${missingIds.join(", ") || "không"})`);
-for (const id of ["sessionBanner", "engagementEnabled", "threadJsonInput", "campaignsList", "threadsList", "tasksList", "devicesList", "killSwitchToggle"]) {
+for (const id of ["sessionBanner", "postsUltraNotice", "threadJsonInput", "campaignsList", "threadsList", "tasksList", "devicesList", "killSwitchToggle"]) {
   assert(htmlIds.has(id), `popup.html có #${id}`);
 }
 assert(html.includes("discussion-import.js"), "popup.html nạp discussion-import.js");
@@ -208,7 +212,63 @@ assert(!html.includes("crossInteractionEnabled"), "đã gỡ switch tương tác
 section("Nhất quán background.js ↔ engagement-api");
 
 const background = read("background.js");
+const popup = read("popup.js");
 const edge = read("supabase/functions/engagement-api/index.ts");
+assert((background.match(/const cfg = validateNvidiaConfig\(\);/g) || []).length === 3,
+  "các luồng tạo mẫu chấp nhận NVIDIA proxy thay vì bắt buộc apiKey direct");
+assert(!background.includes('throw new Error("Chưa cấu hình NVIDIA_CONFIG.apiKey trong config.js")'),
+  "background không còn kiểm tra cứng NVIDIA apiKey");
+assert(background.includes("async function getFreshTechHubSession()"),
+  "có helper tự phục hồi profile và CSRF trước khi tạo mẫu");
+assert((background.match(/await getFreshTechHubSession\(\)/g) || []).length >= 6,
+  "luồng tạo mẫu và hẹn xóa đều làm mới phiên TechHub");
+assert(background.includes("async function executeDeletePost(item)"),
+  "hẹn xóa bài dùng chung cơ chế phục hồi phiên");
+assert(background.includes("previous.csrfToken"),
+  "request GET sau service worker restart không ghi đè mất CSRF đã lưu");
+assert(background.includes("const MAX_AUTO_COMMENT_JOBS = 5"),
+  "auto comment giới hạn tối đa năm job");
+assert(background.includes("async function rotateAutoCommentJob"),
+  "các job auto comment chạy luân phiên");
+assert(background.includes("autoCommentJobs"),
+  "danh sách job auto comment được lưu để phục hồi sau reload");
+assert(background.includes("function appendAutoCommentJob(nextJob)"),
+  "thêm job mới vẫn giữ lịch sử job đã hoàn tất trong cùng lô");
+assert(!background.includes("autoCommentJobs = autoCommentJobs.filter((job) => job.active);"),
+  "không xóa job vừa hoàn tất khi bài kế tiếp được thêm nhanh");
+assert(background.includes("result.autoCommentJobs.filter((job) => job?.jobId).slice(-MAX_AUTO_COMMENT_JOBS)"),
+  "reload service worker vẫn giữ tối đa năm trạng thái job gần nhất");
+assert(popup.includes("activeJobCount >= maxJobs"),
+  "UI khóa tạo job khi đủ giới hạn");
+assert(popup.includes("function renderAutoCommentJobsLog"),
+  "UI hiển thị log riêng cho các job auto comment");
+assert(read("popup.html").includes('id="autoCommentJobsLog"'),
+  "popup có vùng log job auto comment");
+assert(background.includes("const MAX_AUTO_COMMENT_SCHEDULES = 5"),
+  "hỗ trợ tối đa năm lịch auto comment độc lập");
+assert(background.includes("autoCommentStartAlarmName(scheduleId)"),
+  "mỗi lịch auto comment có alarm riêng");
+assert(background.includes("queueScheduledAutoCommentStart(scheduleId)"),
+  "các lịch cùng giờ được kích hoạt tuần tự, không ghi đè state");
+assert(/id="autoCommentOwnPostId"[^>]*multiple/.test(html),
+  "Auto comment cho phép chọn nhiều bài trong một lần");
+assert(html.includes('class="post-picker-source"'),
+  "các form dùng bộ chọn bài lớn thay cho dropdown nhỏ mặc định");
+assert(popup.includes("function setupPostPickers()") && popup.includes("function renderPostPicker(selectEl)"),
+  "bộ chọn bài hỗ trợ tìm kiếm, hiển thị và đồng bộ lựa chọn");
+assert(popup.includes('max: 5, search: "Tìm bài để comment…"') &&
+  popup.includes('max: 5, search: "Tìm bài cần xóa…"'),
+  "bộ chọn comment/xóa vẫn giới hạn tối đa 5 bài");
+assert(popup.includes("let autoCommentSelectedTechhubIds = []"),
+  "UI lưu danh sách bài Auto comment đã chọn");
+assert(popup.includes("function getAutoCommentTargets()"),
+  "UI chuẩn hóa lô tối đa năm bài Auto comment");
+assert(popup.includes("for (const target of targets)"),
+  "chạy ngay và hẹn giờ lần lượt tạo job cho từng bài trong lô");
+assert(popup.includes('status === "activated" ? "Đã kích hoạt"'),
+  "UI phân biệt lịch đang chờ, đã kích hoạt và lỗi");
+assert(popup.includes("việc chọn bài mới phải luôn đổi mục tiêu của form"),
+  "chọn bài thứ hai không bị khóa bởi job hoặc lịch thứ nhất");
 const edgeActions = new Set([...edge.matchAll(/case "([a-zA-Z]+)":/g)].map((m) => m[1]));
 const usedAdmin = [...background.matchAll(/engagementAdmin\("([a-zA-Z]+)"/g)].map((m) => m[1]);
 const usedDirect = [...background.matchAll(/callEngagementApi\("([a-zA-Z]+)"/g)].map((m) => m[1]);
@@ -283,6 +343,138 @@ assert(
 );
 assert(edge.includes("RATE_LIMIT_MAX"), "edge function có giới hạn tốc độ");
 assert(edge.includes("assertUserActive"), "edge function chặn tài khoản bị khóa");
+
+// ------------------------------------------------- 7. mutual pool + admin policy + Ultra
+section("Pool tương tác tự cân bằng");
+
+const poolMigration = read("supabase/migrations/014_engagement_user_pool.sql");
+const expandedThreadQuotaMigration = read("supabase/migrations/015_expand_discussion_thread_quota.sql");
+assert(
+  poolMigration.includes("CREATE TABLE IF NOT EXISTS public.engagement_preferences"),
+  "migration 014 tạo policy theo user"
+);
+for (const field of [
+  "receive_post_limit",
+  "discussions_per_post",
+  "repeat_interval_minutes",
+  "daily_contribution_cap",
+]) {
+  assert(poolMigration.includes(field), `preferences có ${field}`);
+}
+assert(
+  poolMigration.includes("REVOKE ALL ON public.engagement_preferences FROM anon, authenticated"),
+  "preferences chỉ được ghi/đọc qua engagement-api"
+);
+assert(edge.includes("ensureMutualPoolTasks"), "heartbeat có bộ tự bổ sung pool task");
+assert(edge.includes("if (participants.length < 2)"), "pool cần ít nhất 2 thành viên hợp lệ");
+assert(edge.includes("activeUserSet.has(name)"), "pool chỉ nhận thành viên còn trong users và không bị khóa");
+assert(edge.includes("verifiedPostOwners.has(name)"), "mỗi thành viên pool phải có bài verified trong posts");
+assert(edge.includes("participantSet.has(post.username)"), "pool không lấy bài của người ngoài danh sách thành viên");
+assert(!edge.includes("externalPostBudget"), "đã bỏ ngân sách bài ngoài pool");
+assert(edge.includes("target === actorUsername"), "task tự tương tác bị hủy trước khi claim");
+assert(edge.includes('status: "in.(pending,claimed)"'), "task cũ sai thành viên bị hủy cả pending và claimed");
+assert(!edge.includes('case "updatePreferences"'), "API không cho user tự cập nhật pool");
+assert(edge.includes('case "setPoolSettings"'), "API cho admin điều phối pool");
+assert(edge.includes('case "setUserPolicy"'), "API cho admin bật/tắt riêng user");
+assert(edge.includes('case "redeemUltra"'), "API cho user dùng lượt Ultra đã kiếm được");
+assert(edge.includes('case "submitOwnThreads"'), "API cho user gửi chuỗi của bài mình");
+assert(
+  edge.includes("discussionsPerPost, 40, 1, 50") &&
+    edge.includes("discussions_per_post: clampPreference(discussionsPerPost, 40, 1, 50)"),
+  "API cho admin cấu hình tối đa 50 chuỗi/bài, mặc định 40"
+);
+assert(
+  background.includes("Math.min(50, Math.max(1, Number(heartbeat?.preferences?.discussions_per_post) || 40))"),
+  "prompt của user nhận quota đến 50 chuỗi thay vì bị khóa ở 10"
+);
+assert(
+  html.includes('id="poolDiscussionsPerPost" type="number" min="1" max="50" value="40"'),
+  "UI cấu hình chuỗi/bài cho phép 1–50 và khởi tạo 40"
+);
+assert(
+  expandedThreadQuotaMigration.includes("CHECK (discussions_per_post BETWEEN 1 AND 50)") &&
+    expandedThreadQuotaMigration.includes("ALTER COLUMN discussions_per_post SET DEFAULT 40"),
+  "migration 015 nới quota lên 50 và đặt mặc định 40"
+);
+assert(
+  !expandedThreadQuotaMigration.includes("UPDATE public.engagement_preferences"),
+  "migration 015 không tự tăng quota của các user đang chạy"
+);
+assert(edge.includes("author_username: `eq.${device.username}`"), "server khóa thread user vào bài của chính họ");
+assert(edge.includes("Chưa có user khác online"), "không giả chuỗi khi chưa có actor khác");
+assert(edge.includes('case "pushComments"'), "API cho admin tạo Push comment");
+assert(edge.includes('case "listBoosts"'), "API cho admin theo dõi Push/Ultra đang chờ");
+assert(edge.includes("dailyCapReached"), "claim tôn trọng quota đóng góp do admin đặt");
+assert(edge.includes('event: "reconcile_required"'), "thread không advance mù khi thiếu comment ID");
+assert(!clientSrc.includes("engagementUpdatePreferences"), "client không còn action user sửa preferences");
+assert(!background.includes('request.action === "saveMyEngagementPreferences"'), "background không nhận setting pool từ user");
+assert(!ui.includes("saveMyPreferences"), "UI không cho user tự sửa pool");
+assert(poolMigration.includes("record_engagement_reward"), "migration cộng điểm idempotent theo task");
+assert(poolMigration.includes("redeem_engagement_ultra"), "migration đổi Ultra nguyên tử");
+assert(poolMigration.includes("engagement_boost_requests"), "migration có hàng đợi Push/Ultra");
+assert(read("scripts/setup-supabase.sh").includes("014_engagement_user_pool.sql"), "setup mới áp migration 014");
+for (const id of [
+  "engagementContributedToday",
+  "engagementReceivedToday",
+  "engagementUltraProgress",
+  "postsUltraNotice",
+  "myDiscussionPostId",
+  "autoCommentOwnPostId",
+  "copyMyDiscussionPromptBtn",
+  "myDiscussionJsonInput",
+  "submitMyDiscussionBtn",
+  "poolReceivePostLimit",
+  "poolDiscussionsPerPost",
+  "poolRepeatInterval",
+  "poolContributionCap",
+  "poolUltraThreshold",
+  "copyThreadPromptBtn",
+  "pushCommentsBtn",
+]) {
+  assert(html.includes(`id="${id}"`), `popup có ${id}`);
+}
+const postsPanelStart = html.indexOf('data-panel="posts"');
+const dashboardPanelStart = html.indexOf('<section class="panel hidden" data-panel="dashboard">');
+const myDiscussionStart = html.indexOf('id="myDiscussionPostId"');
+const myPostsListStart = html.indexOf('id="myPostsList"');
+assert(
+  postsPanelStart >= 0 && myDiscussionStart > postsPanelStart && myDiscussionStart < dashboardPanelStart,
+  "form tạo thảo luận của user nằm trong menu Bài viết"
+);
+assert(
+  myDiscussionStart < myPostsListStart,
+  "form tạo thảo luận nằm trước danh sách dài để luôn nhìn thấy"
+);
+assert(!popup.includes('data-post-action="reply"'), "danh sách bài không còn nút AI trả lời");
+assert(!popup.includes('data-post-action="discussion"'), "danh sách bài không còn nút AI thảo luận");
+assert(!popup.includes('data-select-id="${id}"'), "danh sách bài không còn nút Chọn dùng chung");
+assert(
+  /class="nav-item admin-only"\s+type="button"\s+data-panel="engagement"/.test(html),
+  "menu Tương tác chéo chỉ hiển thị cho admin"
+);
+assert(
+  html.includes('class="panel hidden admin-only" data-panel="engagement"'),
+  "panel Tương tác chéo bị khóa với user thường"
+);
+assert(popup.includes('data-ultra-post-id="${id}"'), "bài verified có nút dùng Ultra khi còn lượt");
+assert(popup.includes("availableUltraCredits > 0"), "UI chỉ render Ultra khi còn lượt");
+assert(ui.includes("globalThis.setPostsUltraCredits?.(ultraCredits)"), "trạng thái pool cập nhật lượt Ultra sang Bài viết");
+assert(ui.includes("Chờ thành viên khác"), "UI nói rõ khi pool chưa đủ thành viên");
+assert(!html.includes('id="engagementUltraPostId"'), "đã bỏ ô nhập ID Ultra khỏi Tương tác chéo");
+assert(!html.includes('id="redeemEngagementUltraBtn"'), "đã bỏ nút Ultra khỏi Tương tác chéo");
+
+// ------------------------------------------------- 8. Hẹn xóa nhiều bài
+section("Hẹn xóa nhiều bài");
+assert(
+  /<select id="deleteTechhubId"[^>]*multiple/.test(html),
+  "form hẹn xóa dùng danh sách chọn nhiều"
+);
+assert(html.includes('id="deleteSelectedLabel"'), "form hiển thị các bài đã chọn để xóa");
+assert(popup.includes("let deleteSelectedTechhubIds = []"), "UI giữ danh sách bài hẹn xóa độc lập");
+assert(popup.includes("deleteSelectedTechhubIds = ids.slice(0, 5)"), "UI giới hạn tối đa 5 bài hẹn xóa");
+assert(popup.includes("for (const techhubId of techhubIds)"), "mỗi bài được tạo một lịch xóa riêng");
+assert(popup.includes("Xóa ngay yêu cầu chọn đúng 1 bài"), "xóa ngay không cho xóa hàng loạt ngoài ý muốn");
+assert(background.includes('chrome.storage.local.get("scheduledDeletes")'), "background lưu được danh sách nhiều lịch xóa");
 
 // ------------------------------------------------- summary
 console.log(`\n${passed} passed, ${failed} failed.`);

@@ -5,7 +5,7 @@
 //   - JSON phải là mảng, tối đa 50 thread.
 //   - Format chuẩn: { name?, actors?, turns: [{ actor: A|B, content }] }.
 //   - Format cũ: { discussion, answer } → chuyển thành 2 turn A→B.
-//   - 2–4 turn, bắt đầu bằng A, luân phiên A/B, content 1–2000 ký tự.
+//   - 2–3 turn, bắt đầu bằng A, luân phiên A/B, content 1–2000 ký tự.
 //   - actors.A = visitor (user được phân công), actors.B = author (chủ bài).
 //   - Giải mã HTML entity (&#x20; &#39; &amp; ...) trước khi kiểm tra độ dài.
 
@@ -83,9 +83,9 @@
         `${label}: thiếu mảng turns (hoặc dùng format cũ discussion/answer).`
       );
     }
-    if (turnsRaw.length < 2 || turnsRaw.length > 4) {
+    if (turnsRaw.length < 2 || turnsRaw.length > 3) {
       throw new Error(
-        `${label}: số turn phải từ 2 đến 4 (nhận ${turnsRaw.length}).`
+        `${label}: số turn phải là 2 hoặc 3 (nhận ${turnsRaw.length}).`
       );
     }
     const turns = turnsRaw.map((turn, turnIdx) => {

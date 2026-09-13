@@ -482,9 +482,8 @@
     if (!locked) return { ran: false, reason: "locked" };
 
     const startedAt = new Date().toISOString();
-    const deviceId = await getLeaderDeviceId();
-
     try {
+      const deviceId = await getLeaderDeviceId();
       // Enqueue due feeds / due_users mỗi 5 phút wake (dù claim đã có sẵn).
       try {
         await PostSyncClient.requestPostSync("due_users").catch(() => null);
@@ -613,6 +612,23 @@
         });
       } catch (error) {
         broadcast(`completePostSyncJob lỗi: ${error.message}`, "error");
+        await savePostSyncStatus({
+          lastRunAt: startedAt,
+          lastOutcome: "error",
+          lastMessage: `Không lưu được kết quả job #${job.id}: ${error.message}`,
+          lastError: error.message,
+          lastHttpStatus: error.httpStatus || null,
+          leaderDeviceId: deviceId,
+          leaderActive: true,
+          leaseExpiry: null,
+        });
+        return {
+          ran: true,
+          outcome: "fail",
+          jobType: job.type,
+          username: job.username || null,
+          error: error.message,
+        };
       }
 
       await savePostSyncStatus({
@@ -629,7 +645,12 @@
         lastReconcileAt: job.type === "user_reconcile" ? startedAt : status.lastReconcileAt,
       });
       broadcast(`✔ ${job.type} thành công.`, "success");
-      return { ran: true, outcome: "success", jobType: job.type };
+      return {
+        ran: true,
+        outcome: "success",
+        jobType: job.type,
+        username: job.username || null,
+      };
     } finally {
       await releasePostSyncLock();
     }
@@ -710,10 +731,15 @@
         clearAlarms();
         return { ok: true, leader: false };
       }
+      // Service worker mới không thể còn giữ tác vụ của instance cũ; dọn lock
+      // lưu dở để leader không phải chờ hết TTL 15 phút sau khi reload extension.
+      workerRunning = false;
+      await chrome.storage.local.remove(POST_SYNC_LOCK_KEY);
       scheduleAlarms();
       // Đăng ký leader device với backend qua 1 lượt enqueue + claim để backend ghi nhận.
       await enqueueScheduledJobs().catch(() => null);
-      return { ok: true, leader: true };
+      const run = await runLeaderCycle({ manual: true });
+      return { ok: true, leader: true, run };
     } catch (error) {
       console.warn("[PostSync] bootstrap error:", error);
       return { ok: false, error: error.message };

@@ -28,6 +28,20 @@ function getNvidiaConfig() {
   };
 }
 
+function validateNvidiaConfig() {
+  const cfg = getNvidiaConfig();
+  if (cfg.mode === "proxy") {
+    if (!cfg.proxyUrl || cfg.proxyUrl === "YOUR_EDGE_FUNCTION_URL") {
+      throw new Error('Chưa cấu hình NVIDIA_CONFIG.proxyUrl khi dùng mode: "proxy"');
+    }
+  } else if (!cfg.apiKey || cfg.apiKey === "YOUR_NVIDIA_API_KEY") {
+    throw new Error(
+      'Chưa cấu hình NVIDIA_CONFIG.apiKey trong config.js (hoặc chuyển mode: "proxy" để key không nằm trong extension)'
+    );
+  }
+  return cfg;
+}
+
 function stripHtml(html) {
   if (Array.isArray(html)) {
     return html.map(stripHtml).filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
@@ -152,16 +166,7 @@ function postChatCompletion(cfg, payload) {
 }
 
 async function nvidiaChat(messages, options = {}) {
-  const cfg = getNvidiaConfig();
-  if (cfg.mode === "proxy") {
-    if (!cfg.proxyUrl || cfg.proxyUrl === "YOUR_EDGE_FUNCTION_URL") {
-      throw new Error('Chưa cấu hình NVIDIA_CONFIG.proxyUrl khi dùng mode: "proxy"');
-    }
-  } else if (!cfg.apiKey || cfg.apiKey === "YOUR_NVIDIA_API_KEY") {
-    throw new Error(
-      'Chưa cấu hình NVIDIA_CONFIG.apiKey trong config.js (hoặc chuyển mode: "proxy" để key không nằm trong extension)'
-    );
-  }
+  const cfg = validateNvidiaConfig();
 
   const enableThinking = options.enableThinking ?? cfg.enableThinking;
   const payload = {

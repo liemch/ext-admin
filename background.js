@@ -5,6 +5,9 @@ importScripts('config.js', 'supabase-client.js', 'nvidia-client.js', 'engagement
 // Biến lưu trữ Cookie và CSRF Token
 let capturedCredentials = {};
 let lastMemoryInteractionTime = 0;
+const MY_POSTS_SYNC_ALARM = "myPostsSyncAlarm";
+const MY_POSTS_SYNC_INTERVAL_MINUTES = 20;
+let myPostsSyncPromise = null;
 const AUTO_COMMENT_MIN_INTERVAL_MS = 2000;
 const AUTO_COMMENT_MAX_INTERVAL_MS = 5000;
 let autoCommentTimerId = null;
@@ -25,7 +28,10 @@ let autoCommentState = {
   completionMinutes: 1,
   startedAt: null,
 };
+let autoCommentJobs = [];
+const MAX_AUTO_COMMENT_JOBS = 5;
 const AUTO_COMMENT_START_ALARM = "autoCommentStartAlarm";
+const MAX_AUTO_COMMENT_SCHEDULES = 5;
 const AUTO_COMMENT_DELETE_ALARM = "autoCommentDeleteAlarm";
 const AUTO_COMMENT_DELETE_QUEUE_KEY = "autoCommentDeleteQueue";
 const DEFAULT_AUTO_COMMENT_DELETE_AFTER_MINUTES = 1;
@@ -44,6 +50,19 @@ let autoCommentSchedule = {
   deleteAfterMinutes: DEFAULT_AUTO_COMMENT_DELETE_AFTER_MINUTES,
   completionMinutes: 1,
 };
+let autoCommentSchedules = [];
+let autoCommentScheduleActivation = Promise.resolve();
+
+function autoCommentStartAlarmName(scheduleId) {
+  return `${AUTO_COMMENT_START_ALARM}-${scheduleId}`;
+}
+
+function queueScheduledAutoCommentStart(scheduleId) {
+  autoCommentScheduleActivation = autoCommentScheduleActivation
+    .catch(() => {})
+    .then(() => runScheduledAutoCommentStart(scheduleId));
+  return autoCommentScheduleActivation;
+}
 const AUTO_REPLY_ALARM = "autoReplyAlarm";
 const DEFAULT_REPLY_MIN_INTERVAL_MINUTES = 1;
 const DEFAULT_REPLY_MAX_INTERVAL_MINUTES = 5;
@@ -438,20 +457,17 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
 
     if (cookie || csrf) {
       // Không log cookie/CSRF ra console (chế độ chạy im lặng, an toàn phiên).
+      // Service worker có thể vừa restart nên capturedCredentials đang rỗng.
+      // Merge thêm bản đã lưu để request GET không có X-CSRFToken không làm mất token.
+      chrome.storage.local.get("techhubCredentials", (stored) => {
+        const previous = stored.techhubCredentials || {};
+        capturedCredentials = {
+          cookie: cookie || capturedCredentials.cookie || previous.cookie,
+          csrfToken: csrf || capturedCredentials.csrfToken || previous.csrfToken,
+          capturedAt: new Date().toISOString(),
+        };
 
-      // Lưu credentials vào storage, giữ lại giá trị cũ nếu request hiện tại không có
-      capturedCredentials = {
-        cookie: cookie || capturedCredentials.cookie,
-        csrfToken: csrf || capturedCredentials.csrfToken,
-        capturedAt: new Date().toISOString(),
-      };
-
-      // Lưu vào chrome.storage.local
-      chrome.storage.local.set(
-        {
-          techhubCredentials: capturedCredentials,
-        },
-        () => {
+        chrome.storage.local.set({ techhubCredentials: capturedCredentials }, () => {
           console.log("Credentials saved to storage");
           
           // Có phiên mới: chạy ngay nếu đã quá chu kỳ cấu hình.
@@ -472,8 +488,8 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
               console.warn("[Background] Engagement auto-run check failed:", error);
             }
           })();
-        }
-      );
+        });
+      });
     } else {
       console.log("[Background] No Cookie or CSRF Token found in headers");
     }
@@ -545,8 +561,15 @@ const ADMIN_ONLY_ACTIONS = new Set([
   "engagementSetKillSwitch",
   "engagementSetEnabled",
   "engagementRevokeDevice",
+  "engagementGetPoolSettings",
+  "engagementSetPoolSettings",
+  "engagementSetUserPolicy",
+  "engagementPushComments",
+  "engagementListBoosts",
+  "buildEngagementDiscussionPrompt",
   // Post-sync admin (chỉ máy admin/leader).
   "postSyncGetStatus",
+  "postSyncCheckSession",
   "postSyncRunLeaderTick",
   "postSyncEnqueueJobs",
   "postSyncListJobs",
@@ -701,8 +724,123 @@ function handlePopupMessage(request, sendResponse) {
   }
 
   if (request.action === "setEngagementEnabled") {
-    sendResponse({ success: false, error: "Chế độ tương tác do admin quản lý cho toàn hệ thống." });
+    sendResponse({ success: false, error: "Chế độ tương tác do admin điều phối." });
     return false;
+  }
+
+  if (request.action === "redeemEngagementUltra") {
+    EngagementWorker.ensureEngagementUserAllowed()
+      .then(() => EngagementClient.engagementRedeemUltra(request.techhubId))
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "buildMyEngagementDiscussionPrompt") {
+    EngagementWorker.ensureEngagementUserAllowed()
+      .then(async (user) => {
+        const techhubId = normalizeTechhubId(request.techhubId);
+        if (!techhubId) throw new Error("ID bài viết không hợp lệ.");
+        const [post] = await getPostsForAiJob(user.username, techhubId);
+        if (String(post.verification_status || "") !== "verified") {
+          throw new Error(`Bài #${techhubId} chưa được xác minh.`);
+        }
+        const stored = await chrome.storage.local.get(["techhubCredentials"]);
+        if (!stored.techhubCredentials?.csrfToken) {
+          throw new Error("Thiếu phiên TechHub để đọc nội dung bài.");
+        }
+        const heartbeat = await EngagementClient.engagementHeartbeat(user.username);
+        const count = Math.min(50, Math.max(1, Number(heartbeat?.preferences?.discussions_per_post) || 40));
+        const detail = await fetchArticleDetail(post.techhub_uuid, stored.techhubCredentials);
+        const title = String(detail?.title || post.title || `Bài #${techhubId}`).trim();
+        const articleBody = stripHtml(detail?.body || "").replace(/\s+/g, " ").trim().slice(0, 6000);
+        const schema = [{
+          name: "chuoi-1",
+          turns: [
+            { actor: "A", content: "..." },
+            { actor: "B", content: "..." },
+            { actor: "A", content: "..." },
+          ],
+        }];
+        return {
+          techhubId,
+          count,
+          prompt: [
+            `Bài viết: ${title}`,
+            `Nội dung: ${articleBody || "Không có nội dung chi tiết; bám sát tiêu đề."}`,
+            "",
+            `Hãy tạo đúng ${count} chuỗi thảo luận độc lập, tự nhiên bằng tiếng Việt cho bài này.`,
+            `- JSON phải có đúng ${count} phần tử; mỗi phần tử là một chuỗi riêng, không gộp nhiều câu hỏi vào cùng chuỗi.`,
+            "- Mỗi chuỗi chọn ngẫu nhiên đúng 2 hoặc 3 lượt, luân phiên A, B, A.",
+            "- A là người ghé thăm, B là tác giả; lượt sau phải trả lời trực tiếp lượt trước.",
+            "- Nội dung ngắn gọn, có ý nghĩa, không khen chung chung, không hashtag/emoji/nhắc AI.",
+            "- Chỉ trả JSON array hợp lệ, không markdown và không giải thích.",
+            `Schema: ${JSON.stringify(schema)}`,
+          ].join("\n"),
+        };
+      })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "submitMyEngagementThreads") {
+    EngagementWorker.ensureEngagementUserAllowed()
+      .then(() => EngagementClient.engagementSubmitOwnThreads(request.techhubId, request.threads))
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "buildEngagementDiscussionPrompt") {
+    (async () => {
+      const techhubId = normalizeTechhubId(request.techhubId);
+      if (!techhubId) throw new Error("ID bài viết không hợp lệ.");
+      const post = await supabase.getPostByTechhubId(techhubId);
+      if (!post?.techhub_uuid || !post?.username) {
+        throw new Error(`Không tìm thấy bài #${techhubId}. Hãy đồng bộ bài trước.`);
+      }
+      if (String(post.verification_status || "") !== "verified") {
+        throw new Error(`Bài #${techhubId} chưa được xác minh.`);
+      }
+      const stored = await chrome.storage.local.get(["techhubCredentials"]);
+      if (!stored.techhubCredentials?.csrfToken) {
+        throw new Error("Thiếu phiên TechHub để đọc nội dung bài.");
+      }
+      const detail = await fetchArticleDetail(post.techhub_uuid, stored.techhubCredentials);
+      const count = Math.min(50, Math.max(1, Number(request.count) || 1));
+      const visitor = String(request.visitor || "visitor").trim() || "visitor";
+      const title = String(detail?.title || post.title || `Bài #${techhubId}`).trim();
+      const articleBody = stripHtml(detail?.body || "").replace(/\s+/g, " ").trim().slice(0, 6000);
+      const schema = [{
+        name: "chuoi-1",
+        targetTechhubId: techhubId,
+        visitor,
+        actors: { A: "visitor", B: "author" },
+        turns: [
+          { actor: "A", content: "..." },
+          { actor: "B", content: "..." },
+          { actor: "A", content: "..." },
+        ],
+      }];
+      const prompt = [
+        `Bài viết: ${title}`,
+        `Nội dung: ${articleBody || "Không có nội dung chi tiết; bám sát tiêu đề."}`,
+        "",
+        `Hãy tạo đúng ${count} chuỗi thảo luận độc lập, tự nhiên bằng tiếng Việt cho bài này.`,
+        `- JSON phải có đúng ${count} phần tử; mỗi phần tử là một chuỗi riêng, không gộp nhiều câu hỏi vào cùng chuỗi.`,
+        "- Mỗi chuỗi chọn ngẫu nhiên đúng 2 hoặc 3 lượt; phân bổ xen kẽ, không để tất cả cùng độ dài.",
+        "- Luân phiên A, B, A; A là người ghé thăm, B là tác giả bài.",
+        "- Lượt sau phải trả lời trực tiếp và có ý nghĩa với lượt trước; không khen chung chung.",
+        "- Mỗi lượt ngắn gọn, khác nhau; không hashtag, không emoji, không nhắc tới AI.",
+        "- Chỉ trả về JSON array hợp lệ, không markdown và không giải thích.",
+        `Schema: ${JSON.stringify(schema)}`,
+      ].join("\n");
+      return { prompt, techhubId, count, title };
+    })()
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
   }
 
   if (request.action === "runEngagementOnce") {
@@ -859,6 +997,50 @@ function handlePopupMessage(request, sendResponse) {
     return true;
   }
 
+  if (request.action === "engagementGetPoolSettings") {
+    EngagementClient.engagementAdmin("getPoolSettings", {})
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementSetPoolSettings") {
+    EngagementClient.engagementAdmin("setPoolSettings", request.settings || {})
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementSetUserPolicy") {
+    EngagementClient.engagementAdmin("setUserPolicy", {
+      username: request.username,
+      enabled: request.enabled,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementPushComments") {
+    EngagementClient.engagementAdmin("pushComments", {
+      techhubId: request.techhubId,
+      discussions: request.discussions,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementListBoosts") {
+    EngagementClient.engagementAdmin("listBoosts", {
+      status: request.status || "active",
+      limit: request.limit || 100,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
   if (request.action === "engagementSetEnabled") {
     EngagementClient.engagementAdmin("setEngagementEnabled", {
       enabled: request.enabled !== false,
@@ -934,7 +1116,7 @@ function handlePopupMessage(request, sendResponse) {
   }
 
   if (request.action === "syncMyPosts") {
-    syncMyPosts()
+    queueMyPostsSync()
       .then((result) => sendResponse({ success: true, ...result }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;
@@ -1252,6 +1434,12 @@ function handlePopupMessage(request, sendResponse) {
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;
   }
+  if (request.action === "postSyncCheckSession") {
+    PostSyncWorker.checkSessionQuiet()
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
   if (request.action === "postSyncRunLeaderTick") {
     PostSyncWorker.enqueueScheduledJobs()
       .then(() => PostSyncWorker.claimAndRunOneJob())
@@ -1354,30 +1542,20 @@ function setupAlarms() {
       chrome.alarms.create(AI_JOB_WATCHDOG_ALARM, { periodInMinutes: 1 });
     }
   });
-  // Post-sync leader: máy admin thức dậy mỗi 5 phút để enqueue + claim 1 job.
-  if (typeof PostSyncWorker !== "undefined" && typeof PostSyncClient !== "undefined" && PostSyncClient.isPostSyncLeader()) {
-    chrome.alarms.get(PostSyncWorker.LEADER_WAKE_ALARM, (alarm) => {
-      if (!alarm) {
-        chrome.alarms.create(PostSyncWorker.LEADER_WAKE_ALARM, { periodInMinutes: 5, delayInMinutes: 1 });
-      }
-    });
-  }
+  // Đồng bộ bài cá nhân: mỗi máy tự lấy và lưu bài của user đang đăng nhập.
+  // Mỗi user tự đồng bộ bài của chính mình như extension tham chiếu.
+  chrome.alarms.get(MY_POSTS_SYNC_ALARM, (alarm) => {
+    if (!alarm || alarm.periodInMinutes !== MY_POSTS_SYNC_INTERVAL_MINUTES) {
+      if (alarm) chrome.alarms.clear(MY_POSTS_SYNC_ALARM).catch(() => {});
+      chrome.alarms.create(MY_POSTS_SYNC_ALARM, {
+        periodInMinutes: MY_POSTS_SYNC_INTERVAL_MINUTES,
+        delayInMinutes: MY_POSTS_SYNC_INTERVAL_MINUTES,
+      });
+    }
+  });
+  // Dọn alarm leader từ phiên bản cũ; lease trên server sẽ tự hết hạn.
+  if (typeof PostSyncWorker !== "undefined") PostSyncWorker.clearAlarms();
 }
-
-// Post hint: lắng nghe tab điều hướng đến bài TechHub → gửi hint im lặng.
-function handleTechHubTabForHint(tabId, url) {
-  if (!url || typeof PostSyncWorker === "undefined" || typeof PostSyncClient === "undefined") return;
-  if (!PostSyncClient.isPostSyncConfigured()) return;
-  try {
-    PostSyncWorker.maybeSubmitHintFromUrl(url, "article_page").catch(() => {});
-  } catch (_) {}
-}
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.url) handleTechHubTabForHint(tabId, changeInfo.url);
-});
-chrome.tabs.onCreated.addListener((tab) => {
-  if (tab.url) handleTechHubTabForHint(tab.id, tab.url);
-});
 
 async function rearmAiJobAlarms() {
   await Promise.all([
@@ -1423,13 +1601,6 @@ restoreScheduledDeletes().catch((err) => {
   console.error("[Background] Failed to restore scheduled deletes:", err);
 });
 
-// Post-sync bootstrap: đăng ký thiết bị này và lên lịch nếu là leader.
-if (typeof PostSyncWorker !== "undefined" && typeof PostSyncClient !== "undefined") {
-  PostSyncWorker.bootstrap().catch((err) => {
-    console.warn("[Background] Post-sync bootstrap failed:", err);
-  });
-}
-
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === CROSS_INTERACTION_ALARM) {
     runCrossInteraction(false).catch((err) => {
@@ -1446,9 +1617,12 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     rearmAiJobAlarms().catch((err) => {
       console.error("[Background] Could not re-arm AI job alarms:", err);
     });
-  } else if (alarm.name === AUTO_COMMENT_START_ALARM) {
+  } else if (alarm.name === AUTO_COMMENT_START_ALARM || alarm.name.startsWith(`${AUTO_COMMENT_START_ALARM}-`)) {
+    const scheduleId = alarm.name === AUTO_COMMENT_START_ALARM
+      ? null
+      : alarm.name.slice(AUTO_COMMENT_START_ALARM.length + 1);
     autoCommentRestorePromise
-      .then(() => runScheduledAutoCommentStart())
+      .then(() => queueScheduledAutoCommentStart(scheduleId))
       .catch((err) => {
         console.error("[Background] Scheduled auto comment failed:", err);
       });
@@ -1472,13 +1646,11 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     processDueScheduledDeletes().catch((err) => {
       console.error("[Background] Scheduled delete failed:", err);
     });
-  } else if (typeof PostSyncWorker !== "undefined" && alarm.name === PostSyncWorker.LEADER_WAKE_ALARM) {
-    // Leader tick: enqueue then claim+run 1 job (best-effort, silent).
-    if (PostSyncClient.isPostSyncConfigured() && PostSyncClient.isPostSyncLeader()) {
-      PostSyncWorker.enqueueScheduledJobs()
-        .then(() => PostSyncWorker.claimAndRunOneJob())
-        .catch((err) => console.warn("[Background] Post-sync leader tick failed:", err));
-    }
+  } else if (alarm.name === MY_POSTS_SYNC_ALARM) {
+    queueMyPostsSync().catch((err) => {
+      // Đồng bộ nền phải im lặng; lỗi sẽ hiện khi user chủ động bấm Đồng bộ.
+      console.warn("[Background] Đồng bộ bài cá nhân thất bại:", err.message);
+    });
   }
 });
 
@@ -1646,7 +1818,12 @@ async function readCurrentUserProfileFromTechHub() {
 function getAutoCommentStatus() {
   return {
     ...autoCommentState,
+    jobs: autoCommentJobs.map((job) => ({ ...job })),
+    activeJobCount: autoCommentJobs.filter((job) => job.active).length,
+    maxJobs: MAX_AUTO_COMMENT_JOBS,
     schedule: { ...autoCommentSchedule },
+    schedules: autoCommentSchedules.map((schedule) => ({ ...schedule })),
+    maxSchedules: MAX_AUTO_COMMENT_SCHEDULES,
     intervalMinMs: AUTO_COMMENT_MIN_INTERVAL_MS,
     intervalMaxMs: AUTO_COMMENT_MAX_INTERVAL_MS,
     deleteQueue: { ...autoCommentDeleteSummary },
@@ -1663,11 +1840,31 @@ function broadcastAutoCommentProgress(message, type = "info") {
 }
 
 async function saveAutoCommentState() {
-  await chrome.storage.local.set({ autoCommentState });
+  if (autoCommentState.techhubId) {
+    const index = autoCommentJobs.findIndex((job) => job.jobId === autoCommentState.jobId);
+    if (index >= 0) autoCommentJobs[index] = { ...autoCommentState };
+  }
+  await chrome.storage.local.set({ autoCommentState, autoCommentJobs });
+}
+
+function appendAutoCommentJob(nextJob) {
+  autoCommentJobs = autoCommentJobs.filter((job) => job.jobId !== nextJob.jobId);
+  // Giới hạn năm dòng gần nhất nhưng luôn bỏ job đã kết thúc trước, không làm mất
+  // job đang chạy khi thêm nhanh một lô nhiều bài.
+  while (autoCommentJobs.length >= MAX_AUTO_COMMENT_JOBS) {
+    const completedIndex = autoCommentJobs.findIndex((job) => !job.active);
+    if (completedIndex < 0) break;
+    autoCommentJobs.splice(completedIndex, 1);
+  }
+  autoCommentJobs.push(nextJob);
 }
 
 async function saveAutoCommentSchedule() {
-  await chrome.storage.local.set({ autoCommentSchedule });
+  autoCommentSchedule =
+    autoCommentSchedules.find((schedule) => schedule.status === "waiting") ||
+    autoCommentSchedules[autoCommentSchedules.length - 1] ||
+    { techhubId: null, targetCount: null, startAt: null };
+  await chrome.storage.local.set({ autoCommentSchedule, autoCommentSchedules });
 }
 
 function normalizeAutoCommentDeleteOptions(options = {}) {
@@ -1681,6 +1878,28 @@ function normalizeAutoCommentDeleteOptions(options = {}) {
     deleteAfterMinutes: enabled
       ? minutes
       : DEFAULT_AUTO_COMMENT_DELETE_AFTER_MINUTES,
+  };
+}
+
+async function getFreshTechHubSession() {
+  const [stored, liveUserProfile, freshCsrf] = await Promise.all([
+    chrome.storage.local.get(["techhubCredentials", "userProfile"]),
+    readCurrentUserProfileFromTechHub(),
+    refreshCSRFToken(),
+  ]);
+  const userProfile = liveUserProfile || stored.userProfile || null;
+  const credentials = { ...(stored.techhubCredentials || {}) };
+  if (freshCsrf) credentials.csrfToken = freshCsrf;
+
+  const updates = {};
+  if (liveUserProfile) updates.userProfile = liveUserProfile;
+  if (credentials.csrfToken) updates.techhubCredentials = credentials;
+  if (Object.keys(updates).length) await chrome.storage.local.set(updates);
+
+  return {
+    credentials,
+    userProfile,
+    username: userProfile?.username || null,
   };
 }
 
@@ -1730,7 +1949,17 @@ async function scheduleAutoCommentStart(techhubId, targetCount, startAt, options
     }
   }
 
-  autoCommentSchedule = {
+  const waitingSchedules = autoCommentSchedules.filter((schedule) => schedule.status === "waiting");
+  if (waitingSchedules.length >= MAX_AUTO_COMMENT_SCHEDULES) {
+    throw new Error(`Chỉ được hẹn tối đa ${MAX_AUTO_COMMENT_SCHEDULES} job auto comment.`);
+  }
+  if (waitingSchedules.some((schedule) => Number(schedule.techhubId) === parsedTechhubId)) {
+    throw new Error(`Bài #${parsedTechhubId} đã có lịch auto comment đang chờ.`);
+  }
+  autoCommentSchedules = autoCommentSchedules.filter((schedule) => schedule.status === "waiting");
+  const scheduleId = globalThis.crypto?.randomUUID?.() || `schedule-${Date.now()}-${parsedTechhubId}`;
+  const nextSchedule = {
+    scheduleId,
     techhubId: parsedTechhubId,
     targetCount: parsedTarget,
     startAt: when.toISOString(),
@@ -1739,7 +1968,11 @@ async function scheduleAutoCommentStart(techhubId, targetCount, startAt, options
     ...deleteOptions,
     completionMinutes,
     isExternalTarget,
+    status: "waiting",
+    activatedAt: null,
   };
+  autoCommentSchedules.push(nextSchedule);
+  autoCommentSchedule = nextSchedule;
   // Lịch mới không được mang theo tiến độ của job đã dừng trên bài trước.
   if (!autoCommentState.active) {
     autoCommentState = {
@@ -1756,8 +1989,7 @@ async function scheduleAutoCommentStart(techhubId, targetCount, startAt, options
       startedAt: null,
     };
   }
-  await chrome.alarms.clear(AUTO_COMMENT_START_ALARM);
-  chrome.alarms.create(AUTO_COMMENT_START_ALARM, { when: when.getTime() });
+  chrome.alarms.create(autoCommentStartAlarmName(scheduleId), { when: when.getTime() });
   await Promise.all([saveAutoCommentSchedule(), saveAutoCommentState()]);
 
   broadcastAutoCommentProgress(
@@ -1769,6 +2001,12 @@ async function scheduleAutoCommentStart(techhubId, targetCount, startAt, options
 
 async function cancelAutoCommentSchedule() {
   await chrome.alarms.clear(AUTO_COMMENT_START_ALARM);
+  await Promise.all(
+    autoCommentSchedules.map((schedule) =>
+      chrome.alarms.clear(autoCommentStartAlarmName(schedule.scheduleId))
+    )
+  );
+  autoCommentSchedules = [];
   autoCommentSchedule = {
     techhubId: null,
     targetCount: null,
@@ -1785,32 +2023,43 @@ async function cancelAutoCommentSchedule() {
   return getAutoCommentStatus();
 }
 
-async function runScheduledAutoCommentStart() {
-  const pending = { ...autoCommentSchedule };
+async function runScheduledAutoCommentStart(scheduleId = null) {
+  const scheduleIndex = scheduleId
+    ? autoCommentSchedules.findIndex((schedule) => schedule.scheduleId === scheduleId)
+    : autoCommentSchedules.findIndex((schedule) => schedule.status === "waiting");
+  const pending = scheduleIndex >= 0
+    ? { ...autoCommentSchedules[scheduleIndex] }
+    : { ...autoCommentSchedule };
   if (!pending.techhubId || !pending.startAt) return;
-
-  autoCommentSchedule = {
-    techhubId: null,
-    targetCount: null,
-    startAt: null,
-    createdAt: null,
-    lastError: null,
-    autoDeleteEnabled: false,
-    deleteAfterMinutes: DEFAULT_AUTO_COMMENT_DELETE_AFTER_MINUTES,
-    completionMinutes: 1,
-    isExternalTarget: false,
-  };
-  await chrome.alarms.clear(AUTO_COMMENT_START_ALARM);
-  await saveAutoCommentSchedule();
+  await chrome.alarms.clear(
+    pending.scheduleId ? autoCommentStartAlarmName(pending.scheduleId) : AUTO_COMMENT_START_ALARM
+  );
 
   try {
     await startAutoComment(pending.techhubId, null, pending.targetCount, pending);
+    if (scheduleIndex >= 0) {
+      autoCommentSchedules[scheduleIndex] = {
+        ...pending,
+        status: "activated",
+        activatedAt: new Date().toISOString(),
+        lastError: null,
+      };
+    }
+    await saveAutoCommentSchedule();
     broadcastAutoCommentProgress(
       `Đến giờ hẹn: bắt đầu auto comment bài #${pending.techhubId}.`,
       "success"
     );
   } catch (error) {
-    autoCommentSchedule = { ...pending, lastError: error.message };
+    if (scheduleIndex >= 0) {
+      autoCommentSchedules[scheduleIndex] = {
+        ...pending,
+        status: "error",
+        lastError: error.message,
+      };
+    } else {
+      autoCommentSchedule = { ...pending, lastError: error.message };
+    }
     await saveAutoCommentSchedule();
     broadcastAutoCommentProgress(
       `Lịch auto comment bài #${pending.techhubId} thất bại: ${error.message}`,
@@ -1821,18 +2070,19 @@ async function runScheduledAutoCommentStart() {
 
 async function restoreAutoCommentSchedule() {
   try {
-    const stored = await chrome.storage.local.get("autoCommentSchedule");
-    if (!stored.autoCommentSchedule?.techhubId) return;
-    autoCommentSchedule = { ...autoCommentSchedule, ...stored.autoCommentSchedule };
-    const when = new Date(autoCommentSchedule.startAt).getTime();
-    if (!Number.isFinite(when)) return;
-    // Quá giờ khi browser đang tắt → chạy ngay, còn lại thì đặt lại alarm.
-    if (when <= Date.now()) {
-      await runScheduledAutoCommentStart();
-      return;
+    const stored = await chrome.storage.local.get(["autoCommentSchedule", "autoCommentSchedules"]);
+    autoCommentSchedules = Array.isArray(stored.autoCommentSchedules)
+      ? stored.autoCommentSchedules.slice(-MAX_AUTO_COMMENT_SCHEDULES)
+      : stored.autoCommentSchedule?.techhubId
+        ? [{ ...stored.autoCommentSchedule, scheduleId: `legacy-${Date.now()}`, status: "waiting" }]
+        : [];
+    await saveAutoCommentSchedule();
+    for (const schedule of autoCommentSchedules.filter((item) => item.status === "waiting")) {
+      const when = new Date(schedule.startAt).getTime();
+      if (!Number.isFinite(when)) continue;
+      if (when <= Date.now()) await runScheduledAutoCommentStart(schedule.scheduleId);
+      else chrome.alarms.create(autoCommentStartAlarmName(schedule.scheduleId), { when });
     }
-    await chrome.alarms.clear(AUTO_COMMENT_START_ALARM);
-    chrome.alarms.create(AUTO_COMMENT_START_ALARM, { when });
   } catch (error) {
     console.error("[Background] Failed to restore auto comment schedule:", error);
   }
@@ -1938,13 +2188,22 @@ async function startAutoComment(
     throw new Error(`Đã đạt mục tiêu ${parsedTarget} comment rồi.`);
   }
 
-  autoCommentGeneration++;
-  if (autoCommentTimerId) clearTimeout(autoCommentTimerId);
-  if (autoCommentAbortController) autoCommentAbortController.abort();
-  autoCommentTimerId = null;
-  autoCommentAbortController = null;
-  autoCommentTickRunning = false;
-  autoCommentState = {
+  const isRestoring = !!restoredState;
+  const activeJobs = autoCommentJobs.filter((job) => job.active);
+  if (!isRestoring && activeJobs.length >= MAX_AUTO_COMMENT_JOBS) {
+    throw new Error(`Chỉ được chạy tối đa ${MAX_AUTO_COMMENT_JOBS} job auto comment.`);
+  }
+  if (
+    !isRestoring &&
+    activeJobs.some((job) => Number(job.techhubId) === parsedTechhubId)
+  ) {
+    throw new Error(`Bài #${parsedTechhubId} đã có job auto comment đang chạy.`);
+  }
+
+  const nextJob = {
+    jobId:
+      restoredState?.jobId ||
+      (globalThis.crypto?.randomUUID?.() || `auto-comment-${Date.now()}-${parsedTechhubId}`),
     active: true,
     techhubId: parsedTechhubId,
     username: userProfile.username,
@@ -1963,6 +2222,29 @@ async function startAutoComment(
         : new Date().toISOString(),
     isExternalTarget,
   };
+
+  if (!isRestoring && autoCommentState.active) {
+    appendAutoCommentJob(nextJob);
+    await saveAutoCommentState();
+    broadcastAutoCommentProgress(
+      `Đã thêm job ${activeJobs.length + 1}/${MAX_AUTO_COMMENT_JOBS} cho bài #${parsedTechhubId} · mục tiêu ${parsedTarget} cmt.`,
+      "success"
+    );
+    return getAutoCommentStatus();
+  }
+
+  autoCommentGeneration++;
+  if (autoCommentTimerId) clearTimeout(autoCommentTimerId);
+  if (autoCommentAbortController) autoCommentAbortController.abort();
+  autoCommentTimerId = null;
+  autoCommentAbortController = null;
+  autoCommentTickRunning = false;
+  autoCommentState = nextJob;
+  if (!isRestoring) {
+    appendAutoCommentJob(nextJob);
+  } else if (!autoCommentJobs.length) {
+    autoCommentJobs = [nextJob];
+  }
   await saveAutoCommentState();
 
   const generation = autoCommentGeneration;
@@ -1975,6 +2257,7 @@ async function startAutoComment(
 }
 
 function stopAutoComment(reason = "Đã dừng auto comment.", type = "info") {
+  const stoppedJobId = autoCommentState.jobId;
   autoCommentGeneration++;
   if (autoCommentTimerId) clearTimeout(autoCommentTimerId);
   if (autoCommentAbortController) autoCommentAbortController.abort();
@@ -1982,8 +2265,32 @@ function stopAutoComment(reason = "Đã dừng auto comment.", type = "info") {
   autoCommentAbortController = null;
   autoCommentState.active = false;
   autoCommentState.lastError = type === "error" ? reason : null;
-  saveAutoCommentState();
-  broadcastAutoCommentProgress(reason, type);
+  const stoppedIndex = autoCommentJobs.findIndex((job) => job.jobId === stoppedJobId);
+  if (stoppedIndex >= 0) autoCommentJobs[stoppedIndex] = { ...autoCommentState };
+  const nextJob = autoCommentJobs.find((job) => job.active);
+  if (nextJob) {
+    autoCommentState = nextJob;
+    const generation = autoCommentGeneration;
+    saveAutoCommentState().then(() => scheduleAutoCommentTick(generation, 0));
+    broadcastAutoCommentProgress(`${reason} Chuyển sang bài #${nextJob.techhubId}.`, type);
+  } else {
+    saveAutoCommentState();
+    broadcastAutoCommentProgress(reason, type);
+  }
+}
+
+async function rotateAutoCommentJob(generation) {
+  if (generation !== autoCommentGeneration) return false;
+  const activeJobs = autoCommentJobs.filter((job) => job.active);
+  if (activeJobs.length < 2) return false;
+  const currentIndex = activeJobs.findIndex((job) => job.jobId === autoCommentState.jobId);
+  const nextJob = activeJobs[(currentIndex + 1) % activeJobs.length];
+  if (!nextJob || nextJob.jobId === autoCommentState.jobId) return false;
+  autoCommentGeneration++;
+  autoCommentState = nextJob;
+  await saveAutoCommentState();
+  scheduleAutoCommentTick(autoCommentGeneration);
+  return true;
 }
 
 /**
@@ -1997,6 +2304,7 @@ async function cancelAutoCommentCompletely() {
   autoCommentTimerId = null;
   autoCommentAbortController = null;
   autoCommentTemplates = [];
+  autoCommentJobs = [];
   autoCommentState = {
     active: false,
     techhubId: null,
@@ -2013,6 +2321,12 @@ async function cancelAutoCommentCompletely() {
   };
 
   await chrome.alarms.clear(AUTO_COMMENT_START_ALARM);
+  await Promise.all(
+    autoCommentSchedules.map((schedule) =>
+      chrome.alarms.clear(autoCommentStartAlarmName(schedule.scheduleId))
+    )
+  );
+  autoCommentSchedules = [];
   autoCommentSchedule = {
     techhubId: null,
     targetCount: null,
@@ -2154,6 +2468,7 @@ async function runAutoCommentTick(generation) {
       );
       return;
     }
+    if (await rotateAutoCommentJob(generation)) return;
   } catch (error) {
     if (error.name === "AbortError") return;
     if (generation !== autoCommentGeneration) return;
@@ -2284,15 +2599,9 @@ async function processDueAutoCommentDeletes() {
   autoCommentDeleteRunning = true;
   let queue = await loadAutoCommentDeleteQueue();
   try {
-    const stored = await chrome.storage.local.get("techhubCredentials");
-    const credentials = stored.techhubCredentials;
+    const { credentials } = await getFreshTechHubSession();
     if (!credentials?.csrfToken) {
       throw new Error("Thiếu phiên TechHub khi đến giờ xóa comment.");
-    }
-    const freshCsrf = await refreshCSRFToken();
-    if (freshCsrf) {
-      credentials.csrfToken = freshCsrf;
-      await chrome.storage.local.set({ techhubCredentials: credentials });
     }
 
     const due = queue
@@ -2372,12 +2681,18 @@ async function processDueAutoCommentDeletes() {
 
 async function restoreAutoComment() {
   try {
-    const result = await chrome.storage.local.get("autoCommentState");
-    if (result.autoCommentState?.active) {
+    const result = await chrome.storage.local.get(["autoCommentState", "autoCommentJobs"]);
+    autoCommentJobs = Array.isArray(result.autoCommentJobs)
+      ? result.autoCommentJobs.filter((job) => job?.jobId).slice(-MAX_AUTO_COMMENT_JOBS)
+      : [];
+    const restoredActive = autoCommentJobs[0] ||
+      (result.autoCommentState?.active ? result.autoCommentState : null);
+    if (restoredActive) {
+      if (!autoCommentJobs.length) autoCommentJobs = [restoredActive];
       await startAutoComment(
-        result.autoCommentState.techhubId,
-        result.autoCommentState,
-        result.autoCommentState.targetCount
+        restoredActive.techhubId,
+        restoredActive,
+        restoredActive.targetCount
       );
     } else if (result.autoCommentState) {
       autoCommentState = { ...autoCommentState, ...result.autoCommentState };
@@ -2514,6 +2829,14 @@ async function parseSettingBool(map, key, fallback = false) {
   return fallback;
 }
 
+function queueMyPostsSync() {
+  if (myPostsSyncPromise) return myPostsSyncPromise;
+  myPostsSyncPromise = syncMyPosts().finally(() => {
+    myPostsSyncPromise = null;
+  });
+  return myPostsSyncPromise;
+}
+
 async function syncMyPosts() {
   const liveUserProfile = await readCurrentUserProfileFromTechHub();
   const stored = await chrome.storage.local.get("userProfile");
@@ -2525,29 +2848,79 @@ async function syncMyPosts() {
     await chrome.storage.local.set({ userProfile: liveUserProfile });
   }
 
-  // User machines no longer write directly to `posts`; the admin leader owns
-  // persistence through post-sync-api. Fetch a live preview for this action.
+  await EngagementWorker.ensureEngagementUserAllowed();
+  // Heartbeat tạo/khôi phục device token dùng để server khóa quyền ghi theo username.
+  await EngagementClient.engagementHeartbeat(userProfile.username);
+
+  // Giống extension tham chiếu: chính user gọi danh sách bài theo username của mình.
+  // Không trả hàng nghìn dòng về popup để tránh làm side panel bị lag.
   const articles = [];
   let page = 1;
   let hasNext = true;
   while (hasNext && page <= 50) {
     broadcastAutoReplyProgress(`Đang tải trang ${page}...`, "muted");
     const data = await supabase.fetchTechHubArticles(userProfile.username, page);
-    const rows = Array.isArray(data?.results) ? data.results : [];
+    if (!Array.isArray(data?.results)) {
+      throw new Error(`TechHub trả dữ liệu không hợp lệ ở trang ${page}; chưa đối soát xóa bài.`);
+    }
+    const rows = data.results;
+    if (data?.next && rows.length === 0) {
+      throw new Error(`TechHub báo còn trang sau nhưng trang ${page} rỗng; chưa đối soát xóa bài.`);
+    }
     articles.push(...rows);
-    hasNext = !!data?.next && rows.length > 0;
+    hasNext = !!data?.next;
     page += 1;
   }
+  if (hasNext) {
+    throw new Error("Danh sách bài vượt quá 50 trang; chưa đối soát xóa bài để tránh mất dữ liệu.");
+  }
+
+  const invalidLiveArticle = articles.find((article) => {
+    const techhubId = Number(article?.id ?? article?.techhub_id);
+    return !Number.isInteger(techhubId) || techhubId <= 0;
+  });
+  if (invalidLiveArticle) {
+    throw new Error("TechHub trả về bài thiếu ID; chưa đối soát xóa bài để tránh mất dữ liệu.");
+  }
+  const liveTechhubIds = [...new Set(
+    articles.map((article) => Number(article?.id ?? article?.techhub_id))
+  )];
   const posts = articles
     .map((article) => supabase.buildTechHubPostPayload(article))
     .filter(Boolean);
+
+  const result = await PostSyncClient.saveMyScannedPosts(posts);
+  const saved = Number(result?.saved) || 0;
+  const created = Number(result?.created) || 0;
+  const updated = Number(result?.updated) || 0;
+  const persisted = saved === posts.length;
+  if (!persisted) {
+    throw new Error(`Supabase chỉ nhận ${saved}/${posts.length} bài.`);
+  }
+
+  const reconcileResult = await PostSyncClient.reconcileMyScannedPosts(liveTechhubIds);
+  const removed = Number(reconcileResult?.removed) || 0;
+
+  let visiblePosts = posts
+    .filter((post) => !post.published_at)
+    .slice(0, 100);
+  if (persisted) {
+    try {
+      visiblePosts = await supabase.getOwnPosts(userProfile.username, { limit: 100 });
+    } catch (error) {
+      console.warn("[Background] Không đọc lại được danh sách bài sau khi lưu:", error);
+    }
+  }
+
   return {
-    created: 0,
-    updated: 0,
-    removed: 0,
-    readOnlyPreview: true,
-    message: "Đã tải bài từ TechHub. Admin leader sẽ lưu cache tập trung.",
-    posts,
+    created,
+    updated,
+    removed,
+    readOnlyPreview: !persisted,
+    persisted,
+    saved,
+    message: `Đã đồng bộ ${saved} bài của @${userProfile.username}: ${created} bài mới, ${updated} bài cập nhật, ${removed} bài đã xóa khỏi dữ liệu.`,
+    posts: visiblePosts,
     username: userProfile.username,
   };
 }
@@ -2628,8 +3001,8 @@ async function scheduleDeletePost(techhubId, deleteAt) {
     throw new Error(`Bài #${parsedId} thiếu techhub_uuid, không thể xóa qua API.`);
   }
 
-  const stored = await chrome.storage.local.get(["techhubCredentials", "userProfile"]);
-  if (!stored.techhubCredentials?.csrfToken) {
+  const { credentials, username } = await getFreshTechHubSession();
+  if (!credentials?.csrfToken) {
     throw new Error("Thiếu phiên TechHub. Mở TechHub và đăng nhập lại.");
   }
 
@@ -2639,7 +3012,7 @@ async function scheduleDeletePost(techhubId, deleteAt) {
     techhubId: parsedId,
     techhubUuid: post.techhub_uuid,
     title: post.title || "",
-    username: post.username || stored.userProfile?.username || null,
+    username: post.username || username || null,
     deleteAt: when.toISOString(),
     status: "pending",
     createdAt: new Date().toISOString(),
@@ -2682,15 +3055,9 @@ async function deleteArticleOnTechHub(uuid, credentials) {
 }
 
 async function executeDeletePost(item) {
-  const stored = await chrome.storage.local.get("techhubCredentials");
-  const credentials = stored.techhubCredentials;
+  const { credentials } = await getFreshTechHubSession();
   if (!credentials?.csrfToken) {
     throw new Error("Thiếu phiên TechHub khi đến giờ xóa.");
-  }
-  const freshCsrf = await refreshCSRFToken();
-  if (freshCsrf) {
-    credentials.csrfToken = freshCsrf;
-    await chrome.storage.local.set({ techhubCredentials: credentials });
   }
 
   const response = await deleteArticleOnTechHub(item.techhubUuid, credentials);
@@ -2973,18 +3340,13 @@ async function generateReplyDrafts(techhubId, count, maxConsecutiveSelfReplies) 
 
   autoReplyRunning = true;
   try {
-    const stored = await chrome.storage.local.get(["techhubCredentials", "userProfile"]);
-    const credentials = stored.techhubCredentials;
-    const username = stored.userProfile?.username;
+    const { credentials, username } = await getFreshTechHubSession();
     if (!credentials?.csrfToken || !username) {
       throw new Error("Thiếu phiên đăng nhập hoặc profile TechHub.");
     }
 
     const useAi = true;
-    const cfg = getNvidiaConfig();
-    if (!cfg.apiKey || cfg.apiKey === "YOUR_NVIDIA_API_KEY") {
-      throw new Error("Chưa cấu hình NVIDIA_CONFIG.apiKey trong config.js");
-    }
+    const cfg = validateNvidiaConfig();
 
     const parsedSelfReplies = Number(maxConsecutiveSelfReplies);
     const selfReplyLimit =
@@ -3576,16 +3938,11 @@ async function generateDiscussionDrafts(techhubId, count) {
 
   autoDiscussionRunning = true;
   try {
-    const stored = await chrome.storage.local.get(["techhubCredentials", "userProfile"]);
-    const credentials = stored.techhubCredentials;
-    const username = stored.userProfile?.username;
+    const { credentials, username } = await getFreshTechHubSession();
     if (!credentials?.csrfToken || !username) {
       throw new Error("Thiếu phiên đăng nhập hoặc profile TechHub.");
     }
-    const cfg = getNvidiaConfig();
-    if (!cfg.apiKey || cfg.apiKey === "YOUR_NVIDIA_API_KEY") {
-      throw new Error("Chưa cấu hình NVIDIA_CONFIG.apiKey trong config.js");
-    }
+    const cfg = validateNvidiaConfig();
 
     const [post] = await getPostsForAiJob(username, targetId);
     if (!post?.techhub_uuid) throw new Error(`Bài #${targetId} thiếu TechHub UUID.`);
@@ -4125,12 +4482,8 @@ async function generateExternalDiscussionDrafts(techhubId, count) {
   try {
     const { post, detail, actorUsername } =
       await resolveExternalDiscussionPost(techhubId);
-    const stored = await chrome.storage.local.get("techhubCredentials");
-    const credentials = stored.techhubCredentials;
-    const cfg = getNvidiaConfig();
-    if (!cfg.apiKey || cfg.apiKey === "YOUR_NVIDIA_API_KEY") {
-      throw new Error("Chưa cấu hình NVIDIA_CONFIG.apiKey trong config.js");
-    }
+    const { credentials } = await getFreshTechHubSession();
+    const cfg = validateNvidiaConfig();
     const [pageData, existingDrafts] = await Promise.all([
       fetchArticleComments(post.techhub_uuid, credentials, { sort: "new", page: 1 }),
       supabase.getDiscussionDrafts(actorUsername, post.techhub_id),

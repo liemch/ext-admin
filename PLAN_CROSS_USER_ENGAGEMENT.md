@@ -10,6 +10,19 @@ Mỗi extension đang đăng nhập một tài khoản TechHub sẽ nhận các 
 - Chia đều lượt tương tác, không cho một tài khoản hoặc một bài nhận quá nhiều lượt trong thời gian ngắn.
 - Mỗi thao tác có trạng thái, lịch sử và cơ chế retry; không tạo trùng khi extension hoặc service worker khởi động lại.
 
+### Điều chỉnh sản phẩm — pool do admin điều phối
+
+- User không tự bật/tắt pool và không sửa số bài, số chuỗi, khoảng lặp hay quota đóng góp. Admin quản lý cấu hình chung và có thể tạm dừng riêng từng user.
+- Heartbeat tự bổ sung task theo policy admin chỉ khi có ít nhất 2 user khác nhau:
+  còn trong bảng `users`, không bị khóa, đang online/bật tham gia và mỗi user có
+  ít nhất một bài `open + verified` trong `posts`. Không lấy bài của người ngoài
+  hệ thống và không bao giờ tạo task tự tương tác bài của chính actor.
+- Nội dung thảo luận đi qua luồng copy prompt sang ChatGPT/Gemini rồi nhập JSON. Admin có thể cấu hình và tạo tối đa 50 chuỗi độc lập cho mỗi bài (mức khởi tạo 40); user thường chỉ tạo cho bài verified của chính mình. Server áp quota admin, tự chọn visitor đang online và mỗi chuỗi bắt buộc 2 hoặc 3 turn A → B → A.
+- Admin có Push comment để tăng ưu tiên/số chuỗi của một bài. Task thành công cộng điểm idempotent; đủ mốc nhận một lượt Ultra, user được tự chọn bài verified của chính mình để đẩy.
+- User không thấy màn hình vận hành pool; khi có credit Ultra, nút đẩy chỉ xuất hiện trên các bài verified của chính họ trong menu Bài viết và tự ẩn khi hết lượt.
+
+Thiết kế tham khảo từ extension 2.7.5.1: pull + claim nguyên tử, release/retry, cooldown, trần bài, copy prompt/nhập JSON và ưu tiên Ultra. Bản mới thay cặp comment/answer đơn bằng chuỗi reply 2–3 lượt và thưởng Ultra theo đóng góp.
+
 ## 2. Hiện trạng có thể tái sử dụng
 
 Code hiện tại đã có nền tảng cần thiết:
@@ -104,7 +117,7 @@ Quy ước:
 - B đăng turn 4 bằng cách reply trực tiếp vào comment ID của turn 3.
 - Mỗi turn chỉ được mở sau khi turn trước thành công và trả về comment ID từ TechHub.
 - `actors.A = visitor` được map sang user được phân công; `actors.B = author` bắt buộc map sang username sở hữu bài.
-- Phiên bản đầu hỗ trợ 2–4 turn theo mẫu A → B → A → B. Schema vẫn cho phép kéo dài hoặc thêm actor C về sau.
+- Phiên bản này chỉ nhận 2–3 turn theo mẫu A → B hoặc A → B → A; số lượt được AI phân bổ ngẫu nhiên giữa các thread.
 - Không dùng `level` do thứ tự phần tử trong `turns` đã là cấp hội thoại. Server tự gán `turn_index` từ 1.
 
 Format cũ vẫn được nhận để không làm mất dữ liệu đã chuẩn bị:
@@ -118,7 +131,7 @@ Format cũ vẫn được nhận để không làm mất dữ liệu đã chuẩ
 ]
 ```
 
-Khi import, extension chuyển mỗi object cũ thành một thread hai turn: `discussion → A`, `answer → B`, đồng thời gán `A = visitor` và `B = author`. Chuỗi muốn có cấp 3–4 phải dùng format `turns` mới. Bộ import cần loại bỏ HTML entity như `&#x20;`, kiểm tra JSON là array, giới hạn 2–4 turn, bắt đầu bằng A, luân phiên A/B và từ chối content rỗng.
+Khi import, extension chuyển mỗi object cũ thành một thread hai turn: `discussion → A`, `answer → B`, đồng thời gán `A = visitor` và `B = author`. Chuỗi ba lượt dùng format `turns`. Bộ import loại bỏ HTML entity như `&#x20;`, kiểm tra JSON là array, giới hạn 2–3 turn, bắt đầu bằng A, luân phiên A/B và từ chối content rỗng.
 
 ## 5. Dữ liệu và API
 
@@ -201,17 +214,20 @@ Trước khi gọi endpoint toggle, đọc trạng thái reaction hiện tại t
 
 ### Reply giữa các user
 
-Chỉ tạo reply task sau khi comment trước thành công và có `techhub_comment_id`. Mỗi lượt lưu comment ID thực tế trả về từ TechHub. Giới hạn ban đầu là bốn turn, bắt buộc luân phiên actor và dừng khi comment nguồn bị xóa hoặc bài đóng.
+Chỉ tạo reply task sau khi comment trước thành công và có `techhub_comment_id`. Mỗi lượt lưu comment ID thực tế trả về từ TechHub. Giới hạn là ba turn, bắt buộc luân phiên actor và dừng khi comment nguồn bị xóa hoặc bài đóng.
 
 ## 8. Giao diện
 
 Tách thành hai menu độc lập:
 
-- **Bài viết của tôi** dành cho mọi user: danh sách bài cache, số comment/vote, thời gian đồng bộ gần nhất và hoạt động của chính tài khoản. Trạng thái tham gia thảo luận do admin bật/tắt toàn hệ thống; user chỉ xem trạng thái và không có quyền thay đổi.
+- **Bài viết của tôi** dành cho mọi user: danh sách bài cache, số comment/vote và form chọn bài verified để copy prompt/nhập JSON tạo chuỗi cho bài của chính mình. Danh sách chỉ hiển thị dữ liệu và link mở bài, không đặt nút tắt AI trên từng dòng.
+- **AI trả lời**, **AI thảo luận** và **Auto comment** là các menu admin riêng; mỗi menu có bộ chọn bài của chính nó, không dùng lựa chọn chung từ danh sách Bài viết. Auto comment cho chọn một lô tối đa 5 bài của admin, tạo job/lịch riêng cho từng bài và worker xử lý luân phiên.
+- **Tương tác chéo** chỉ admin truy cập để cấu hình, vận hành và xử lý lỗi của pool. User thường không thấy menu này.
+- Khi user có `ultra_credits`, danh sách **Bài viết của tôi** hiện nút “Đẩy Ultra” trên từng bài verified. Sau khi dùng hết lượt, thông báo và toàn bộ nút Ultra được ẩn.
 - **Chiến dịch** chỉ dành cho admin: tạo campaign, chọn bài, nhập JSON, chọn vote/comment/reply, quota, cooldown, lịch chạy, pause/cancel và xem tiến độ toàn hệ thống.
 - **Đồng bộ bài viết** là menu admin riêng theo [PLAN_POST_SYNC.md](PLAN_POST_SYNC.md); plan engagement chỉ dùng kết quả bài đã verified.
 
-User thường không cần thấy khái niệm campaign, task lease, device token hoặc vận hành. User thấy trạng thái “Đang nhận task” hoặc “Admin đã tắt”; khi tắt, server ngừng phân task mới và task đang claim được release về queue. Admin có công tắc toàn hệ thống trong khu vực vận hành.
+User thường không cần thấy khái niệm campaign, task lease, device token hoặc vận hành. Worker vẫn nhận trạng thái pool ở nền; toàn bộ cấu hình, trạng thái vận hành và xử lý lỗi chỉ nằm trong menu admin. Admin có công tắc toàn hệ thống trong khu vực vận hành.
 
 Số comment/vote của user nên lấy từ `engagement_tasks`/`engagement_events`, không gọi TechHub để đếm lại mỗi lần mở extension. Danh sách bài và tổng số liệu thật dùng cache `posts`; UI luôn hiển thị thời điểm cache được cập nhật.
 - Admin có ô dán JSON, nút “Kiểm tra”, preview từng thread/turn, chọn bài đích và nút “Nhập kịch bản”. Lỗi JSON phải chỉ rõ thread và turn.
@@ -269,12 +285,12 @@ Có thể bỏ permission `notifications` khỏi `manifest.json` sau khi các lu
 ### Mốc 4 — Thảo luận theo ngữ cảnh
 
 - Thêm import JSON, converter format `discussion/answer` và preview trước khi lưu.
-- Tạo `discussion_threads`, `discussion_turns` và dependency cho 2–4 turn.
+- Tạo `discussion_threads`, `discussion_turns` và dependency cho 2–3 turn.
 - Lưu comment ID sau mỗi POST, tạo reply đúng ancestry và luân phiên A/B.
 - Có thể dùng article body và comment gần nhất để AI chỉnh draft nếu campaign yêu cầu.
 - Kiểm tra trùng lặp và cho sửa turn chưa chạy.
 
-Điều kiện hoàn thành: import được cả JSON cũ và mới; chuỗi bốn turn chạy lần lượt trên hai máy, giữ đúng ancestry, không tự reply liên tục bằng cùng user và có thể tiếp tục sau khi service worker restart.
+Điều kiện hoàn thành: import được cả JSON cũ và mới; chuỗi 2–3 turn chạy lần lượt trên hai máy, giữ đúng ancestry, không tự reply liên tục bằng cùng user và có thể tiếp tục sau khi service worker restart.
 
 ### Mốc 5 — Vận hành
 

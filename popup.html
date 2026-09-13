@@ -52,11 +52,11 @@
             <span class="nav-label">Thống kê</span>
           </button>
           <button
-            class="nav-item"
+            class="nav-item admin-only"
             type="button"
             data-panel="engagement"
             data-title="Tương tác chéo"
-            data-subtitle="Nhận nhiệm vụ vote/comment bài của thành viên khác"
+            data-subtitle="Admin cấu hình và giám sát luồng tương tác chéo"
           >
             <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true">
               <path
@@ -66,22 +66,6 @@
             </svg>
             <span class="nav-label">Tương tác chéo</span>
             <span id="engagementDot" class="nav-dot hidden"></span>
-          </button>
-          <button
-            class="nav-item admin-only"
-            type="button"
-            data-panel="post-sync"
-            data-title="Đồng bộ bài viết"
-            data-subtitle="Leader quét feed/hint để phát hiện bài mới"
-          >
-            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true">
-              <path
-                d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0020 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 004 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"
-                fill="currentColor"
-              />
-            </svg>
-            <span class="nav-label">Đồng bộ bài</span>
-            <span id="postSyncDot" class="nav-dot hidden"></span>
           </button>
           <button
             class="nav-item admin-only"
@@ -278,8 +262,42 @@
               <div class="card">
                 <div class="card-head">
                   <div>
+                    <h2>Tạo thảo luận cho bài của tôi</h2>
+                    <p>Chọn bài, copy gợi ý sang ChatGPT/Gemini rồi dán JSON để tạo chuỗi trong pool</p>
+                  </div>
+                </div>
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="myDiscussionPostId">Bài cần tạo thảo luận</label>
+                      <span>Số chuỗi và nhịp chạy do admin quy định; hệ thống tự chọn user khác đang online</span>
+                    </div>
+                    <div class="inline-inputs">
+                      <select id="myDiscussionPostId">
+                        <option value="">Chọn một bài…</option>
+                      </select>
+                      <button id="copyMyDiscussionPromptBtn" class="btn btn-secondary" type="button">Copy prompt</button>
+                    </div>
+                  </div>
+                  <textarea
+                    id="myDiscussionJsonInput"
+                    class="code-input"
+                    rows="6"
+                    spellcheck="false"
+                    placeholder='Dán JSON từ ChatGPT/Gemini tại đây. Mỗi chuỗi gồm 2 hoặc 3 lượt A/B.'
+                  ></textarea>
+                  <div class="card-actions">
+                    <button id="submitMyDiscussionBtn" class="btn btn-primary" type="button">Tạo thảo luận</button>
+                  </div>
+                  <div id="myDiscussionMessage" class="msg hidden"></div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <div>
                     <h2>Danh sách bài</h2>
-                    <p>Click tiêu đề để mở TechHub · nút Chọn để dùng cho các job khác</p>
+                    <p>Click tiêu đề để mở TechHub · các tác vụ AI chọn bài ngay trong menu riêng</p>
                   </div>
                   <div class="card-actions">
                     <label class="search" for="postsSearch">
@@ -297,22 +315,13 @@
                       />
                     </label>
                     <button id="syncMyPostsBtn" class="btn btn-primary" type="button">
-                      Quét bài
+                      Đồng bộ bài
                     </button>
                   </div>
                 </div>
+                <div id="postsUltraNotice" class="msg ok hidden"></div>
                 <div id="myPostsList" class="table-wrap"></div>
                 <div id="postsMessage" class="msg hidden"></div>
-              </div>
-
-              <div class="card">
-                <div class="card-head">
-                  <div>
-                    <h2>Bài viết của tôi (từ đồng bộ)</h2>
-                    <p>Các bài do leader đã xác minh gần đây — không cần quét feed</p>
-                  </div>
-                </div>
-                <div id="myPostsCacheList" class="my-posts-cache"></div>
               </div>
             </section>
 
@@ -368,12 +377,12 @@
               </div>
             </section>
 
-            <section class="panel hidden" data-panel="engagement">
+            <section class="panel hidden admin-only" data-panel="engagement">
               <div class="card">
                 <div class="card-head">
                   <div>
-                    <h2>Nhận nhiệm vụ tương tác</h2>
-                    <p>Vote và bình luận bài của thành viên khác theo phân công</p>
+                    <h2>Điều phối tương tác chéo</h2>
+                    <p>Chỉ admin cấu hình pool, quota và theo dõi luồng tương tác giữa các user</p>
                   </div>
                   <div class="card-actions">
                     <button id="refreshEngagementBtn" class="btn btn-secondary" type="button">
@@ -385,14 +394,9 @@
                   </div>
                 </div>
 
-                <div class="field-list">
-                  <div class="field">
-                    <div class="field-text">
-                      <label for="engagementEnabled">Chế độ tương tác</label>
-                      <span>Admin bật/tắt cho toàn hệ thống; user không thể tự thay đổi</span>
-                    </div>
-                    <input id="engagementEnabled" class="switch" type="checkbox" disabled />
-                  </div>
+                <div class="msg muted">
+                  Pool và quota do admin điều phối. Extension chạy im lặng theo nhiệm vụ được giao;
+                  bạn không cần tự cấu hình.
                 </div>
 
                 <div class="stat-grid engagement-stats">
@@ -402,19 +406,24 @@
                     <span class="stat-hint" id="engagementQueueMode">—</span>
                   </div>
                   <div class="stat-card">
-                    <span class="stat-label">Vote hôm nay</span>
-                    <strong class="stat-value" id="engagementVotesToday">0</strong>
-                    <span class="stat-hint">task vote đã nhận</span>
+                    <span class="stat-label">Đã đóng góp</span>
+                    <strong class="stat-value" id="engagementContributedToday">0</strong>
+                    <span class="stat-hint">task thành công hôm nay</span>
                   </div>
                   <div class="stat-card">
-                    <span class="stat-label">Cmt/Reply hôm nay</span>
-                    <strong class="stat-value accent" id="engagementCommentsToday">0</strong>
-                    <span class="stat-hint">task comment + reply đã nhận</span>
+                    <span class="stat-label">Bài tôi đã nhận</span>
+                    <strong class="stat-value accent" id="engagementReceivedToday">0</strong>
+                    <span class="stat-hint">vote/comment thành công</span>
                   </div>
                   <div class="stat-card">
                     <span class="stat-label">Chờ xử lý</span>
                     <strong class="stat-value" id="engagementPendingCount">—</strong>
                     <span class="stat-hint" id="engagementLastRun">chưa chạy lần nào</span>
+                  </div>
+                  <div class="stat-card">
+                    <span class="stat-label">Tiến độ Ultra</span>
+                    <strong class="stat-value accent" id="engagementUltraProgress">0/20</strong>
+                    <span class="stat-hint" id="engagementUltraCredits">0 lượt có thể dùng</span>
                   </div>
                 </div>
 
@@ -429,12 +438,12 @@
               <div class="card admin-only">
                 <div class="card-head">
                   <div>
-                    <h2>Cài đặt máy này</h2>
-                    <p>Chu kỳ, quota và nhịp chạy của worker tương tác chéo</p>
+                    <h2>Điều phối pool</h2>
+                    <p>Chỉ admin quyết định quota nhận/đóng góp và nhịp lặp</p>
                   </div>
                   <div class="card-actions">
                     <button id="saveEngSettingsBtn" class="btn btn-primary" type="button">
-                      Lưu cài đặt
+                      Lưu điều phối
                     </button>
                   </div>
                 </div>
@@ -467,11 +476,57 @@
                     </div>
                     <input id="engDailyCap" type="number" min="1" max="50" value="3" />
                   </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="poolReceivePostLimit">Số bài nhận / user</label>
+                      <span>Số bài mới của mỗi user được đưa vào pool</span>
+                    </div>
+                    <input id="poolReceivePostLimit" type="number" min="1" max="10" value="3" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="poolDiscussionsPerPost">Chuỗi thảo luận / bài</label>
+                      <span>Tạo tối đa 50 chuỗi độc lập; mỗi chuỗi có ngẫu nhiên 2–3 lượt reply</span>
+                    </div>
+                    <input id="poolDiscussionsPerPost" type="number" min="1" max="50" value="40" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="poolRepeatInterval">Khoảng cách lặp (phút)</label>
+                      <span>Khoảng nghỉ giữa các chuỗi trên cùng bài</span>
+                    </div>
+                    <input id="poolRepeatInterval" type="number" min="15" max="1440" value="45" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="poolContributionCap">Quota đóng góp / user / ngày</label>
+                      <span>Tổng task tối đa được phân cho mỗi user</span>
+                    </div>
+                    <input id="poolContributionCap" type="number" min="1" max="100" value="20" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="poolUltraThreshold">Mốc nhận 1 lượt Ultra</label>
+                      <span>Số tương tác thành công để đổi thành một lượt đẩy bài</span>
+                    </div>
+                    <input id="poolUltraThreshold" type="number" min="1" max="1000" value="20" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="poolPolicyUsername">Quyền tham gia của user</label>
+                      <span>Admin có thể tạm dừng/mở lại riêng một tài khoản mà không thu hồi thiết bị</span>
+                    </div>
+                    <div class="inline-inputs">
+                      <input id="poolPolicyUsername" type="text" placeholder="username" spellcheck="false" />
+                      <label class="check"><input id="poolPolicyEnabled" type="checkbox" checked /> Được tham gia</label>
+                      <button id="savePoolUserPolicyBtn" class="btn btn-secondary" type="button">Áp dụng</button>
+                    </div>
+                  </div>
                 </div>
                 <div id="engSettingsMessage" class="msg hidden"></div>
               </div>
 
-              <div class="card admin-only">
+              <div class="card admin-only hidden">
                 <div class="card-head">
                   <div>
                     <h2>Tạo campaign</h2>
@@ -584,8 +639,8 @@
               <div class="card admin-only">
                 <div class="card-head">
                   <div>
-                    <h2>Kịch bản thảo luận</h2>
-                    <p>Dán JSON turns (A→B→A→B) hoặc format cũ discussion/answer</p>
+                    <h2>Kịch bản thảo luận bằng AI</h2>
+                    <p>Copy prompt sang ChatGPT/Gemini rồi dán JSON chuỗi 2–3 lượt</p>
                   </div>
                   <div class="card-actions">
                     <button id="validateThreadsBtn" class="btn btn-secondary" type="button">
@@ -611,15 +666,42 @@
                     </div>
                     <input id="threadDefaultVisitor" type="text" placeholder="username" spellcheck="false" />
                   </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="threadPromptCount">Số chuỗi cần tạo</label>
+                      <span>Có thể tạo 30–40 chuỗi/lần; AI chọn ngẫu nhiên 2 hoặc 3 lượt cho từng chuỗi</span>
+                    </div>
+                    <div class="inline-inputs">
+                      <input id="threadPromptCount" type="number" min="1" max="50" value="40" />
+                      <button id="copyThreadPromptBtn" class="btn btn-secondary" type="button">Copy prompt</button>
+                    </div>
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="pushCommentCount">Push comment</label>
+                      <span>Ưu tiên bài đích nhận thêm chuỗi; vẫn giữ cooldown và quota actor</span>
+                    </div>
+                    <div class="inline-inputs">
+                      <input id="pushCommentCount" type="number" min="1" max="50" value="5" />
+                      <button id="pushCommentsBtn" class="btn btn-primary" type="button">Đẩy bài</button>
+                    </div>
+                  </div>
                 </div>
                 <textarea
                   id="threadJsonInput"
                   class="code-input"
                   rows="8"
                   spellcheck="false"
-                  placeholder='[{"name":"vd","actors":{"A":"visitor","B":"author"},"turns":[{"actor":"A","content":"..."},{"actor":"B","content":"..."}]}]'
+                  placeholder='[{"name":"vd","actors":{"A":"visitor","B":"author"},"turns":[{"actor":"A","content":"..."},{"actor":"B","content":"..."},{"actor":"A","content":"..."}]}]'
                 ></textarea>
                 <div id="threadImportMessage" class="msg hidden"></div>
+                <div class="list-label">Yêu cầu Push / Ultra đang chờ</div>
+                <div class="card-actions">
+                  <button id="refreshBoostsBtn" class="btn btn-secondary" type="button">Làm mới yêu cầu</button>
+                </div>
+                <div id="boostRequestsList" class="schedule-list">
+                  <div class="empty">Bấm Làm mới yêu cầu để tải.</div>
+                </div>
                 <div class="list-label">Xem trước</div>
                 <div id="threadPreviewList" class="thread-preview-list">
                   <div class="empty">Dán JSON rồi bấm Kiểm tra.</div>
@@ -730,82 +812,6 @@
               </div>
             </section>
 
-            <section class="panel hidden admin-only" data-panel="post-sync">
-              <div id="postSyncFlash" class="flash"></div>
-              <div class="card">
-                <div class="card-head">
-                  <div>
-                    <h2>Tổng quan leader</h2>
-                    <p>Máy admin này có thể làm leader và xử lý các job sync mỗi 5 phút</p>
-                  </div>
-                  <div class="card-actions">
-                    <button id="postSyncCheckSessionBtn" class="btn" type="button">Kiểm tra phiên</button>
-                    <button id="postSyncRefreshBtn" class="btn btn-primary" type="button">Làm mới</button>
-                  </div>
-                </div>
-                <div id="postSyncOverview" class="grid-2"></div>
-              </div>
-
-              <div class="card">
-                <div class="card-head">
-                  <div>
-                    <h2>Yêu cầu quét</h2>
-                    <p>Xếp lịch quét feed chuyên mục hoặc quét một user cụ thể</p>
-                  </div>
-                </div>
-                <div class="form-row">
-                  <label for="postSyncCommunitySlug">Chuyên mục</label>
-                  <input id="postSyncCommunitySlug" class="input" type="text" value="cai-tien-moi-ngay" />
-                  <button id="postSyncFeedBtn" class="btn btn-primary" type="button">Quét feed</button>
-                </div>
-                <div class="form-row">
-                  <label for="postSyncUsernameInput">Username</label>
-                  <input id="postSyncUsernameInput" class="input" type="text" placeholder="vd: an.nguyenhongsat1" />
-                  <button id="postSyncUserBtn" class="btn" type="button">Quét user</button>
-                </div>
-              </div>
-
-              <div class="card">
-                <div class="card-head">
-                  <div>
-                    <h2>Nguồn & lịch quét</h2>
-                  </div>
-                </div>
-                <div id="postSyncSources"></div>
-              </div>
-
-              <div class="card">
-                <div class="card-head">
-                  <div>
-                    <h2>Bài mới xác minh</h2>
-                  </div>
-                  <div class="card-actions">
-                    <select id="postSyncNewDays" class="input">
-                      <option value="1">24h qua</option>
-                      <option value="7" selected>7 ngày</option>
-                      <option value="30">30 ngày</option>
-                    </select>
-                    <select id="postSyncNewFilter" class="input">
-                      <option value="">Tất cả nguồn</option>
-                      <option value="post_hint">post_hint</option>
-                      <option value="feed_discovery">feed_discovery</option>
-                      <option value="user_reconcile">user_reconcile</option>
-                    </select>
-                  </div>
-                </div>
-                <div id="postSyncNewList"></div>
-              </div>
-
-              <div class="card">
-                <div class="card-head">
-                  <div>
-                    <h2>Lịch sử chạy</h2>
-                  </div>
-                </div>
-                <div id="postSyncRuns"></div>
-              </div>
-            </section>
-
             <section class="panel hidden admin-only" data-panel="users">
               <div class="stat-grid">
                 <div class="stat-card">
@@ -881,12 +887,12 @@
                 </div>
 
                 <div class="field-list">
-                  <div class="field">
+                  <div class="field post-picker-field">
                     <div class="field-text">
-                      <label for="replyScope">Bài cần trả lời</label>
-                      <span>Kho mẫu được tải riêng theo từng bài</span>
+                      <label for="replyScopeSearch">Bài cần trả lời</label>
+                      <span>Mở danh sách lớn rồi tìm theo tiêu đề hoặc ID bài</span>
                     </div>
-                    <select id="replyScope">
+                    <select id="replyScope" class="post-picker-source" tabindex="-1" aria-hidden="true">
                       <option value="">Chọn một bài…</option>
                     </select>
                   </div>
@@ -1002,12 +1008,12 @@
                 </div>
 
                 <div class="field-list">
-                  <div class="field">
+                  <div class="field post-picker-field">
                     <div class="field-text">
-                      <label for="discussionScope">Bài cần thảo luận</label>
-                      <span>Kho mẫu được tải riêng theo từng bài</span>
+                      <label for="discussionScopeSearch">Bài cần thảo luận</label>
+                      <span>Mở danh sách lớn rồi tìm theo tiêu đề hoặc ID bài</span>
                     </div>
-                    <select id="discussionScope">
+                    <select id="discussionScope" class="post-picker-source" tabindex="-1" aria-hidden="true">
                       <option value="">Chọn một bài…</option>
                     </select>
                   </div>
@@ -1326,8 +1332,8 @@
               <div class="card">
                 <div class="card-head">
                   <div>
-                    <h2>Auto comment 1 bài</h2>
-                    <p>Tự chia nhịp để hoàn thành đủ số comment trong thời gian đã chọn</p>
+                    <h2>Auto comment tối đa 5 bài</h2>
+                    <p>Tạo job riêng cho từng bài và luân phiên comment theo thời gian đã chọn</p>
                   </div>
                   <div class="card-actions">
                     <button id="startAutoCommentBtn" class="btn btn-primary" type="button">
@@ -1342,10 +1348,19 @@
                 <div id="selectedPostLabel" class="msg muted">Chưa chọn bài</div>
 
                 <div class="field-list">
+                  <div class="field post-picker-field">
+                    <div class="field-text">
+                      <label for="autoCommentOwnPostIdSearch">Bài của tôi (tối đa 5)</label>
+                      <span>Tích trực tiếp từng bài; không cần giữ Ctrl</span>
+                    </div>
+                    <select id="autoCommentOwnPostId" class="post-picker-source" multiple tabindex="-1" aria-hidden="true">
+                      <option value="" disabled>Chọn tối đa 5 bài…</option>
+                    </select>
+                  </div>
                   <div class="field">
                     <div class="field-text">
                       <label for="autoCommentExternalPostId">ID bài thành viên khác</label>
-                      <span>Không nhập thì dùng bài của anh đã chọn; có nhập thì ưu tiên ID này</span>
+                      <span>Có nhập thì chỉ chạy ID này và bỏ qua các bài đã chọn phía trên</span>
                     </div>
                     <input
                       id="autoCommentExternalPostId"
@@ -1356,8 +1371,8 @@
                   </div>
                   <div class="field">
                     <div class="field-text">
-                      <label for="autoCommentTargetCount">Số lượng comment</label>
-                      <span>Đạt đủ số này sẽ tự dừng</span>
+                      <label for="autoCommentTargetCount">Số comment mỗi bài</label>
+                      <span>Mỗi job đạt đủ số này sẽ tự dừng</span>
                     </div>
                     <input
                       id="autoCommentTargetCount"
@@ -1424,12 +1439,16 @@
 
                 <div id="autoCommentScheduleInfo" class="msg muted">Chưa có lịch hẹn.</div>
                 <div id="autoCommentMessage" class="msg hidden"></div>
+                <div class="list-label">Trạng thái từng job</div>
+                <div id="autoCommentJobsLog" class="schedule-list">
+                  <div class="empty">Chưa có job auto comment.</div>
+                </div>
                 <div class="list-label">Nhật ký tự xóa comment</div>
                 <div id="autoCommentDeleteLog" class="schedule-list">
                   <div class="empty">Chưa có comment nào trong hàng đợi tự xóa.</div>
                 </div>
                 <p class="hint">
-                  Chọn bài ở tab Bài viết. Lịch hẹn vẫn chạy sau khi đóng side panel; nếu máy
+                  Có thể chọn tối đa 5 bài ngay tại đây. Lịch hẹn vẫn chạy sau khi đóng side panel; nếu máy
                   tắt qua giờ hẹn, job sẽ chạy ngay khi Chrome mở lại.
                 </p>
               </div>
@@ -1453,12 +1472,14 @@
                 </div>
 
                 <div class="field-list">
-                  <div class="field">
+                  <div class="field post-picker-field">
                     <div class="field-text">
-                      <label for="deleteTechhubId">techhub_id</label>
-                      <span>Chọn bài ở tab Bài viết để tự điền</span>
+                      <label for="deleteTechhubIdSearch">Bài cần xóa</label>
+                      <span>Tích trực tiếp tối đa 5 bài; kiểm tra kỹ trước khi hẹn xóa</span>
                     </div>
-                    <input id="deleteTechhubId" type="number" min="1" placeholder="vd: 4097" />
+                    <select id="deleteTechhubId" class="post-picker-source" multiple tabindex="-1" aria-hidden="true">
+                      <option value="" disabled>Chưa có bài để chọn</option>
+                    </select>
                   </div>
                   <div class="field">
                     <div class="field-text">
@@ -1469,9 +1490,13 @@
                   </div>
                 </div>
 
+                <div id="deleteSelectedLabel" class="msg muted">Chưa chọn bài.</div>
                 <div id="scheduledDeletesList" class="schedule-list"></div>
                 <div id="deleteScheduleMessage" class="msg hidden"></div>
-                <p class="hint">Cần quét bài trước để có uuid. Xóa bài không hoàn tác được.</p>
+                <p class="hint">
+                  Hẹn xóa hỗ trợ tối đa 5 bài cùng lúc. “Xóa ngay” chỉ xử lý một bài
+                  mỗi lần vì thao tác không thể hoàn tác.
+                </p>
               </div>
             </section>
           </div>
@@ -1482,8 +1507,6 @@
     <script src="config.js"></script>
     <script src="supabase-client.js"></script>
     <script src="discussion-import.js"></script>
-    <script src="post-sync-client.js"></script>
-    <script src="post-sync-ui.js"></script>
     <script src="popup.js"></script>
     <script src="engagement-ui.js"></script>
   </body>

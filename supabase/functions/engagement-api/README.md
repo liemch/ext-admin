@@ -2,13 +2,14 @@
 
 Điều phối tương tác giữa các user (cross-user engagement). Extension giữ
 cookie/CSRF TechHub nên vẫn là nơi **thực thi**; function này giữ **hàng đợi,
-lease, campaign và kịch bản thảo luận**.
+lease, pool tự cân bằng, campaign tương thích và kịch bản thảo luận**.
 
 ## Triển khai
 
 ```bash
-# 1. Áp migration 012 trước (SQL Editor hoặc CLI)
+# 1. Áp migration 012 rồi 014 (SQL Editor hoặc CLI)
 supabase db query --linked --file supabase/migrations/012_cross_user_engagement.sql
+supabase db query --linked --file supabase/migrations/014_engagement_user_pool.sql
 
 # 2. Deploy (dùng chung ADMIN_TOKEN với admin-api)
 supabase secrets set ADMIN_TOKEN="<token-đã-có>"
@@ -42,9 +43,14 @@ const ENGAGEMENT_API_CONFIG = {
 | Action | Quyền | Việc |
 |---|---|---|
 | `heartbeat` | device | Đăng ký máy mới, báo online, tự xếp hàng turn tới hạn |
+| `redeemUltra` | device | Dùng một lượt Ultra cho bài verified thuộc chính user |
+| `submitOwnThreads` | device | Nhập JSON 2–3 turn cho bài verified của mình; server tự chọn visitor online |
 | `claimTask` | device | Claim atomic 1 task (lease 5 phút, mỗi actor giữ 1 task) |
 | `completeTask` | device | Ghi kết quả TechHub + interaction, mở turn kế tiếp |
 | `failTask` | device | Phân loại retry / vĩnh viễn / `session_required` |
+| `getPoolSettings` / `setPoolSettings` | admin | Đọc/sửa quota và cooldown chung |
+| `setUserPolicy` | admin | Bật/tắt quyền tham gia riêng một user |
+| `pushComments` | admin | Tạo yêu cầu ưu tiên comment cho một bài verified |
 | `releaseMyClaims` | device | Trả claim về queue (đổi tài khoản) |
 | `clearSessionRequired` | device | Mở lại task chờ phiên sau khi đăng nhập lại |
 | `getStatus` | device/admin | Tiến độ actor cho UI |
@@ -58,15 +64,19 @@ const ENGAGEMENT_API_CONFIG = {
 ## Luồng claim → thực thi
 
 1. Worker gọi `heartbeat` (đăng ký máy nếu mới).
-2. Worker gọi `claimTask` → nhận đúng 1 task + lease.
-3. Worker đọc trạng thái thật trên TechHub rồi vote/comment/reply.
-4. Thành công → `completeTask` (kèm `techhubResultId`); lỗi → `failTask`
+2. Heartbeat chỉ bổ sung pool khi có ít nhất 2 user khác nhau cùng còn trong
+   `users`, đang online/bật tham gia và mỗi người có bài `open + verified` trong
+   `posts`. Bài ngoài danh sách thành viên và task tự tương tác đều bị loại.
+3. Worker gọi `claimTask` → nhận đúng 1 task + lease.
+4. Worker đọc trạng thái thật trên TechHub rồi vote/comment/reply.
+5. Thành công → `completeTask` (kèm `techhubResultId`) và cộng điểm đúng một lần; lỗi → `failTask`.
+6. Admin tạo nội dung bằng prompt ChatGPT/Gemini, nhập JSON 2–3 turn; server chỉ mở turn kế tiếp khi có comment ID thật.
    (kèm `httpStatus`, `content` đã thử để retry dùng lại).
-5. Task hết lease tự về queue; `idempotency_key` ngăn tạo trùng.
+6. Task hết lease tự về queue; `idempotency_key` ngăn tạo trùng.
 
 ## Ghi chú an toàn
 
-- Bảng `engagement_*` / `discussion_*` bật RLS, anon chỉ SELECT.
+- Bảng policy/reward/boost bật RLS và thu toàn bộ quyền `anon`/`authenticated`.
   Mọi ghi điều phối đi qua function này bằng service role.
 - RPC `claim_engagement_task` / `release_actor_claims` bị `REVOKE` khỏi
   `anon`/`authenticated` — chỉ service role được gọi.

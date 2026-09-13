@@ -1,5 +1,27 @@
 # Implementation Plan — Đồng bộ bài viết TechHub
 
+## Quyết định hiện hành — đồng bộ cá nhân đơn giản
+
+Từ bản hiện hành, luồng mặc định không còn phụ thuộc máy admin leader, hint hay
+hàng đợi quét:
+
+- Mỗi user đăng nhập TechHub tự tải danh sách bài theo chính username của mình.
+- User bấm **Đồng bộ bài** trong menu **Bài viết**; service worker cũng chạy im
+  lặng mỗi 20 phút khi Chrome đang hoạt động.
+- Extension gửi từng lô tối đa 200 bài đến `post-sync-api.saveMyScannedPosts` bằng
+  device token. Server lấy chủ sở hữu từ device token, chỉ nhận bài có tác giả
+  trùng khớp, rồi upsert vào `posts` và đánh dấu `verified`.
+- UI leader/queue đã được gỡ khỏi popup. Các bảng, action và worker leader bên
+  dưới được giữ để tương thích dữ liệu cũ và công cụ bảo trì, nhưng không còn là
+  đường chạy mặc định của extension.
+- Sau khi tải đủ toàn bộ các trang và lưu thành công, server đối chiếu danh sách
+  ID còn tồn tại rồi xóa khỏi `posts` các bài của chính user đã biến mất trên
+  TechHub. Nếu bất kỳ trang nào lỗi, sai định dạng hoặc vượt giới hạn 50 trang,
+  lượt quét dừng trước bước xóa để tránh mất dữ liệu do kết quả không đầy đủ.
+
+Phần còn lại của tài liệu mô tả kiến trúc leader trước đây và chỉ còn giá trị
+tham khảo/bảo trì.
+
 ## 1. Kết quả cần đạt
 
 Hệ thống tự phát hiện và cập nhật bài viết của các user đã đăng ký mà không yêu cầu từng user quét danh sách bài, không tạo request trùng lên TechHub và không bắt admin vận hành thủ công mỗi ngày.
@@ -120,6 +142,14 @@ Leader tái sử dụng `fetchTechHubArticles(username, page)`:
 - Concurrency tối đa 2–3 user.
 - Delay 1–2 giây và jitter.
 - Quét tay một user cách lượt gần nhất tối thiểu 10 phút.
+
+Riêng nút **Quét bài** trên máy admin là thao tác đồng bộ trực tiếp: extension
+đã tải đủ danh sách từ TechHub sẽ gửi các lô bài qua action admin
+`saveScannedPosts` để upsert `posts` ngay. Luồng này không đi qua cooldown hoặc
+hàng đợi leader; hàng đợi `user_reconcile` chỉ dùng cho đồng bộ nền.
+Popup không render toàn bộ payload quét: danh sách chính chỉ đọc tối đa 100 bài
+có `published_at IS NULL`; bài đã publish vẫn có thể được lưu phục vụ cache và
+nghiệp vụ đồng bộ khác nhưng không xuất hiện trong danh sách này.
 
 ### 4.5 Campaign đọc dữ liệu sync
 
@@ -305,6 +335,7 @@ postSyncReconcileSchedule   enqueue due_users khi đến hạn
 ```
 
 Mọi admin device có thể thức dậy nhưng API chỉ cho một device claim. Worker xử lý tối đa một job mỗi wake để phù hợp MV3.
+Khi service worker khởi động trên máy leader, worker dọn local lock mồ côi, enqueue và claim ngay một lượt để lease/online được ghi nhận; alarm 5 phút tiếp tục là cơ chế dự phòng.
 
 ### 7.3 Silent operation
 
@@ -330,9 +361,12 @@ Lưu local lock có TTL trong `chrome.storage.local`. Server lease vẫn là ngu
 
 ### 8.2 Admin — menu “Đồng bộ bài viết”
 
+- Luồng mặc định chỉ có một nút **Đồng bộ ngay**: kiểm tra phiên TechHub, xếp job feed và cho máy leader xử lý ngay. UI dùng trạng thái tiếng Việt dễ hiểu; leader/lease/queue, nguồn và lịch sử được đưa vào phần nâng cao.
+
 Tổng quan:
 
 - Leader hiện tại, online/offline, lease expiry.
+- Nút **Nhận leader & chạy ngay** cho phép admin claim lease và xử lý một job tức thời; yêu cầu **Quét user** cũng kích hoạt lượt này sau khi enqueue thành công.
 - Queue pending/running/retry/session_required.
 - Feed discovery gần nhất/kế tiếp và request count 24 giờ.
 

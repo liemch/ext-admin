@@ -206,6 +206,19 @@ type Device = {
   revoked: boolean;
 };
 
+type EngagementPreferences = {
+  username: string;
+  enabled: boolean;
+  receive_post_limit: number;
+  discussions_per_post: number;
+  repeat_interval_minutes: number;
+  daily_contribution_cap: number;
+  contribution_points: number;
+  ultra_credits: number;
+  created_at?: string;
+  updated_at?: string;
+};
+
 type Auth =
   | { kind: "admin" }
   | { kind: "device"; device: Device; tokenHash: string }
@@ -288,6 +301,311 @@ async function isEngagementEnabled(rest: Rest): Promise<boolean> {
   const value = await readSetting(rest, "engagement_enabled");
   // Missing setting is enabled for backward compatibility and for new users.
   return value === undefined || value === null || value === true || value === "true" || value === 1 || value === "1";
+}
+
+function settingEnabled(value: unknown, fallback = true): boolean {
+  if (value === undefined || value === null) return fallback;
+  return value === true || value === "true" || value === 1 || value === "1";
+}
+
+function clampPreference(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(parsed)));
+}
+
+async function getOrCreatePreferences(
+  rest: Rest,
+  username: string
+): Promise<EngagementPreferences> {
+  const rows = await rest.getJson<EngagementPreferences[]>("engagement_preferences", {
+    username: `eq.${username}`,
+    select: "*",
+    limit: "1",
+  });
+  const existing = firstRow(rows);
+  if (existing) return existing;
+  const [receivePostLimit, discussionsPerPost, repeatIntervalMinutes, dailyContributionCap] = await Promise.all([
+    readSetting(rest, "engagement_pool_receive_post_limit"),
+    readSetting(rest, "engagement_pool_discussions_per_post"),
+    readSetting(rest, "engagement_pool_repeat_interval_minutes"),
+    readSetting(rest, "engagement_pool_daily_contribution_cap"),
+  ]);
+  const defaults = {
+    receive_post_limit: clampPreference(receivePostLimit, 3, 1, 10),
+    discussions_per_post: clampPreference(discussionsPerPost, 40, 1, 50),
+    repeat_interval_minutes: clampPreference(repeatIntervalMinutes, 45, 15, 1440),
+    daily_contribution_cap: clampPreference(dailyContributionCap, 20, 1, 100),
+  };
+  const created = await rest.postJson<EngagementPreferences[]>(
+    "engagement_preferences",
+    {
+      username,
+      enabled: true,
+      ...defaults,
+    },
+    "resolution=ignore-duplicates"
+  );
+  return firstRow(created) || {
+    username,
+    enabled: true,
+    ...defaults,
+    contribution_points: 0,
+    ultra_credits: 0,
+  };
+}
+
+function vnDayKey(): string {
+  return new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+async function reconcileRewards(rest: Rest, username: string): Promise<number> {
+  const [tasks, events, thresholdValue] = await Promise.all([
+    rest.getJson<Array<{ id: number }>>("engagement_tasks", {
+      actor_username: `eq.${username}`,
+      status: "eq.succeeded",
+      select: "id",
+      order: "completed_at.desc",
+      limit: "1000",
+    }),
+    rest.getJson<Array<{ task_id: number }>>("engagement_reward_events", {
+      username: `eq.${username}`,
+      select: "task_id",
+      order: "created_at.desc",
+      limit: "1000",
+    }),
+    readSetting(rest, "engagement_ultra_threshold"),
+  ]);
+  const recorded = new Set((events || []).map((event) => Number(event.task_id)));
+  const threshold = clampPreference(thresholdValue, 20, 1, 1000);
+  let repaired = 0;
+  for (const task of tasks || []) {
+    if (recorded.has(Number(task.id))) continue;
+    await rest.rpc("record_engagement_reward", {
+      p_username: username,
+      p_task_id: Number(task.id),
+      p_threshold: threshold,
+    });
+    repaired += 1;
+  }
+  return repaired;
+}
+
+/**
+ * Tự duy trì vote giữa các user online. Comment/reply không sinh nội dung rời:
+ * admin nhập kịch bản 2–3 turn để queueDiscussionTurn mở đúng chuỗi ancestry.
+ * Idempotency key theo ngày ngăn heartbeat tạo trùng.
+ */
+async function ensureMutualPoolTasks(rest: Rest): Promise<{
+  participants: number;
+  posts: number;
+  created: number;
+  waitingForPeers: boolean;
+}> {
+  const poolEnabled = settingEnabled(await readSetting(rest, "engagement_pool_enabled"), true);
+  if (!poolEnabled || !(await isEngagementEnabled(rest)) || await isKillSwitchOn(rest)) {
+    return { participants: 0, posts: 0, created: 0, waitingForPeers: false };
+  }
+  const offlineMinutes = clampPreference(
+    await readSetting(rest, "engagement_pool_offline_after_minutes"),
+    30,
+    5,
+    1440
+  );
+  const globalCommentGapMinutes = clampPreference(
+    await readSetting(rest, "engagement_pool_global_comment_gap_minutes"),
+    5,
+    1,
+    120
+  );
+  const sinceIso = new Date(Date.now() - offlineMinutes * 60 * 1000).toISOString();
+  const [devices, activeUsers] = await Promise.all([
+    rest.getJson<Array<{ username: string }>>("engagement_devices", {
+      revoked: "eq.false",
+      last_seen_at: `gte.${sinceIso}`,
+      select: "username",
+      limit: "1000",
+    }),
+    rest.getJson<Array<{ username: string }>>("users", {
+      is_locked: "eq.false",
+      select: "username",
+      limit: "10000",
+    }),
+  ]);
+  const activeUserSet = new Set((activeUsers || []).map((row) => row.username).filter(Boolean));
+  const onlineNames = [...new Set((devices || []).map((row) => row.username).filter(Boolean))];
+  const memberOnlineNames = onlineNames.filter((name) => activeUserSet.has(name));
+  if (memberOnlineNames.length === 0) {
+    return { participants: 0, posts: 0, created: 0, waitingForPeers: true };
+  }
+
+  const prefRows = await rest.getJson<EngagementPreferences[]>("engagement_preferences", {
+    username: `in.(${memberOnlineNames.join(",")})`,
+    select: "*",
+    limit: "1000",
+  });
+  const prefByUser = new Map((prefRows || []).map((pref) => [pref.username, pref]));
+  for (const username of memberOnlineNames) {
+    if (!prefByUser.has(username)) {
+      prefByUser.set(username, await getOrCreatePreferences(rest, username));
+    }
+  }
+  const onlineParticipants = memberOnlineNames.filter(
+    (name) => prefByUser.get(name)?.enabled !== false
+  );
+
+  const [posts, activeBoosts] = await Promise.all([
+    rest.getJson<PostRow[]>("posts", {
+      status: "eq.open",
+      verification_status: "eq.verified",
+      last_verified_at: "not.is.null",
+      select: "techhub_id,techhub_uuid,username,title,status,published_at,created_at,community_slug,verification_status,last_verified_at",
+      order: "created_at.desc",
+      limit: "500",
+    }),
+    rest.getJson<Array<{ techhub_id: number; requested_discussions: number }>>(
+      "engagement_boost_requests",
+      {
+        status: "eq.active",
+        expires_at: `gt.${new Date().toISOString()}`,
+        select: "techhub_id,requested_discussions",
+        order: "created_at.desc",
+        limit: "500",
+      }
+    ),
+  ]);
+  const boostByPost = new Map<number, number>();
+  for (const boost of activeBoosts || []) {
+    boostByPost.set(
+      Number(boost.techhub_id),
+      Math.max(boostByPost.get(Number(boost.techhub_id)) || 0, Number(boost.requested_discussions) || 0)
+    );
+  }
+  const verifiedPostOwners = new Set(
+    (posts || []).map((post) => post.username).filter(Boolean) as string[]
+  );
+  // Pool chỉ dành cho thành viên còn trong users, đang online/được bật và đã có
+  // ít nhất một bài open + verified trong posts. Một người không tạo thành pool.
+  const participants = onlineParticipants.filter((name) => verifiedPostOwners.has(name));
+  if (participants.length < 2) {
+    return {
+      participants: participants.length,
+      posts: 0,
+      created: 0,
+      waitingForPeers: true,
+    };
+  }
+  const selectedPosts: PostRow[] = [];
+  const perOwner = new Map<string, number>();
+  const participantSet = new Set(participants);
+  const orderedPosts = [...(posts || [])]
+    .filter((post) => !!post.username && participantSet.has(post.username))
+    .sort((a, b) => {
+      const boosted = Number(boostByPost.has(b.techhub_id)) - Number(boostByPost.has(a.techhub_id));
+      if (boosted !== 0) return boosted;
+      return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+    });
+  const participantPostBudget = participants.reduce(
+    (sum, username) => sum + (prefByUser.get(username)?.receive_post_limit ?? 3),
+    0
+  );
+  for (const post of orderedPosts) {
+    if (!post.username || !post.techhub_uuid) continue;
+    const limit = prefByUser.get(post.username)?.receive_post_limit ?? 3;
+    const count = perOwner.get(post.username) || 0;
+    if (count >= limit) continue;
+    selectedPosts.push(post);
+    perOwner.set(post.username, count + 1);
+    if (selectedPosts.length >= participantPostBudget) break;
+  }
+
+  const day = vnDayKey();
+  const [existingPoolTasks, todayTasks] = await Promise.all([
+    rest.getJson<TaskRow[]>("engagement_tasks", {
+      idempotency_key: `like.pool:${day}:*`,
+      status: "in.(pending,claimed,succeeded)",
+      select: "idempotency_key",
+      limit: "10000",
+    }),
+    rest.getJson<TaskRow[]>("engagement_tasks", {
+      created_at: `gte.${startOfTodayVnIso()}`,
+      status: "neq.cancelled",
+      select: "actor_username",
+      limit: "10000",
+    }),
+  ]);
+  const existingKeys = new Set((existingPoolTasks || []).map((task) => task.idempotency_key));
+  const actorCounts = new Map<string, number>();
+  for (const task of todayTasks || []) {
+    actorCounts.set(task.actor_username, (actorCounts.get(task.actor_username) || 0) + 1);
+  }
+  const toInsert: Record<string, unknown>[] = [];
+  let sequence = 0;
+  const scheduleAt = (extraMinutes = 0) => {
+    sequence += 1;
+    return new Date(
+      Date.now() + (sequence * globalCommentGapMinutes + extraMinutes) * 60 * 1000 + Math.random() * 3 * 60 * 1000
+    ).toISOString();
+  };
+  const reserveActor = (candidates: string[]): string | null => {
+    const ordered = shuffle(candidates).sort(
+      (a, b) => (actorCounts.get(a) || 0) - (actorCounts.get(b) || 0)
+    );
+    for (const actor of ordered) {
+      const cap = prefByUser.get(actor)?.daily_contribution_cap ?? 6;
+      if ((actorCounts.get(actor) || 0) < cap) return actor;
+    }
+    return null;
+  };
+
+  for (const post of selectedPosts) {
+    if (!post.username) continue;
+    const candidates = participants.filter((actor) => actor !== post.username);
+    if (!candidates.length) continue;
+    const voteActor = reserveActor(candidates);
+    if (voteActor) {
+      const key = `pool:${day}:${post.techhub_id}:vote`;
+      if (!existingKeys.has(key)) {
+        toInsert.push({
+          actor_username: voteActor,
+          target_username: post.username,
+          techhub_id: post.techhub_id,
+          techhub_uuid: post.techhub_uuid,
+          action: "vote",
+          status: "pending",
+          scheduled_at: scheduleAt(),
+          max_attempts: 5,
+          idempotency_key: key,
+        });
+        existingKeys.add(key);
+        actorCounts.set(voteActor, (actorCounts.get(voteActor) || 0) + 1);
+      }
+    }
+  }
+
+  let created = 0;
+  for (let i = 0; i < toInsert.length; i += 100) {
+    const response = await rest.post(
+      "engagement_tasks",
+      toInsert.slice(i, i + 100),
+      "resolution=ignore-duplicates"
+    );
+    if (!response.ok) throw new HttpError(`Không tạo được pool task (HTTP ${response.status}).`, 500);
+    const rows = await response.json().catch(() => []);
+    created += Array.isArray(rows) ? rows.length : 0;
+  }
+  if (created > 0) {
+    await logEvent(rest, {
+      event: "pool_refilled",
+      detail: { participants: participants.length, posts: selectedPosts.length, created, day },
+    });
+  }
+  return {
+    participants: participants.length,
+    posts: selectedPosts.length,
+    created,
+    waitingForPeers: participants.length < 2,
+  };
 }
 
 async function logEvent(
@@ -386,9 +704,9 @@ function parseThreadIndex(raw: unknown, index: number): NormalizedThread {
       400
     );
   }
-  if (turnsRaw.length < 2 || turnsRaw.length > 4) {
+  if (turnsRaw.length < 2 || turnsRaw.length > 3) {
     throw new HttpError(
-      `${label}: số turn phải từ 2 đến 4 (nhận ${turnsRaw.length}).`,
+      `${label}: số turn phải là 2 hoặc 3 (nhận ${turnsRaw.length}).`,
       400
     );
   }
@@ -982,7 +1300,19 @@ async function handleHeartbeat(
     }
   }
 
-  const queuedTurns = await queueDueDiscussionTurns(rest, device.username);
+  const preferences = await getOrCreatePreferences(rest, device.username);
+  const queuedTurns = preferences.enabled
+    ? await queueDueDiscussionTurns(rest, device.username)
+    : 0;
+  if (!preferences.enabled) {
+    await rest.rpc("release_actor_claims", {
+      p_actor: device.username,
+      p_device_id: device.device_id,
+      p_now: nowIso,
+    }).catch(() => 0);
+  }
+  const pool = await ensureMutualPoolTasks(rest);
+  await cancelTasksForInvalidPosts(rest, device.username);
   const pending = await rest.getJson<Array<{ id: number }>>("engagement_tasks", {
     actor_username: `eq.${device.username}`,
     status: "eq.pending",
@@ -1010,18 +1340,156 @@ async function handleHeartbeat(
     pendingCount: pending?.length ?? 0,
     claimedCount: claimed?.length ?? 0,
     queuedTurns,
+    preferences,
+    pool,
   });
 }
 
-// Hủy các task pending của actor chỉ tới bài đã đóng/xóa/rejected/stale
-// (vô hiệu hóa theo dõi: PLAN_POST_SYNC §4).
+async function getActiveUsernames(rest: Rest): Promise<Set<string>> {
+  const rows = await rest.getJson<Array<{ username: string }>>("users", {
+    is_locked: "eq.false",
+    select: "username",
+    limit: "10000",
+  });
+  return new Set((rows || []).map((row) => row.username).filter(Boolean));
+}
+
+async function writeSetting(rest: Rest, key: string, value: unknown, description: string) {
+  const rows = await rest.getJson<Array<{ key: string }>>("settings", {
+    key: `eq.${key}`,
+    select: "key",
+    limit: "1",
+  });
+  if (firstRow(rows)) {
+    const response = await rest.patch("settings", { key: `eq.${key}` }, {
+      value,
+      updated_at: new Date().toISOString(),
+    });
+    if (!response.ok) throw new HttpError(`Không cập nhật được setting ${key}.`, 500);
+    return;
+  }
+  const response = await rest.post("settings", { key, value, description });
+  if (!response.ok) throw new HttpError(`Không tạo được setting ${key}.`, 500);
+}
+
+async function readPoolSettings(rest: Rest) {
+  const values = await Promise.all([
+    readSetting(rest, "engagement_pool_enabled"),
+    readSetting(rest, "engagement_pool_receive_post_limit"),
+    readSetting(rest, "engagement_pool_discussions_per_post"),
+    readSetting(rest, "engagement_pool_repeat_interval_minutes"),
+    readSetting(rest, "engagement_pool_daily_contribution_cap"),
+    readSetting(rest, "engagement_ultra_threshold"),
+    readSetting(rest, "engagement_ultra_discussions"),
+  ]);
+  return {
+    enabled: settingEnabled(values[0], true),
+    receivePostLimit: clampPreference(values[1], 3, 1, 10),
+    discussionsPerPost: clampPreference(values[2], 40, 1, 50),
+    repeatIntervalMinutes: clampPreference(values[3], 45, 15, 1440),
+    dailyContributionCap: clampPreference(values[4], 20, 1, 100),
+    ultraThreshold: clampPreference(values[5], 20, 1, 1000),
+    ultraDiscussions: clampPreference(values[6], 5, 1, 50),
+    minTurns: 2,
+    maxTurns: 3,
+  };
+}
+
+async function handleGetPoolSettings(rest: Rest, auth: Auth) {
+  requireAdmin(auth);
+  return json({ ok: true, settings: await readPoolSettings(rest) });
+}
+
+async function handleSetUserPolicy(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  requireAdmin(auth);
+  const username = String(body.username || "").trim();
+  if (!isUsername(username)) throw new HttpError("username không hợp lệ.", 400);
+  const current = await getOrCreatePreferences(rest, username);
+  const enabled = body.enabled !== false;
+  const updated = await rest.patchJson<EngagementPreferences[]>(
+    "engagement_preferences",
+    { username: `eq.${username}` },
+    { enabled, updated_at: new Date().toISOString() }
+  );
+  if (!enabled) {
+    await rest.patch("engagement_tasks", {
+      actor_username: `eq.${username}`,
+      status: "eq.pending",
+    }, {
+      status: "cancelled",
+      completed_at: new Date().toISOString(),
+      last_error: "Admin đã tạm dừng user khỏi pool.",
+      updated_at: new Date().toISOString(),
+    });
+  }
+  await logEvent(rest, {
+    actor_username: username,
+    event: "user_policy_updated",
+    detail: { enabled },
+  });
+  return json({ ok: true, preferences: firstRow(updated) || { ...current, enabled } });
+}
+
+async function handleSetPoolSettings(
+  rest: Rest,
+  auth: Auth,
+  body: Record<string, unknown>
+) {
+  requireAdmin(auth);
+  const settings = {
+    enabled: body.enabled !== false,
+    receivePostLimit: clampPreference(body.receivePostLimit, 3, 1, 10),
+    discussionsPerPost: clampPreference(body.discussionsPerPost, 40, 1, 50),
+    repeatIntervalMinutes: clampPreference(body.repeatIntervalMinutes, 45, 15, 1440),
+    dailyContributionCap: clampPreference(body.dailyContributionCap, 20, 1, 100),
+    ultraThreshold: clampPreference(body.ultraThreshold, 20, 1, 1000),
+    ultraDiscussions: clampPreference(body.ultraDiscussions, 5, 1, 50),
+  };
+  const entries: Array<[string, unknown, string]> = [
+    ["engagement_pool_enabled", settings.enabled, "Admin bật/tắt pool tự động"],
+    ["engagement_pool_receive_post_limit", settings.receivePostLimit, "Số bài tối đa của mỗi user"],
+    ["engagement_pool_discussions_per_post", settings.discussionsPerPost, "Số chuỗi trên mỗi bài"],
+    ["engagement_pool_repeat_interval_minutes", settings.repeatIntervalMinutes, "Khoảng cách giữa các chuỗi"],
+    ["engagement_pool_daily_contribution_cap", settings.dailyContributionCap, "Quota actor mỗi ngày"],
+    ["engagement_ultra_threshold", settings.ultraThreshold, "Mốc điểm nhận Ultra"],
+    ["engagement_ultra_discussions", settings.ultraDiscussions, "Số chuỗi cho một lượt Ultra"],
+  ];
+  for (const [key, value, description] of entries) {
+    await writeSetting(rest, key, value, description);
+  }
+  const preferencesUpdate = await rest.patch("engagement_preferences", {}, {
+    receive_post_limit: settings.receivePostLimit,
+    discussions_per_post: settings.discussionsPerPost,
+    repeat_interval_minutes: settings.repeatIntervalMinutes,
+    daily_contribution_cap: settings.dailyContributionCap,
+    updated_at: new Date().toISOString(),
+  });
+  if (!preferencesUpdate.ok) {
+    throw new HttpError("Đã lưu setting nhưng chưa đồng bộ được policy user.", 500);
+  }
+  const pool = settings.enabled
+    ? await ensureMutualPoolTasks(rest)
+    : { participants: 0, posts: 0, created: 0, waitingForPeers: false };
+  await logEvent(rest, {
+    event: "pool_settings_updated",
+    detail: settings,
+  });
+  return json({ ok: true, settings: { ...settings, minTurns: 2, maxTurns: 3 }, pool });
+}
+
+// Hủy task mở nếu actor/target không còn là thành viên hợp lệ, task tự tương tác,
+// bài không thuộc target hoặc bài đã đóng/xóa/rejected/stale.
 async function cancelTasksForInvalidPosts(rest: Rest, actorUsername: string) {
-  const taskRows = await rest.getJson<Array<{ id: number; techhub_id: number }>>(
+  const taskRows = await rest.getJson<Array<{
+    id: number;
+    techhub_id: number;
+    target_username: string | null;
+  }>>(
     "engagement_tasks",
     {
       actor_username: `eq.${actorUsername}`,
-      status: "eq.pending",
-      select: "id,techhub_id",
+      status: "in.(pending,claimed)",
+      select: "id,techhub_id,target_username",
       limit: "200",
     }
   );
@@ -1029,40 +1497,57 @@ async function cancelTasksForInvalidPosts(rest: Rest, actorUsername: string) {
   const ids = taskRows.map((t) => t.techhub_id).filter((n) => Number.isFinite(n));
   if (ids.length === 0) return { cancelled: 0 };
   const uniqueIds = [...new Set(ids)];
-  const posts = await rest.getJson<
-    Array<{ techhub_id: number; status: string; verification_status: string }>
-  >("posts", {
-    techhub_id: `in.(${uniqueIds.join(",")})`,
-    select: "techhub_id,status,verification_status",
-  });
-  const byId = new Map<number, { status: string; verification_status: string }>();
+  const [posts, activeUsers] = await Promise.all([
+    rest.getJson<
+      Array<{ techhub_id: number; username: string; status: string; verification_status: string }>
+    >("posts", {
+      techhub_id: `in.(${uniqueIds.join(",")})`,
+      select: "techhub_id,username,status,verification_status",
+    }),
+    getActiveUsernames(rest),
+  ]);
+  const byId = new Map<
+    number,
+    { username: string; status: string; verification_status: string }
+  >();
   for (const p of posts || []) byId.set(Number(p.techhub_id), p);
-  const badIds = new Set<number>();
-  for (const tid of ids) {
-    const p = byId.get(tid);
+  const badTaskIds: number[] = [];
+  for (const task of taskRows) {
+    const p = byId.get(Number(task.techhub_id));
+    const target = String(task.target_username || "").trim();
     if (!p) {
-      // Bài không còn trong DB → hủy (đã xóa).
-      badIds.add(tid);
+      badTaskIds.push(task.id);
       continue;
     }
     const st = String(p.status || "").toLowerCase();
     const vs = String(p.verification_status || "");
-    if (st !== "open" || vs !== "verified") badIds.add(tid);
+    const owner = String(p.username || "").trim();
+    if (
+      !activeUsers.has(actorUsername) ||
+      !target ||
+      !activeUsers.has(target) ||
+      target === actorUsername ||
+      owner !== target ||
+      st !== "open" ||
+      vs !== "verified"
+    ) {
+      badTaskIds.push(task.id);
+    }
   }
-  if (badIds.size === 0) return { cancelled: 0 };
-  const cancelTaskIds = taskRows
-    .filter((t) => badIds.has(Number(t.techhub_id)))
-    .map((t) => t.id);
+  if (badTaskIds.length === 0) return { cancelled: 0 };
   // Update từng lô 50.
   let cancelled = 0;
-  for (let i = 0; i < cancelTaskIds.length; i += 50) {
-    const batch = cancelTaskIds.slice(i, i + 50).join(",");
+  for (let i = 0; i < badTaskIds.length; i += 50) {
+    const batch = badTaskIds.slice(i, i + 50).join(",");
     await rest.patch(
       "engagement_tasks",
-      { id: `in.(${batch})`, status: "eq.pending" },
+      { id: `in.(${batch})`, status: "in.(pending,claimed)" },
       {
         status: "cancelled",
-        last_error: "Bài không còn mở / đã bị từ chối hoặc bị xóa.",
+        claimed_at: null,
+        claimed_by_device: null,
+        lease_until: null,
+        last_error: "Bài không còn mở/verified hoặc thành viên không còn hợp lệ.",
         updated_at: new Date().toISOString(),
       }
     );
@@ -1080,6 +1565,26 @@ async function handleClaimTask(rest: Rest, auth: Auth) {
     return json({ task: null, engagementEnabled: true, killSwitch: true });
   }
   await assertUserActive(rest, device.username);
+  const preferences = await getOrCreatePreferences(rest, device.username);
+  if (!preferences.enabled) {
+    return json({ task: null, engagementEnabled: true, participationEnabled: false, killSwitch: false });
+  }
+  const completedToday = await rest.getJson<Array<{ id: number }>>("engagement_tasks", {
+    actor_username: `eq.${device.username}`,
+    status: "eq.succeeded",
+    completed_at: `gte.${startOfTodayVnIso()}`,
+    select: "id",
+    limit: String(preferences.daily_contribution_cap),
+  });
+  if ((completedToday || []).length >= preferences.daily_contribution_cap) {
+    return json({
+      task: null,
+      engagementEnabled: true,
+      killSwitch: false,
+      dailyCapReached: true,
+      dailyContributionCap: preferences.daily_contribution_cap,
+    });
+  }
   const nowIso = new Date().toISOString();
   await rest.patch(
     "engagement_devices",
@@ -1139,6 +1644,11 @@ async function handleClaimTask(rest: Rest, auth: Auth) {
     } catch {
       // Giữ mặc định template.
     }
+  } else if (task.idempotency_key.startsWith("pool:")) {
+    // Pool tự cân bằng ưu tiên nội dung theo ngữ cảnh trên máy actor; nếu máy
+    // chưa cấu hình AI, worker tự fallback về template đang hoạt động.
+    aiAssist = true;
+    commentSource = "ai";
   }
 
   await logEvent(rest, {
@@ -1236,6 +1746,34 @@ async function handleCompleteTask(
   const httpStatus =
     typeof body.httpStatus === "number" ? body.httpStatus : null;
 
+  // Thread reply chỉ an toàn khi đã có comment ID thật để làm ancestry.
+  // Nếu TechHub POST thành công nhưng không trả ID, đưa task về queue để lượt
+  // sau reconcile comment đã đăng thay vì mở một reply chắc chắn lỗi.
+  if (task.discussion_turn_id && !techhubResultId) {
+    await rest.patch(
+      "engagement_tasks",
+      { id: `eq.${taskId}` },
+      {
+        status: "pending",
+        claimed_at: null,
+        claimed_by_device: null,
+        lease_until: null,
+        scheduled_at: new Date(Date.now() + 2 * 60 * 1000).toISOString(),
+        content,
+        last_error: "Đã đăng nhưng chưa xác định được TechHub comment ID; chờ reconcile.",
+        updated_at: nowIso,
+      }
+    );
+    await logEvent(rest, {
+      task_id: taskId,
+      campaign_id: task.campaign_id,
+      actor_username: task.actor_username,
+      event: "reconcile_required",
+      detail: { discussion_turn_id: task.discussion_turn_id },
+    });
+    throw new HttpError("Chưa xác định được comment ID; task sẽ tự đối soát lại.", 409);
+  }
+
   await rest.patch(
     "engagement_tasks",
     { id: `eq.${taskId}` },
@@ -1270,6 +1808,27 @@ async function handleCompleteTask(
     );
   } catch (error) {
     console.error("[engagement-api] record interaction failed:", error);
+  }
+
+  // Mỗi task thành công chỉ được cộng đúng một điểm nhờ unique(task_id).
+  try {
+    const ultraThreshold = clampPreference(
+      await readSetting(rest, "engagement_ultra_threshold"), 20, 1, 1000
+    );
+    await rest.rpc("record_engagement_reward", {
+      p_username: task.actor_username,
+      p_task_id: taskId,
+      p_threshold: ultraThreshold,
+    });
+  } catch (error) {
+    // Không làm task TechHub thất bại chỉ vì sổ điểm tạm lỗi; event giúp admin đối soát.
+    console.error("[engagement-api] record reward failed:", error);
+    await logEvent(rest, {
+      task_id: taskId,
+      actor_username: task.actor_username,
+      event: "reward_reconcile_required",
+      detail: { error: error instanceof Error ? error.message.slice(0, 200) : "unknown" },
+    });
   }
 
   await logEvent(rest, {
@@ -1537,6 +2096,10 @@ async function handleGetStatus(
     throw new HttpError("Unauthorized.", 401);
   }
 
+  await assertUserActive(rest, username);
+  const pool = await ensureMutualPoolTasks(rest);
+  await cancelTasksForInvalidPosts(rest, username);
+
   const todayStart = startOfTodayVnIso();
   const [pending, claimed, recent, todayTasks, sessionTasks, activeCampaigns] =
     await Promise.all([
@@ -1601,6 +2164,25 @@ async function handleGetStatus(
     limit: "20",
   });
 
+  await reconcileRewards(rest, username).catch(() => 0);
+  const [preferences, receivedTasks] = await Promise.all([
+    getOrCreatePreferences(rest, username),
+    rest.getJson<TaskRow[]>("engagement_tasks", {
+      target_username: `eq.${username}`,
+      created_at: `gte.${todayStart}`,
+      status: "eq.succeeded",
+      select: "id,action,status",
+      limit: "1000",
+    }),
+  ]);
+  const received = { vote: 0, comment: 0, reply: 0, total: 0 };
+  for (const task of receivedTasks || []) {
+    received.total += 1;
+    if (task.action in received) {
+      received[task.action as "vote" | "comment" | "reply"] += 1;
+    }
+  }
+
   const deviceRows =
     auth.kind === "admin"
       ? await rest.getJson<Device[]>("engagement_devices", {
@@ -1610,12 +2192,20 @@ async function handleGetStatus(
         })
       : null;
 
+  const ultraThreshold = clampPreference(
+    await readSetting(rest, "engagement_ultra_threshold"),
+    20,
+    1,
+    1000
+  );
+
   return json({
     actor: username,
     serverTime: new Date().toISOString(),
     killSwitch: await isKillSwitchOn(rest),
     engagementEnabled: await isEngagementEnabled(rest),
     online: true,
+    pool,
     pendingCount: pending?.length ?? 0,
     claimedCount: claimed?.length ?? 0,
     claimed: claimed || [],
@@ -1625,8 +2215,196 @@ async function handleGetStatus(
     today,
     recentTasks: recent || [],
     recentEvents: recentEvents || [],
+    preferences,
+    benefit: {
+      contributed: today.succeeded,
+      received,
+      contributionPoints: preferences.contribution_points || 0,
+      ultraCredits: preferences.ultra_credits || 0,
+      ultraThreshold,
+      ultraProgress: (preferences.contribution_points || 0) % ultraThreshold,
+    },
     devices: deviceRows,
   });
+}
+
+async function handleRedeemUltra(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  const { device } = requireDevice(auth);
+  const techhubId = toPositiveInt(body.techhubId);
+  if (!techhubId) throw new HttpError("techhubId không hợp lệ.", 400);
+  const discussions = clampPreference(
+    await readSetting(rest, "engagement_ultra_discussions"), 5, 1, 50
+  );
+  try {
+    const result = await rest.rpc("redeem_engagement_ultra", {
+      p_username: device.username,
+      p_techhub_id: techhubId,
+      p_discussions: discussions,
+    });
+    await logEvent(rest, {
+      actor_username: device.username,
+      event: "ultra_redeemed",
+      detail: { techhub_id: techhubId, discussions },
+    });
+    await ensureMutualPoolTasks(rest);
+    return json({
+      ok: true,
+      techhubId,
+      discussions,
+      reward: firstRow(result as Array<Record<string, unknown>>),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new HttpError(
+      message.includes("Không còn") ? "Bạn chưa có lượt Ultra để dùng." : message,
+      400
+    );
+  }
+}
+
+async function handleSubmitOwnThreads(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  const { device } = requireDevice(auth);
+  await assertUserActive(rest, device.username);
+  const techhubId = toPositiveInt(body.techhubId);
+  if (!techhubId) throw new HttpError("techhubId không hợp lệ.", 400);
+  if (!Array.isArray(body.threads) || body.threads.length === 0) {
+    throw new HttpError("JSON phải là mảng thread không rỗng.", 400);
+  }
+  const preferences = await getOrCreatePreferences(rest, device.username);
+  if (!preferences.enabled) throw new HttpError("Admin đang tạm dừng tài khoản khỏi pool.", 403);
+  if (body.threads.length > preferences.discussions_per_post) {
+    throw new HttpError(
+      `Admin giới hạn tối đa ${preferences.discussions_per_post} chuỗi cho mỗi bài.`,
+      400
+    );
+  }
+  const posts = await rest.getJson<PostRow[]>("posts", {
+    techhub_id: `eq.${techhubId}`,
+    username: `eq.${device.username}`,
+    status: "eq.open",
+    verification_status: "eq.verified",
+    select: "techhub_id,techhub_uuid,username,title,status,last_verified_at,created_at,published_at,community_slug",
+    limit: "1",
+  });
+  if (!firstRow(posts)) {
+    throw new HttpError("Bài không thuộc bạn, chưa verified hoặc đã đóng.", 403);
+  }
+  const existing = await rest.getJson<Array<{ id: number }>>("discussion_threads", {
+    techhub_id: `eq.${techhubId}`,
+    author_username: `eq.${device.username}`,
+    created_at: `gte.${startOfTodayVnIso()}`,
+    status: "neq.cancelled",
+    select: "id",
+    limit: String(preferences.discussions_per_post),
+  });
+  if ((existing || []).length + body.threads.length > preferences.discussions_per_post) {
+    throw new HttpError(
+      `Bài này đã dùng quota ${preferences.discussions_per_post} chuỗi hôm nay.`,
+      409
+    );
+  }
+
+  const offlineMinutes = clampPreference(
+    await readSetting(rest, "engagement_pool_offline_after_minutes"), 30, 5, 1440
+  );
+  const devices = await rest.getJson<Array<{ username: string }>>("engagement_devices", {
+    revoked: "eq.false",
+    last_seen_at: `gte.${new Date(Date.now() - offlineMinutes * 60 * 1000).toISOString()}`,
+    select: "username",
+    limit: "1000",
+  });
+  const candidateNames = [...new Set((devices || [])
+    .map((row) => row.username)
+    .filter((name) => name && name !== device.username))];
+  const [activeUsers, candidatePosts] = await Promise.all([
+    getActiveUsernames(rest),
+    candidateNames.length
+      ? rest.getJson<Array<{ username: string }>>("posts", {
+          username: `in.(${candidateNames.join(",")})`,
+          status: "eq.open",
+          verification_status: "eq.verified",
+          select: "username",
+          limit: "1000",
+        })
+      : Promise.resolve([] as Array<{ username: string }>),
+  ]);
+  const ownersWithPosts = new Set((candidatePosts || []).map((post) => post.username));
+  const visitors: string[] = [];
+  for (const name of shuffle(candidateNames)) {
+    if (!activeUsers.has(name) || !ownersWithPosts.has(name)) continue;
+    const policy = await getOrCreatePreferences(rest, name);
+    if (policy.enabled) visitors.push(name);
+  }
+  if (!visitors.length) {
+    throw new HttpError(
+      "Chưa có user khác online, còn trong hệ thống và có bài verified để mở đầu chuỗi. Nội dung chưa được nhập.",
+      409
+    );
+  }
+
+  const normalized = (body.threads as unknown[]).map((raw, index) => {
+    const thread = parseThreadIndex(raw, index);
+    const visitor = visitors[index % visitors.length];
+    return {
+      name: thread.name,
+      targetTechhubId: techhubId,
+      visitor,
+      actors: { A: "visitor", B: "author" },
+      turns: thread.turns,
+    };
+  });
+  return await handleImportThreads(rest, { kind: "admin" }, {
+    threads: normalized,
+    defaults: { techhubId },
+    dryRun: false,
+    createdBy: `user:${device.username}`,
+  });
+}
+
+async function handlePushComments(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  requireAdmin(auth);
+  const techhubId = toPositiveInt(body.techhubId);
+  if (!techhubId) throw new HttpError("techhubId không hợp lệ.", 400);
+  const discussions = clampPreference(body.discussions, 5, 1, 50);
+  const posts = await rest.getJson<PostRow[]>("posts", {
+    techhub_id: `eq.${techhubId}`,
+    status: "eq.open",
+    verification_status: "eq.verified",
+    select: "techhub_id,username,status,verification_status",
+    limit: "1",
+  });
+  const post = firstRow(posts);
+  if (!post?.username) {
+    throw new HttpError("Bài chưa xác minh, đã đóng hoặc không tồn tại.", 400);
+  }
+  const created = await rest.postJson<Array<{ id: number }>>("engagement_boost_requests", {
+    techhub_id: techhubId,
+    owner_username: post.username,
+    source: "admin",
+    requested_discussions: discussions,
+    created_by: "admin",
+  });
+  const boost = firstRow(created);
+  await logEvent(rest, {
+    event: "admin_boost_created",
+    detail: { techhub_id: techhubId, discussions },
+  });
+  await ensureMutualPoolTasks(rest);
+  return json({ ok: true, boostId: boost?.id ?? null, techhubId, discussions });
+}
+
+async function handleListBoosts(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  requireAdmin(auth);
+  const status = ["active", "completed", "cancelled", "expired"].includes(String(body.status || ""))
+    ? String(body.status)
+    : "active";
+  const boosts = await rest.getJson<Array<Record<string, unknown>>>("engagement_boost_requests", {
+    status: `eq.${status}`,
+    select: "id,techhub_id,owner_username,source,requested_discussions,status,created_by,expires_at,created_at,updated_at",
+    order: "created_at.desc",
+    limit: String(clampPreference(body.limit, 100, 1, 500)),
+  });
+  return json({ ok: true, boosts: boosts || [] });
 }
 
 // ---------------------------------------------------------------------------
@@ -1714,33 +2492,34 @@ async function handlePlanCampaign(
   const now = new Date();
   const nowIso = now.toISOString();
 
-  // 1. Actor: danh sách chỉ định hoặc máy online gần đây (fallback: mọi user mở khóa).
-  let actors: string[] = [];
-  if (input.actorUsernames && input.actorUsernames.length > 0) {
-    const locked = await getLockedUsernames(rest);
-    actors = [...new Set(input.actorUsernames.map((name) => name.trim()).filter(Boolean))]
-      .filter((name) => !locked.has(name));
-    if (actors.length === 0) throw new HttpError("Danh sách actor rỗng hoặc đều bị khóa.", 400);
-  } else {
-    const sinceIso = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
-    const seen = await rest.getJson<Array<{ username: string }>>("engagement_devices", {
-      revoked: "eq.false",
-      last_seen_at: `gte.${sinceIso}`,
-      select: "username",
-      limit: "5000",
-    });
-    const locked = await getLockedUsernames(rest);
-    actors = [...new Set((seen || []).map((row) => row.username).filter(Boolean))]
-      .filter((name) => !locked.has(name));
-    if (actors.length === 0) {
-      const users = await rest.getJson<Array<{ username: string }>>("users", {
-        is_locked: "eq.false",
+  // 1. Actor chỉ lấy từ thiết bị online gần đây và user đã opt-in. Không
+  // fallback sang bảng users vì người chưa cài sẽ làm task nằm chờ vô hạn.
+  const sinceIso = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+  const seen = await rest.getJson<Array<{ username: string }>>("engagement_devices", {
+    revoked: "eq.false",
+    last_seen_at: `gte.${sinceIso}`,
+    select: "username",
+    limit: "5000",
+  });
+  const online = [...new Set((seen || []).map((row) => row.username).filter(Boolean))];
+  const preferences = online.length
+    ? await rest.getJson<EngagementPreferences[]>("engagement_preferences", {
+        username: `in.(${online.join(",")})`,
+        enabled: "eq.true",
         select: "username",
-        limit: "1000",
-      });
-      actors = (users || []).map((row) => row.username).filter(Boolean);
-    }
-    if (actors.length === 0) throw new HttpError("Không tìm được actor nào.", 400);
+        limit: "5000",
+      })
+    : [];
+  const optedIn = new Set((preferences || []).map((row) => row.username));
+  const activeUsers = await getActiveUsernames(rest);
+  const requested = input.actorUsernames?.length
+    ? new Set(input.actorUsernames.map((name) => name.trim()).filter(Boolean))
+    : null;
+  const actors = online.filter(
+    (name) => activeUsers.has(name) && optedIn.has(name) && (!requested || requested.has(name))
+  );
+  if (actors.length === 0) {
+    throw new HttpError("Không có actor online đã bật tham gia pool.", 400);
   }
 
   // 2. Bài ứng viên: open + verification_status = verified, có UUID, trong phạm vi, tác giả không bị khóa.
@@ -1768,16 +2547,21 @@ async function handlePlanCampaign(
     postParams["published_at"] = `gte.${cutoff.toISOString()}`;
   }
   let posts = await rest.getJson<PostRow[]>("posts", postParams);
-  const lockedAuthors = await getLockedUsernames(rest);
   posts = (posts || []).filter((post) => {
     if (!post.techhub_uuid || !post.username) return false;
-    if (lockedAuthors.has(post.username)) return false;
+    if (!activeUsers.has(post.username)) return false;
     if (!post.last_verified_at) return false;
     if (!input.postScope.excludePublished && (!post.published_at || new Date(post.published_at) < cutoff)) return false;
     return true;
   });
   if (posts.length === 0) {
     throw new HttpError("Không có bài nào trong phạm vi campaign.", 400);
+  }
+  if (!posts.some((post) => actors.some((actor) => actor !== post.username))) {
+    throw new HttpError(
+      "Cần ít nhất 2 thành viên khác nhau trong users, đang online và có bài verified.",
+      400
+    );
   }
 
   // 3. Tạo campaign trước để task có campaign_id (idempotency key chứa campaign).
@@ -1800,7 +2584,7 @@ async function handlePlanCampaign(
       comment_source: ["template", "ai", "thread"].includes(input.commentSource || "")
         ? input.commentSource
         : "template",
-      created_by: "admin",
+      created_by: String(body.createdBy || "admin").slice(0, 100),
       started_at: nowIso,
     }
   );
@@ -2254,7 +3038,7 @@ async function handleImportThreads(
           actorUsername: turn.actor === "A" ? actorA : actorB,
           content: turn.content,
         })),
-        staggerMinutes: i * 2,
+        staggerMinutes: 0,
       });
     } catch (error) {
       errors.push({
@@ -2263,6 +3047,16 @@ async function handleImportThreads(
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  const repeatIntervalMinutes = clampPreference(
+    await readSetting(rest, "engagement_pool_repeat_interval_minutes"), 45, 15, 1440
+  );
+  const previewNumberByPost = new Map<number, number>();
+  for (const item of preview) {
+    const number = previewNumberByPost.get(item.techhubId) || 0;
+    item.staggerMinutes = number * repeatIntervalMinutes;
+    previewNumberByPost.set(item.techhubId, number + 1);
   }
 
   if (dryRun) {
@@ -2341,6 +3135,35 @@ async function handleImportThreads(
       techhubId: item.techhubId,
       turns: item.turns.length,
     });
+  }
+
+  // Một Push chỉ hoàn tất khi đã có đủ số chuỗi thực tế được nhập cho bài đó.
+  const importedPostIds = [...new Set(imported.map((item) => item.techhubId))];
+  for (const techhubId of importedPostIds) {
+    const boosts = await rest.getJson<Array<{
+      id: number;
+      requested_discussions: number;
+      created_at: string;
+    }>>("engagement_boost_requests", {
+      techhub_id: `eq.${techhubId}`,
+      status: "eq.active",
+      select: "id,requested_discussions,created_at",
+      order: "created_at.asc",
+      limit: "100",
+    });
+    for (const boost of boosts || []) {
+      const threads = await rest.getJson<Array<{ id: number }>>("discussion_threads", {
+        techhub_id: `eq.${techhubId}`,
+        created_at: `gte.${boost.created_at}`,
+        select: "id",
+        limit: String(Math.max(1, Number(boost.requested_discussions) || 1)),
+      });
+      if ((threads || []).length < Number(boost.requested_discussions)) continue;
+      await rest.patch("engagement_boost_requests", { id: `eq.${boost.id}` }, {
+        status: "completed",
+        updated_at: new Date().toISOString(),
+      });
+    }
   }
 
   return json({ ok: true, imported, errors });
@@ -2770,7 +3593,7 @@ async function handleSetEngagementEnabled(
     const created = await rest.post("settings", {
       key: "engagement_enabled",
       value: enabled,
-      description: "Admin controls engagement globally; users cannot opt in or out",
+      description: "Admin global gate; each user still controls local pool participation",
     });
     if (!created.ok) throw new HttpError("Không tạo được cấu hình tương tác.", 500);
   }
@@ -2852,6 +3675,10 @@ Deno.serve(async (req) => {
     switch (action) {
       case "heartbeat":
         return await handleHeartbeat(rest, auth, body, bearer);
+      case "redeemUltra":
+        return await handleRedeemUltra(rest, auth, body);
+      case "submitOwnThreads":
+        return await handleSubmitOwnThreads(rest, auth, body);
       case "claimTask":
         return await handleClaimTask(rest, auth);
       case "completeTask":
@@ -2895,6 +3722,16 @@ Deno.serve(async (req) => {
         return await handleSetKillSwitch(rest, auth, body);
       case "setEngagementEnabled":
         return await handleSetEngagementEnabled(rest, auth, body);
+      case "getPoolSettings":
+        return await handleGetPoolSettings(rest, auth);
+      case "setPoolSettings":
+        return await handleSetPoolSettings(rest, auth, body);
+      case "setUserPolicy":
+        return await handleSetUserPolicy(rest, auth, body);
+      case "pushComments":
+        return await handlePushComments(rest, auth, body);
+      case "listBoosts":
+        return await handleListBoosts(rest, auth, body);
       case "revokeDevice":
         return await handleRevokeDevice(rest, auth, body);
       default:

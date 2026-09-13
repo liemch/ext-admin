@@ -191,6 +191,14 @@
     return callEngagementApi("getStatus", {});
   }
 
+  function engagementRedeemUltra(techhubId) {
+    return callEngagementApi("redeemUltra", { techhubId });
+  }
+
+  function engagementSubmitOwnThreads(techhubId, threads) {
+    return callEngagementApi("submitOwnThreads", { techhubId, threads });
+  }
+
   // ---- Admin API (ADMIN_TOKEN, chỉ máy admin) ----
 
   function engagementAdmin(action, payload = {}) {
@@ -212,6 +220,8 @@
     engagementReleaseMyClaims,
     engagementClearSessionRequired,
     engagementGetStatus,
+    engagementRedeemUltra,
+    engagementSubmitOwnThreads,
     engagementAdmin,
   };
 })(typeof window !== "undefined" ? window : globalThis);

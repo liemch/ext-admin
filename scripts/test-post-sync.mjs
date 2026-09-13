@@ -89,7 +89,8 @@ const clientSandbox = { POST_SYNC_API_CONFIG: { url: "https://x.supabase.co/func
   assert(client, "PostSyncClient được export");
   for (const name of [
     "getPostSyncApiConfig", "isPostSyncConfigured", "isPostSyncLeader",
-    "submitPostHint", "postSyncAdmin", "requestPostSync",
+    "submitPostHint", "postSyncAdmin", "requestPostSync", "saveScannedPosts", "saveMyScannedPosts",
+    "reconcileMyScannedPosts",
     "claimPostSyncJob", "startPostSyncRun", "extendPostSyncLease",
     "completePostSyncJob", "failPostSyncJob", "getPostSyncStatus",
     "listPostSyncRuns", "listPostHints", "listNewPosts", "getUserSyncStatus",
@@ -150,17 +151,45 @@ section("background.js — importScripts + hook");
 const background = read("background.js");
 assert(background.includes("importScripts('config.js'") && background.includes("post-sync-client.js") && background.includes("post-sync-worker.js"),
   "importScripts có post-sync-client.js và post-sync-worker.js");
-assert(background.includes("PostSyncWorker.bootstrap") || background.includes("PostSyncWorker.bootstrap"),
-  "gọi PostSyncWorker.bootstrap lúc khởi động");
-assert(background.includes("PostSyncWorker.maybeSubmitHintFromUrl"),
-  "tabs.onUpdated gọi maybeSubmitHintFromUrl");
-assert(background.includes("PostSyncWorker.LEADER_WAKE_ALARM"),
-  "xử lý LEADER_WAKE_ALARM trong onAlarm listener");
+assert(!background.includes("PostSyncWorker.bootstrap().catch"),
+  "không bootstrap leader trên máy user");
+assert(!background.includes("handleTechHubTabForHint"),
+  "không tạo hint/queue khi user chỉ mở một bài TechHub");
+assert(background.includes('const MY_POSTS_SYNC_ALARM = "myPostsSyncAlarm"'),
+  "mỗi user có alarm đồng bộ bài cá nhân");
+assert(background.includes("periodInMinutes: MY_POSTS_SYNC_INTERVAL_MINUTES"),
+  "đồng bộ bài cá nhân định kỳ 20 phút");
+assert(background.includes("PostSyncClient.saveMyScannedPosts(posts)"),
+  "user lưu chính danh sách vừa tải qua API bảo vệ theo device");
+assert(background.includes("PostSyncClient.reconcileMyScannedPosts(liveTechhubIds)"),
+  "sau khi lưu đủ, user đối soát bài đã xóa qua API bảo vệ theo device");
+assert(background.includes("!Array.isArray(data?.results)"),
+  "không xóa bài khi TechHub trả dữ liệu sai định dạng");
+assert(background.includes("if (hasNext)"),
+  "không xóa bài nếu chưa tải hết sau giới hạn 50 trang");
+assert(background.indexOf("PostSyncClient.reconcileMyScannedPosts(liveTechhubIds)")
+    > background.indexOf("if (!persisted)"),
+  "chỉ đối soát xóa sau khi toàn bộ bài đã được lưu thành công");
+assert(background.includes("EngagementClient.engagementHeartbeat(userProfile.username)"),
+  "đồng bộ tự tạo hoặc khôi phục device token");
+assert(background.includes(".filter((post) => !post.published_at)"),
+  "kết quả quét chỉ render bài chưa publish");
+assert(background.includes("visiblePosts = await supabase.getOwnPosts(userProfile.username, { limit: 100 })"),
+  "sau khi lưu, danh sách đọc lại tối đa 100 bài đã lọc từ posts");
+assert(read("post-sync-worker.js").includes('lastMessage: `Không lưu được kết quả job #${job.id}: ${error.message}`'),
+  "leader báo lỗi khi completePostSyncJob không lưu được posts");
+const workerSource = read("post-sync-worker.js");
+assert(workerSource.includes("try {\n      const deviceId = await getLeaderDeviceId();"),
+  "khóa leader luôn được nhả nếu đăng ký device thất bại");
+assert(workerSource.includes("const run = await runLeaderCycle({ manual: true });"),
+  "bootstrap claim lease và chạy ngay thay vì chỉ enqueue");
+assert(workerSource.includes("await chrome.storage.local.remove(POST_SYNC_LOCK_KEY);"),
+  "bootstrap dọn lock mồ côi từ service worker cũ");
 const adminSet = background.match(/const ADMIN_ONLY_ACTIONS = new Set\(\[([\s\S]*?)\]\);/);
 assert(adminSet, "tìm thấy ADMIN_ONLY_ACTIONS");
 const adminActions = new Set([...(adminSet?.[1] || "").matchAll(/"([^"]+)"/g)].map((m) => m[1]));
 for (const action of [
-  "postSyncGetStatus", "postSyncRunLeaderTick", "postSyncEnqueueJobs",
+  "postSyncGetStatus", "postSyncCheckSession", "postSyncRunLeaderTick", "postSyncEnqueueJobs",
   "postSyncListJobs", "postSyncListHints", "postSyncListRuns",
   "postSyncResubmitHint", "postSyncRetryJob", "postSyncCancelJob",
 ]) {
@@ -171,41 +200,18 @@ for (const action of [
 assert(!adminActions.has("postSyncGetState"), "postSyncGetState không yêu cầu admin");
 assert(background.includes(`request.action === "postSyncGetState"`), "background xử lý postSyncGetState");
 
-// ---------------------------------------------------------------- 5. popup.html ↔ post-sync-ui.js ↔ popup.css
-section("popup.html ↔ post-sync-ui.js ↔ popup.css");
+// ---------------------------------------------------------------- 5. UI đồng bộ đơn giản trong Bài viết
+section("UI đồng bộ cá nhân");
 
 const html = read("popup.html");
-const css = read("popup.css");
-const ui = read("post-sync-ui.js");
-
-assert(html.includes("post-sync-ui.js"), "popup.html nạp post-sync-ui.js");
-assert(html.includes("data-panel=\"post-sync\""), "popup.html có tab post-sync");
-assert(html.includes("id=\"postSyncOverview\""), "popup.html có #postSyncOverview");
-assert(html.includes("id=\"myPostsCacheList\""), "popup.html có #myPostsCacheList");
-assert(html.includes("id=\"postSyncRefreshBtn\""), "popup.html có #postSyncRefreshBtn");
-
-for (const id of ["postSyncOverview", "postSyncNewList", "postSyncRuns", "postSyncSources",
-                  "postSyncFlash", "postSyncFeedBtn", "postSyncUserBtn", "postSyncCommunitySlug",
-                  "postSyncUsernameInput", "postSyncCheckSessionBtn", "postSyncNewDays", "postSyncNewFilter"]) {
-  assert(html.includes(`id="${id}"`), `popup.html có #${id}`);
-}
-
-const uiIds = [...new Set([...ui.matchAll(/el\("([^"]+)"\)/g)].map((m) => m[1]))];
-for (const id of uiIds) {
-  if (id === "postSyncDot") continue; // dot là nav dot
-  assert(html.includes(`id="${id}"`), `popup.html có #${id} mà post-sync-ui.js tham chiếu`);
-}
-
-assert(css.includes(".grid-2"), "popup.css có .grid-2");
-assert(css.includes(".my-posts-cache"), "popup.css có .my-posts-cache");
-assert(css.includes(".flash.ok"), "popup.css có .flash.ok/.warn/.bad");
-
-// popup.js binding
 const popupjs = read("popup.js");
-assert(popupjs.includes('"post-sync"'), "popup.js đăng ký tab post-sync");
-assert(popupjs.includes("PostSyncUI.bindPostSyncUI"), "popup.js gọi PostSyncUI.bindPostSyncUI");
-assert(popupjs.includes("PostSyncUI.renderMyPostsCache"), "popup.js gọi renderMyPostsCache");
-assert(popupjs.includes("PostSyncUI.refreshAllPostSync"), "popup.js refreshAllPostSync khi mở tab");
+assert(!html.includes('data-panel="post-sync"'), "đã bỏ menu leader Đồng bộ bài");
+assert(!html.includes("post-sync-ui.js"), "popup không nạp UI leader cũ");
+assert(!html.includes('id="myPostsCacheList"'), "không còn danh sách bài đồng bộ trùng lặp");
+assert(html.includes('id="syncMyPostsBtn"'), "menu Bài viết có nút đồng bộ duy nhất");
+assert(html.includes("Đồng bộ bài"), "nút dùng tên dễ hiểu");
+assert(popupjs.includes('{ action: "syncMyPosts" }'), "nút gọi luồng đồng bộ bài cá nhân");
+assert(!popupjs.includes("PostSyncUI."), "popup không còn phụ thuộc UI leader");
 
 // ---------------------------------------------------------------- 6. Edge function contract
 section("post-sync-api/index.ts — action contract");
@@ -214,6 +220,7 @@ const edge = read("supabase/functions/post-sync-api/index.ts");
 const edgeActions = new Set([...edge.matchAll(/case "([a-zA-Z_]+)":/g)].map((m) => m[1]));
 const requiredActions = [
   "submitPostHint", "requestPostSync",
+  "saveScannedPosts", "saveMyScannedPosts", "reconcileMyScannedPosts",
   "claimPostSyncJob", "startPostSyncRun", "extendPostSyncLease",
   "completePostSyncJob", "failPostSyncJob",
   "getPostSyncStatus", "getStatus",
@@ -228,6 +235,17 @@ for (const a of requiredActions) {
 }
 assert(edge.includes("requireAdmin"), "edge có helper requireAdmin");
 assert(edge.includes("isRateLimited"), "edge có rate limit");
+assert(edge.includes("const device = requireDevice(auth)"), "saveMyScannedPosts yêu cầu device token");
+assert(edge.includes("author.toLowerCase() !== device.username.toLowerCase()"),
+  "server chỉ nhận bài đúng username của device");
+assert(edge.includes("Bài #${conflicting.techhub_id} đã thuộc tài khoản khác"),
+  "server không cho user ghi đè bài đã thuộc tài khoản khác");
+assert(edge.includes('username: `eq.${device.username}`') && edge.includes('techhub_id: `in.(${ids.join(",")})`'),
+  "đối soát chỉ xóa bài thuộc đúng username của device");
+assert(edge.includes('if (!Array.isArray(body.liveTechhubIds))'),
+  "server từ chối đối soát nếu thiếu danh sách ID đầy đủ");
+assert(edge.includes('Danh sách ID bài TechHub không hợp lệ; không xóa dữ liệu.'),
+  "server từ chối ID lỗi thay vì xóa nhầm bài");
 
 // ---------------------------------------------------------------- 7. Migration 013 — tables/RPC/RLS
 section("supabase/migrations/013_post_sync.sql — schema");
@@ -271,8 +289,10 @@ assert(engEdge.includes("post_unavailable") || engEdge.includes("Bài không cò
 section("Chế độ im lặng");
 
 assert(!background.includes("chrome.notifications"), "post-sync không dùng chrome.notifications");
-assert(background.includes("periodInMinutes: 5") && background.includes("PostSyncWorker.LEADER_WAKE_ALARM"),
-  "leader thức dậy theo alarm định kỳ periodInMinutes: 5, không tự mở tab");
+assert(background.includes("MY_POSTS_SYNC_INTERVAL_MINUTES = 20"),
+  "user tự đồng bộ im lặng mỗi 20 phút");
+assert(background.includes("Đồng bộ bài cá nhân thất bại"),
+  "lỗi đồng bộ nền chỉ ghi log, không bật thông báo");
 const manifest = JSON.parse(read("manifest.json"));
 assert(manifest.host_permissions.some((p) => p.includes("supabase.co")), "host_permissions đã bao gồm *.supabase.co");
 

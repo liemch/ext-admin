@@ -9,7 +9,9 @@
 //
 // Phân quyền:
 //   - Authorization: Bearer <ADMIN_TOKEN>   → admin/leader
-//   - Authorization: Bearer <device-token>  → device (submitPostHint)
+//   - Authorization: Bearer <device-token>  → device (saveMyScannedPosts,
+//                                              reconcileMyScannedPosts,
+//                                              submitPostHint, listNewPosts)
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -52,7 +54,7 @@ class HttpError extends Error {
 type Rest = {
   get: (table: string, params?: Record<string, string>) => Promise<Response>;
   getJson: <T = unknown[]>(table: string, params?: Record<string, string>) => Promise<T>;
-  post: (table: string, payload: unknown, prefer?: string) => Promise<Response>;
+  post: (table: string, payload: unknown, prefer?: string, params?: Record<string, string>) => Promise<Response>;
   postJson: <T = unknown>(table: string, payload: unknown, prefer?: string) => Promise<T>;
   patch: (table: string, params: Record<string, string>, payload: unknown) => Promise<Response>;
   patchJson: <T = unknown>(table: string, params: Record<string, string>, payload: unknown) => Promise<T>;
@@ -86,8 +88,8 @@ function createRest(supabaseUrl: string, serviceRoleKey: string): Rest {
       await throwIfError(r, `Đọc ${table} thất bại`);
       return (await r.json()) as never;
     },
-    post: (table, payload, prefer) =>
-      fetch(buildUrl(table), {
+    post: (table, payload, prefer, params) =>
+      fetch(buildUrl(table, params), {
         method: "POST",
         headers: prefer ? { ...headers, Prefer: `${headers.Prefer},${prefer}` } : headers,
         body: JSON.stringify(payload),
@@ -602,6 +604,221 @@ async function handleRequestPostSync(rest: Rest, auth: Auth, body: Record<string
     throw new HttpError(`scope không hợp lệ: ${scope}`, 400);
   }
   return json({ ok: true, queued: true, jobs });
+}
+
+async function handleSaveScannedPosts(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  requireAdmin(auth);
+  const username = String(body.username || "").trim();
+  if (!/^[A-Za-z0-9_.-]{1,100}$/.test(username)) {
+    throw new HttpError("username không hợp lệ.", 400);
+  }
+  const articles = Array.isArray(body.articles) ? body.articles : [];
+  if (articles.length > 5000) throw new HttpError("Tối đa 5000 bài mỗi lượt quét.", 413);
+
+  const now = new Date().toISOString();
+  const rows = articles.flatMap((raw) => {
+    const article = (raw as Record<string, unknown>) || {};
+    const techhubId = Number(article.techhubId ?? article.techhub_id);
+    const techhubUuid = String(article.techhubUuid ?? article.techhub_uuid ?? "").trim();
+    const author = String(article.username || "").trim();
+    if (
+      !Number.isInteger(techhubId) ||
+      techhubId <= 0 ||
+      !techhubUuid ||
+      author.toLowerCase() !== username.toLowerCase()
+    ) {
+      return [];
+    }
+    return [{
+      techhub_id: techhubId,
+      techhub_uuid: techhubUuid,
+      username,
+      title: article.title ? String(article.title).slice(0, 500) : null,
+      status: String(article.status || "open"),
+      url: article.url ? String(article.url) : null,
+      votes_score: Number(article.votesScore ?? article.votes_score ?? 0),
+      comments_count: Number(article.commentsCount ?? article.comments_count ?? 0),
+      medals_count: Number(article.medalsCount ?? article.medals_count ?? 0),
+      feed_score: Number(article.feedScore ?? article.feed_score ?? 0),
+      published_at: toIso(article.publishedAt ?? article.published_at),
+      community_slug: article.communitySlug ?? article.community_slug ?? null,
+      community_name: article.communityName ?? article.community_name ?? null,
+      last_seen_at: now,
+      last_verified_at: now,
+      verification_status: "verified",
+      discovered_by: "user_reconcile",
+      sync_error: null,
+    }];
+  });
+
+  const CHUNK_SIZE = 100;
+  for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+    const response = await rest.post(
+      "posts",
+      rows.slice(i, i + CHUNK_SIZE),
+      "resolution=merge-duplicates,return=minimal",
+      { on_conflict: "techhub_id" },
+    );
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new HttpError(`Lưu posts thất bại: HTTP ${response.status} ${detail.slice(0, 300)}`, response.status);
+    }
+  }
+  return json({ ok: true, saved: rows.length, skipped: articles.length - rows.length });
+}
+
+async function handleSaveMyScannedPosts(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  const device = requireDevice(auth);
+  const users = await rest.getJson<Array<{ username: string; is_locked: boolean }>>("users", {
+    username: `eq.${device.username}`,
+    select: "username,is_locked",
+    limit: "1",
+  });
+  const user = firstRow(users);
+  if (!user || user.is_locked) {
+    throw new HttpError(`Tài khoản @${device.username} không tồn tại hoặc đã bị khóa.`, 403);
+  }
+
+  const articles = Array.isArray(body.articles) ? body.articles : [];
+  if (articles.length > 200) throw new HttpError("Tối đa 200 bài mỗi lô đồng bộ.", 413);
+  const now = new Date().toISOString();
+  const normalized = articles.flatMap((raw) => {
+    const article = (raw as Record<string, unknown>) || {};
+    const techhubId = Number(article.techhubId ?? article.techhub_id);
+    const techhubUuid = String(article.techhubUuid ?? article.techhub_uuid ?? "").trim();
+    const author = String(article.username || "").trim();
+    if (
+      !Number.isInteger(techhubId) ||
+      techhubId <= 0 ||
+      !techhubUuid ||
+      author.toLowerCase() !== device.username.toLowerCase()
+    ) {
+      return [];
+    }
+    return [{
+      techhub_id: techhubId,
+      techhub_uuid: techhubUuid,
+      username: device.username,
+      title: article.title ? String(article.title).slice(0, 500) : null,
+      status: String(article.status || "open"),
+      url: article.url ? String(article.url).slice(0, 2000) : null,
+      votes_score: Number(article.votesScore ?? article.votes_score ?? 0),
+      comments_count: Number(article.commentsCount ?? article.comments_count ?? 0),
+      medals_count: Number(article.medalsCount ?? article.medals_count ?? 0),
+      feed_score: Number(article.feedScore ?? article.feed_score ?? 0),
+      created_at: toIso(article.createdAt ?? article.created_at) || now,
+      published_at: toIso(article.publishedAt ?? article.published_at),
+      community_slug: article.communitySlug ?? article.community_slug ?? null,
+      community_name: article.communityName ?? article.community_name ?? null,
+      last_seen_at: now,
+      last_verified_at: now,
+      verification_status: "verified",
+      // Dùng giá trị schema hiện có; đây là reconcile do chính user thực hiện.
+      discovered_by: "user_reconcile",
+      sync_error: null,
+    }];
+  });
+  const rows = [...new Map(normalized.map((row) => [row.techhub_id, row])).values()];
+  const ids = rows.map((row) => row.techhub_id);
+  const existing = ids.length
+    ? await rest.getJson<Array<{ techhub_id: number; username: string }>>("posts", {
+        techhub_id: `in.(${ids.join(",")})`,
+        select: "techhub_id,username",
+        limit: String(ids.length),
+      })
+    : [];
+  const conflicting = existing.find(
+    (post) => String(post.username || "").toLowerCase() !== device.username.toLowerCase()
+  );
+  if (conflicting) {
+    throw new HttpError(`Bài #${conflicting.techhub_id} đã thuộc tài khoản khác.`, 409);
+  }
+
+  if (rows.length) {
+    const response = await rest.post(
+      "posts",
+      rows,
+      "resolution=merge-duplicates,return=minimal",
+      { on_conflict: "techhub_id" },
+    );
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new HttpError(`Lưu posts thất bại: HTTP ${response.status} ${detail.slice(0, 300)}`, response.status);
+    }
+  }
+  const existingIds = new Set(existing.map((post) => Number(post.techhub_id)));
+  const updated = rows.filter((row) => existingIds.has(row.techhub_id)).length;
+  return json({
+    ok: true,
+    username: device.username,
+    saved: rows.length,
+    created: rows.length - updated,
+    updated,
+    skipped: articles.length - rows.length,
+  });
+}
+
+async function handleReconcileMyScannedPosts(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  const device = requireDevice(auth);
+  const users = await rest.getJson<Array<{ username: string; is_locked: boolean }>>("users", {
+    username: `eq.${device.username}`,
+    select: "username,is_locked",
+    limit: "1",
+  });
+  const user = firstRow(users);
+  if (!user || user.is_locked) {
+    throw new HttpError(`Tài khoản @${device.username} không tồn tại hoặc đã bị khóa.`, 403);
+  }
+
+  if (!Array.isArray(body.liveTechhubIds)) {
+    throw new HttpError("Thiếu danh sách ID bài TechHub đã quét đầy đủ.", 400);
+  }
+  if (body.liveTechhubIds.length > 50000) {
+    throw new HttpError("Danh sách đối soát vượt quá 50000 bài.", 413);
+  }
+  const normalizedIds = body.liveTechhubIds.map((value) => Number(value));
+  if (normalizedIds.some((value) => !Number.isInteger(value) || value <= 0)) {
+    throw new HttpError("Danh sách ID bài TechHub không hợp lệ; không xóa dữ liệu.", 400);
+  }
+  const liveIds = new Set(normalizedIds);
+
+  const existing: Array<{ techhub_id: number }> = [];
+  const PAGE_SIZE = 1000;
+  for (let offset = 0; offset < 50000; offset += PAGE_SIZE) {
+    const page = await rest.getJson<Array<{ techhub_id: number }>>("posts", {
+      username: `eq.${device.username}`,
+      select: "techhub_id",
+      order: "techhub_id.asc",
+      limit: String(PAGE_SIZE),
+      offset: String(offset),
+    });
+    existing.push(...page);
+    if (page.length < PAGE_SIZE) break;
+    if (offset + PAGE_SIZE >= 50000) {
+      throw new HttpError("Có quá nhiều bài để đối soát an toàn; chưa xóa dữ liệu.", 409);
+    }
+  }
+
+  const staleIds = existing
+    .map((post) => Number(post.techhub_id))
+    .filter((techhubId) => Number.isInteger(techhubId) && !liveIds.has(techhubId));
+  let removed = 0;
+  const DELETE_CHUNK_SIZE = 200;
+  for (let i = 0; i < staleIds.length; i += DELETE_CHUNK_SIZE) {
+    const ids = staleIds.slice(i, i + DELETE_CHUNK_SIZE);
+    const response = await rest.del("posts", {
+      username: `eq.${device.username}`,
+      techhub_id: `in.(${ids.join(",")})`,
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new HttpError(`Xóa posts không còn trên TechHub thất bại: HTTP ${response.status} ${detail.slice(0, 300)}`, response.status);
+    }
+    const deleted = await response.json().catch(() => []);
+    removed += Array.isArray(deleted) ? deleted.length : ids.length;
+  }
+
+  return json({ ok: true, username: device.username, removed });
 }
 
 // ---------------- Leader actions ----------------
@@ -1322,6 +1539,9 @@ Deno.serve(async (req) => {
     switch (action) {
       case "submitPostHint":    return await handleSubmitPostHint(rest, auth, body);
       case "requestPostSync":   return await handleRequestPostSync(rest, auth, body);
+      case "saveScannedPosts":  return await handleSaveScannedPosts(rest, auth, body);
+      case "saveMyScannedPosts": return await handleSaveMyScannedPosts(rest, auth, body);
+      case "reconcileMyScannedPosts": return await handleReconcileMyScannedPosts(rest, auth, body);
       case "claimPostSyncJob":  return await handleClaimPostSyncJob(rest, auth, body);
       case "startPostSyncRun":  return await handleStartPostSyncRun(rest, auth, body);
       case "extendPostSyncLease": return await handleExtendPostSyncLease(rest, auth, body);

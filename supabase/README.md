@@ -28,7 +28,10 @@
 | `engagement_campaigns` | Campaign vote/comment + phạm vi bài + quota |
 | `engagement_tasks` | Task hàng đợi (lease, `idempotency_key`, `session_required`) |
 | `engagement_events` | Nhật ký claim/succeed/fail/retry (dọn định kỳ) |
-| `discussion_threads` / `discussion_turns` | Kịch bản thảo luận A/B 2–4 turn + dependency |
+| `engagement_preferences` | Policy admin, điểm đóng góp và số lượt Ultra của từng user (migration 014) |
+| `engagement_reward_events` | Sổ điểm idempotent, mỗi task thành công chỉ ghi một lần |
+| `engagement_boost_requests` | Yêu cầu ưu tiên bài do admin Push hoặc user đổi Ultra |
+| `discussion_threads` / `discussion_turns` | Kịch bản thảo luận A/B 2–3 turn + dependency |
 | `post_hints` | Gợi ý bài từ user mở/đăng bài (lightweight signal; leader verify sau) |
 | `post_sync_jobs` | Hàng đợi verify_hint / feed_discovery / user_reconcile (lease + idempotency) |
 | `post_sync_runs` | Lịch sử chạy từng lượt (request count, số bài mới/cập nhật, lỗi) |
@@ -42,15 +45,15 @@ Cột bổ sung trên `posts` (migration 013): `verification_status` (unverified
 |---|---|---|
 | `nvidia-proxy` | Proxy AI NVIDIA — key nằm trong secret, không nằm trong extension | `PROXY_TOKEN` |
 | `admin-api` | Quản lý user (danh sách / cấp-thu quyền / khóa / xóa) qua service role, bypass RLS sau migration 011 | `ADMIN_TOKEN` — **chỉ máy admin được giữ** |
-| `engagement-api` | Hàng đợi tương tác chéo (heartbeat/claim/complete/campaign/kịch bản) — chỉ phân bổ bài `verification_status = verified` | `ADMIN_TOKEN` cho admin; máy user dùng device token tự sinh |
-| `post-sync-api` | Đồng bộ bài viết: nhận hint từ user, leader claim job để quét feed / verify hint / reconcile user, trả danh sách bài đã xác minh | `ADMIN_TOKEN` cho leader (quét/ghi); máy user gọi `submitPostHint` + `listNewPosts` bằng device token |
+| `engagement-api` | Pool tương tác tự cân bằng + hàng đợi lease; campaign/kịch bản cũ giữ tương thích — chỉ phân bổ bài `verification_status = verified` | `ADMIN_TOKEN` cho admin; máy user dùng device token tự sinh |
+| `post-sync-api` | Mỗi user tự đồng bộ bài TechHub của mình vào `posts`, đồng thời dọn bài đã xóa sau một lượt quét đầy đủ; giữ API leader cũ để tương thích/bảo trì | Device token cho `saveMyScannedPosts` + `reconcileMyScannedPosts` + `listNewPosts`, khóa theo username; `ADMIN_TOKEN` cho action quản trị cũ |
 
 Deploy + set secrets + áp migration 011 + 012 + 013 + hardening một phát: `bash scripts/setup-supabase.sh`.
 
 ## Setup project mới
 
 1. Tạo project Supabase → lấy URL + anon key
-2. SQL Editor → Run `migrations/001` → `002` → (`003` nếu upgrade) → `004_ai_reply_drafts.sql` → `005_ai_discussion.sql` → `006_root_self_discussion.sql` → `007_posts_medals_count.sql` → `008_discussion_draft_queue.sql` → `009_reply_draft_queue.sql` → `010` (community) → `011_restrict_users_writes.sql` → `012_cross_user_engagement.sql` → `013_post_sync.sql` → `20260911100410_post_sync_hardening.sql`
+2. SQL Editor → Run `migrations/001` → `002` → (`003` nếu upgrade) → `004_ai_reply_drafts.sql` → `005_ai_discussion.sql` → `006_root_self_discussion.sql` → `007_posts_medals_count.sql` → `008_discussion_draft_queue.sql` → `009_reply_draft_queue.sql` → `010` (community) → `011_restrict_users_writes.sql` → `012_cross_user_engagement.sql` → `013_post_sync.sql` → `20260911100410_post_sync_hardening.sql` → `014_engagement_user_pool.sql`
 3. Sửa `YOUR_TECHHUB_USERNAME` trong `002` → Run
 4. Điền `NVIDIA_CONFIG.apiKey` trong `config.js` (lấy tại https://build.nvidia.com/settings/api-keys)
 5. Reload extension

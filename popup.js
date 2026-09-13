@@ -16,6 +16,7 @@ const elements = {
   statSelected: document.getElementById("statSelected"),
   statSelectedTitle: document.getElementById("statSelectedTitle"),
   postsSearch: document.getElementById("postsSearch"),
+  postsUltraNotice: document.getElementById("postsUltraNotice"),
   replyDot: document.getElementById("replyDot"),
   discussionDot: document.getElementById("discussionDot"),
   commentDot: document.getElementById("commentDot"),
@@ -23,6 +24,7 @@ const elements = {
   stopAutoCommentBtn: document.getElementById("stopAutoCommentBtn"),
   autoCommentMessage: document.getElementById("autoCommentMessage"),
   selectedPostLabel: document.getElementById("selectedPostLabel"),
+  autoCommentOwnPostId: document.getElementById("autoCommentOwnPostId"),
   autoCommentTargetCount: document.getElementById("autoCommentTargetCount"),
   autoCommentExternalPostId: document.getElementById("autoCommentExternalPostId"),
   autoCommentCompletionMinutes: document.getElementById(
@@ -36,6 +38,7 @@ const elements = {
   scheduleAutoCommentBtn: document.getElementById("scheduleAutoCommentBtn"),
   cancelAutoCommentScheduleBtn: document.getElementById("cancelAutoCommentScheduleBtn"),
   autoCommentScheduleInfo: document.getElementById("autoCommentScheduleInfo"),
+  autoCommentJobsLog: document.getElementById("autoCommentJobsLog"),
   autoCommentDeleteLog: document.getElementById("autoCommentDeleteLog"),
   syncMyPostsBtn: document.getElementById("syncMyPostsBtn"),
   runAutoReplyBtn: document.getElementById("runAutoReplyBtn"),
@@ -126,8 +129,10 @@ const elements = {
     "autoExternalDiscussionMessage"
   ),
   myPostsList: document.getElementById("myPostsList"),
+  myDiscussionPostId: document.getElementById("myDiscussionPostId"),
   postsMessage: document.getElementById("postsMessage"),
   deleteTechhubId: document.getElementById("deleteTechhubId"),
+  deleteSelectedLabel: document.getElementById("deleteSelectedLabel"),
   deleteAtInput: document.getElementById("deleteAtInput"),
   scheduleDeleteBtn: document.getElementById("scheduleDeleteBtn"),
   deleteNowBtn: document.getElementById("deleteNowBtn"),
@@ -150,6 +155,7 @@ const COMMUNITY_BROWSER_KEY = "communityBrowserPreferences";
 
 // Menu chỉ quản trị viên: Tự động hóa / Bài người khác / Nguy hiểm / Người dùng
 const ADMIN_ONLY_PANELS = new Set([
+  "engagement",
   "reply",
   "discussion",
   "comment",
@@ -157,7 +163,6 @@ const ADMIN_ONLY_PANELS = new Set([
   "external-discussion",
   "delete",
   "users",
-  "post-sync",
 ]);
 
 const isTabView = new URLSearchParams(location.search).get("view") === "tab";
@@ -166,8 +171,12 @@ let currentUserProfile = null;
 let isAdminUser = false;
 let selectedTechhubId = null;
 let autoCommentSelectedTechhubId = null;
+let autoCommentSelectedTechhubIds = [];
+let deleteSelectedTechhubIds = [];
+const postPickerViews = new Map();
 let currentAutoCommentState = null;
 let cachedPosts = [];
+let availableUltraCredits = 0;
 let postsFilter = "";
 let pendingReplyDraftCount = 0;
 let pendingDiscussionDraftCount = 0;
@@ -259,11 +268,6 @@ async function init() {
   await loadAdminGate();
   await restoreActivePanel();
 
-  // Post-sync: bind UI và nạp cache "Bài viết của tôi".
-  if (typeof PostSyncUI !== "undefined") {
-    PostSyncUI.bindPostSyncUI();
-    PostSyncUI.renderMyPostsCache(currentUserProfile?.username || null).catch(() => {});
-  }
 }
 
 function applyViewMode() {
@@ -374,12 +378,6 @@ function showPanel(name, persist = true) {
     loadUsers();
   }
 
-  if (name === "post-sync" && typeof PostSyncUI !== "undefined") {
-    PostSyncUI.refreshAllPostSync().catch(() => {});
-  }
-  if (name === "posts" && typeof PostSyncUI !== "undefined") {
-    PostSyncUI.renderMyPostsCache(currentUserProfile?.username || null).catch(() => {});
-  }
 }
 
 async function restoreActivePanel() {
@@ -433,6 +431,7 @@ async function restoreCommunityBrowserPreferences() {
 }
 
 function setupEventListeners() {
+  setupPostPickers();
   if (elements.sideMenu) {
     elements.sideMenu.addEventListener("click", (event) => {
       const item = event.target.closest(".nav-item[data-panel]");
@@ -617,6 +616,62 @@ function setupEventListeners() {
       updateScopeLabels();
     });
   }
+  if (elements.autoCommentOwnPostId) {
+    elements.autoCommentOwnPostId.addEventListener("change", () => {
+      const ids = [...elements.autoCommentOwnPostId.selectedOptions]
+        .map((option) => Number(option.value))
+        .filter((id) => Number.isInteger(id) && id > 0);
+      if (ids.length > 5) {
+        for (const option of [...elements.autoCommentOwnPostId.selectedOptions].slice(5)) {
+          option.selected = false;
+        }
+        showAdminMsg(elements.autoCommentMessage, "Mỗi lần chỉ chọn tối đa 5 bài.", "error");
+      }
+      autoCommentSelectedTechhubIds = ids.slice(0, 5);
+      autoCommentSelectedTechhubId = autoCommentSelectedTechhubIds[0] || null;
+      if (autoCommentSelectedTechhubId) {
+        selectedTechhubId = autoCommentSelectedTechhubId;
+        if (elements.autoCommentExternalPostId) elements.autoCommentExternalPostId.value = "";
+      }
+      updateSelectedPostLabel(true);
+    });
+  }
+  if (elements.autoCommentExternalPostId) {
+    elements.autoCommentExternalPostId.addEventListener("input", () => {
+      const externalId = Number(elements.autoCommentExternalPostId.value);
+      if (Number.isInteger(externalId) && externalId > 0) {
+        autoCommentSelectedTechhubId = null;
+        autoCommentSelectedTechhubIds = [];
+        if (elements.autoCommentOwnPostId) {
+          for (const option of elements.autoCommentOwnPostId.options) option.selected = false;
+          renderPostPickers(elements.autoCommentOwnPostId);
+        }
+        showAdminMsg(
+          elements.selectedPostLabel,
+          `Đang dùng bài thành viên khác #${externalId}`,
+          "info"
+        );
+      } else {
+        updateSelectedPostLabel();
+      }
+    });
+  }
+  if (elements.deleteTechhubId) {
+    elements.deleteTechhubId.addEventListener("change", () => {
+      const ids = [...elements.deleteTechhubId.selectedOptions]
+        .map((option) => Number(option.value))
+        .filter((id) => Number.isInteger(id) && id > 0);
+      if (ids.length > 5) {
+        for (const option of [...elements.deleteTechhubId.selectedOptions].slice(5)) {
+          option.selected = false;
+        }
+        showAdminMsg(elements.deleteScheduleMessage, "Mỗi lần chỉ chọn tối đa 5 bài.", "error");
+      }
+      deleteSelectedTechhubIds = ids.slice(0, 5);
+      if (deleteSelectedTechhubIds[0]) selectedTechhubId = deleteSelectedTechhubIds[0];
+      renderDeleteSelectedLabel();
+    });
+  }
   if (elements.clearPendingReplyDraftsBtn) {
     elements.clearPendingReplyDraftsBtn.addEventListener(
       "click",
@@ -672,23 +727,6 @@ function setupEventListeners() {
           Number(deleteBtn.dataset.deleteExternalDiscussionDraft)
         );
       }
-    });
-  }
-  if (elements.myPostsList) {
-    elements.myPostsList.addEventListener("click", (event) => {
-      const actionBtn = event.target.closest("[data-post-action]");
-      if (actionBtn) {
-        event.preventDefault();
-        openPostAction(Number(actionBtn.dataset.postId), actionBtn.dataset.postAction);
-        return;
-      }
-      const selectBtn = event.target.closest("[data-select-id]");
-      if (selectBtn) {
-        event.preventDefault();
-        selectPost(Number(selectBtn.dataset.selectId));
-        return;
-      }
-      // Thẻ <a> tự mở tab mới, không cần xử lý thêm
     });
   }
   if (elements.scheduleDeleteBtn) {
@@ -1123,16 +1161,11 @@ function selectPost(
 ) {
   if (!Number.isInteger(techhubId) || techhubId < 1) return;
   selectedTechhubId = techhubId;
-  const lockedAutoCommentId = Number(
-    currentAutoCommentState?.active
-      ? currentAutoCommentState.techhubId
-      : currentAutoCommentState?.schedule?.techhubId
-  );
-  if (
-    updateAutoCommentTarget &&
-    (!Number.isInteger(lockedAutoCommentId) || lockedAutoCommentId < 1)
-  ) {
+  // Job/lịch đang chạy giữ techhubId trong state riêng. Vì đã hỗ trợ nhiều job,
+  // việc chọn bài mới phải luôn đổi mục tiêu của form để tạo job/lịch kế tiếp.
+  if (updateAutoCommentTarget) {
     autoCommentSelectedTechhubId = techhubId;
+    autoCommentSelectedTechhubIds = [techhubId];
     if (elements.autoCommentExternalPostId) {
       elements.autoCommentExternalPostId.value = "";
     }
@@ -1146,21 +1179,21 @@ function selectPost(
     }
   }
   if (elements.deleteTechhubId) {
-    elements.deleteTechhubId.value = String(techhubId);
+    deleteSelectedTechhubIds = [techhubId];
+    for (const option of elements.deleteTechhubId.options) {
+      option.selected = option.value === String(techhubId);
+    }
+    renderDeleteSelectedLabel();
   }
   renderMyPosts(cachedPosts);
   updateSelectedPostLabel(updateAutoCommentTarget);
   // Bộ đếm thuộc về job/bài đã chạy, không được mang sang bài vừa chọn.
   // Nếu job đang chạy thì vẫn giữ nguyên trạng thái thật của job hiện tại.
-  if (
-    !currentAutoCommentState?.active &&
-    !currentAutoCommentState?.schedule?.techhubId &&
-    updateAutoCommentTarget
-  ) {
+  if (updateAutoCommentTarget) {
     const targetCount = Number(elements.autoCommentTargetCount?.value);
     showAdminMsg(
       elements.autoCommentMessage,
-      `Sẵn sàng · bài #${techhubId} · 0/${
+      `Sẵn sàng tạo job/lịch tiếp theo · bài #${techhubId} · 0/${
         Number.isInteger(targetCount) && targetCount > 0 ? targetCount : "?"
       } cmt`,
       "muted"
@@ -1177,6 +1210,192 @@ function selectPost(
 function resolveScopeTechhubId(selectEl) {
   const value = Number(selectEl?.value);
   return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function setupPostPickers() {
+  const configs = [
+    { select: elements.replyScope, max: 1, search: "Tìm bài cần trả lời…" },
+    { select: elements.discussionScope, max: 1, search: "Tìm bài cần thảo luận…" },
+    { select: elements.autoCommentOwnPostId, max: 5, search: "Tìm bài để comment…" },
+    { select: elements.deleteTechhubId, max: 5, search: "Tìm bài cần xóa…" },
+  ];
+  for (const config of configs) {
+    const selectEl = config.select;
+    if (!selectEl || postPickerViews.has(selectEl.id)) continue;
+
+    const details = document.createElement("details");
+    details.className = "post-picker";
+    const summary = document.createElement("summary");
+    summary.className = "post-picker-summary";
+    const summaryText = document.createElement("span");
+    summaryText.className = "post-picker-summary-text";
+    const summaryTitle = document.createElement("strong");
+    const summaryMeta = document.createElement("small");
+    summaryText.append(summaryTitle, summaryMeta);
+    const chevron = document.createElement("span");
+    chevron.className = "post-picker-chevron";
+    chevron.setAttribute("aria-hidden", "true");
+    summary.append(summaryText, chevron);
+
+    const panel = document.createElement("div");
+    panel.className = "post-picker-panel";
+    const toolbar = document.createElement("div");
+    toolbar.className = "post-picker-toolbar";
+    const searchInput = document.createElement("input");
+    searchInput.id = `${selectEl.id}Search`;
+    searchInput.type = "search";
+    searchInput.placeholder = config.search;
+    searchInput.autocomplete = "off";
+    searchInput.setAttribute("aria-label", config.search);
+    const clearButton = document.createElement("button");
+    clearButton.type = "button";
+    clearButton.className = "post-picker-clear";
+    clearButton.textContent = "Bỏ chọn";
+    toolbar.append(searchInput, clearButton);
+    const status = document.createElement("div");
+    status.className = "post-picker-status";
+    const list = document.createElement("div");
+    list.className = "post-picker-list";
+    list.setAttribute("role", "listbox");
+    if (selectEl.multiple) list.setAttribute("aria-multiselectable", "true");
+    panel.append(toolbar, status, list);
+    details.append(summary, panel);
+    selectEl.insertAdjacentElement("afterend", details);
+
+    postPickerViews.set(selectEl.id, {
+      selectEl,
+      max: config.max,
+      details,
+      summaryTitle,
+      summaryMeta,
+      searchInput,
+      clearButton,
+      status,
+      list,
+    });
+
+    details.addEventListener("toggle", () => {
+      if (details.open && !selectEl.disabled) setTimeout(() => searchInput.focus(), 0);
+    });
+    summary.addEventListener("click", (event) => {
+      if (selectEl.disabled) event.preventDefault();
+    });
+    searchInput.addEventListener("input", () => renderPostPicker(selectEl));
+    clearButton.addEventListener("click", () => {
+      if (selectEl.disabled) return;
+      if (selectEl.multiple) {
+        for (const option of selectEl.options) option.selected = false;
+      } else {
+        selectEl.value = "";
+      }
+      selectEl.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    list.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-post-picker-value]");
+      if (!button || selectEl.disabled) return;
+      const option = [...selectEl.options].find(
+        (item) => item.value === button.dataset.postPickerValue
+      );
+      if (!option || option.disabled) return;
+      if (selectEl.multiple) {
+        const selectedCount = [...selectEl.selectedOptions].filter((item) => item.value).length;
+        if (!option.selected && selectedCount >= config.max) return;
+        option.selected = !option.selected;
+      } else {
+        selectEl.value = option.value;
+      }
+      selectEl.dispatchEvent(new Event("change", { bubbles: true }));
+      if (!selectEl.multiple) details.open = false;
+    });
+    selectEl.addEventListener("change", () => renderPostPicker(selectEl));
+    renderPostPicker(selectEl);
+  }
+}
+
+function renderPostPickers(selectEl = null) {
+  if (selectEl) {
+    renderPostPicker(selectEl);
+    return;
+  }
+  for (const view of postPickerViews.values()) renderPostPicker(view.selectEl);
+}
+
+function renderPostPicker(selectEl) {
+  const view = postPickerViews.get(selectEl?.id);
+  if (!view) return;
+  const query = view.searchInput.value.trim().toLowerCase();
+  const options = [...selectEl.options].filter((option) => {
+    if (!option.value || option.disabled) return false;
+    return !query || option.textContent.toLowerCase().includes(query);
+  });
+  const selectedOptions = [...selectEl.selectedOptions].filter((option) => option.value);
+  const selectedValues = new Set(selectedOptions.map((option) => option.value));
+  const selectedPosts = selectedOptions
+    .map((option) => cachedPosts.find((post) => String(post.techhub_id) === option.value))
+    .filter(Boolean);
+
+  view.details.classList.toggle("is-disabled", !!selectEl.disabled);
+  view.details.setAttribute("aria-disabled", selectEl.disabled ? "true" : "false");
+  if (selectEl.disabled) view.details.open = false;
+  view.searchInput.disabled = !!selectEl.disabled;
+  view.clearButton.disabled = !!selectEl.disabled || selectedOptions.length === 0;
+
+  if (selectEl.multiple) {
+    view.summaryTitle.textContent = selectedOptions.length
+      ? `Đã chọn ${selectedOptions.length}/${view.max} bài`
+      : "Chọn bài viết";
+    view.summaryMeta.textContent = selectedOptions.length
+      ? selectedOptions.map((option) => `#${option.value}`).join(" · ")
+      : "Bấm để mở danh sách và tích từng bài";
+    view.status.textContent = `${selectedOptions.length}/${view.max} bài đã chọn · ${options.length} kết quả`;
+  } else {
+    const selected = selectedOptions[0];
+    const post = selectedPosts[0];
+    view.summaryTitle.textContent = selected
+      ? post?.title || selected.textContent.replace(/^#\d+\s*·\s*/, "")
+      : "Chọn một bài viết";
+    view.summaryMeta.textContent = selected
+      ? `#${selected.value} · Bấm để đổi bài`
+      : "Bấm để mở danh sách lớn";
+    view.status.textContent = `${options.length} bài phù hợp`;
+  }
+
+  view.list.innerHTML = "";
+  if (!options.length) {
+    const empty = document.createElement("div");
+    empty.className = "post-picker-empty";
+    empty.textContent = cachedPosts.length
+      ? "Không tìm thấy bài phù hợp."
+      : "Chưa có bài. Hãy đồng bộ bài trước.";
+    view.list.append(empty);
+    return;
+  }
+
+  const reachedLimit = selectEl.multiple && selectedValues.size >= view.max;
+  for (const option of options) {
+    const post = cachedPosts.find((item) => String(item.techhub_id) === option.value);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "post-picker-option";
+    button.dataset.postPickerValue = option.value;
+    button.setAttribute("role", "option");
+    button.setAttribute("aria-selected", selectedValues.has(option.value) ? "true" : "false");
+    button.classList.toggle("is-selected", selectedValues.has(option.value));
+    button.disabled = !!selectEl.disabled || (reachedLimit && !selectedValues.has(option.value));
+
+    const marker = document.createElement("span");
+    marker.className = "post-picker-marker";
+    marker.textContent = selectedValues.has(option.value) ? "✓" : "";
+    const content = document.createElement("span");
+    content.className = "post-picker-option-text";
+    const title = document.createElement("strong");
+    title.textContent = post?.title || option.textContent.replace(/^#\d+\s*·\s*/, "");
+    const meta = document.createElement("small");
+    meta.textContent = `#${option.value}${post?.status ? ` · ${String(post.status).toUpperCase()}` : ""}`;
+    content.append(title, meta);
+    button.append(marker, content);
+    view.list.append(button);
+  }
 }
 
 function describeScope(selectEl) {
@@ -1199,6 +1418,7 @@ function updateScopeLabels() {
     discussionText,
     discussionText.includes("chưa chọn") ? "error" : "muted"
   );
+  renderPostPickers();
 }
 
 function populateAiPostSelectors() {
@@ -1227,35 +1447,42 @@ function populateAiPostSelectors() {
       ? previous
       : selectedValue;
   }
-  updateScopeLabels();
-}
-
-function openPostAction(techhubId, action) {
-  selectPost(techhubId, { updateAutoCommentTarget: false });
-  if (action === "reply" && elements.replyScope && !elements.replyScope.disabled) {
-    elements.replyScope.value = String(techhubId);
-    showPanel("reply");
-  } else if (
-    action === "discussion" &&
-    elements.discussionScope &&
-    !elements.discussionScope.disabled
-  ) {
-    elements.discussionScope.value = String(techhubId);
-    showPanel("discussion");
-    loadDiscussionDrafts();
-  } else if (action === "reply") {
-    showPanel("reply");
-  } else if (action === "discussion") {
-    showPanel("discussion");
+  if (elements.autoCommentOwnPostId) {
+    const previous = new Set(
+      autoCommentSelectedTechhubIds.map((id) => String(id))
+    );
+    elements.autoCommentOwnPostId.innerHTML = options || '<option value="" disabled>Chưa có bài để chọn</option>';
+    for (const option of elements.autoCommentOwnPostId.options) {
+      option.selected = previous.has(option.value);
+    }
   }
+  if (elements.deleteTechhubId) {
+    const previous = new Set(deleteSelectedTechhubIds.map((id) => String(id)));
+    elements.deleteTechhubId.innerHTML = options || '<option value="" disabled>Chưa có bài để chọn</option>';
+    for (const option of elements.deleteTechhubId.options) {
+      option.selected = previous.has(option.value);
+    }
+    renderDeleteSelectedLabel();
+  }
+  if (elements.myDiscussionPostId) {
+    const previous = elements.myDiscussionPostId.value;
+    elements.myDiscussionPostId.innerHTML = `<option value="">Chọn một bài…</option>${options}`;
+    elements.myDiscussionPostId.value = cachedPosts.some(
+      (post) => String(post.techhub_id) === previous
+    )
+      ? previous
+      : "";
+  }
+  renderPostPickers();
   updateScopeLabels();
 }
 
 function updateSelectedPostLabel(notify = false) {
   const post = cachedPosts.find((p) => Number(p.techhub_id) === selectedTechhubId);
-  const autoCommentPost = cachedPosts.find(
-    (p) => Number(p.techhub_id) === Number(autoCommentSelectedTechhubId)
-  );
+  const autoCommentPosts = autoCommentSelectedTechhubIds
+    .map((id) => cachedPosts.find((p) => Number(p.techhub_id) === Number(id)))
+    .filter(Boolean);
+  const autoCommentPost = autoCommentPosts[0] || null;
   if (elements.statSelected) {
     elements.statSelected.textContent = post ? `#${post.techhub_id}` : "—";
   }
@@ -1267,6 +1494,17 @@ function updateSelectedPostLabel(notify = false) {
 
   if (!autoCommentPost) {
     showAdminMsg(elements.selectedPostLabel, "Chưa chọn bài", "muted");
+    return;
+  }
+  if (elements.autoCommentOwnPostId) {
+    const selectedValues = new Set(autoCommentPosts.map((post) => String(post.techhub_id)));
+    for (const option of elements.autoCommentOwnPostId.options) {
+      option.selected = selectedValues.has(option.value);
+    }
+  }
+  if (autoCommentPosts.length > 1) {
+    const ids = autoCommentPosts.map((post) => `#${post.techhub_id}`).join(", ");
+    showAdminMsg(elements.selectedPostLabel, `Đã chọn ${autoCommentPosts.length} bài: ${ids}`, "info");
     return;
   }
   const detail = `#${autoCommentPost.techhub_id} · ${autoCommentPost.status || "-"} · cmt=${
@@ -1286,44 +1524,65 @@ function updateSelectedPostLabel(notify = false) {
   }
 }
 
-function renderAutoCommentSchedule(schedule) {
+function renderAutoCommentSchedule(schedules) {
   if (!elements.autoCommentScheduleInfo) return;
-  const hasSchedule = !!schedule?.techhubId && !!schedule?.startAt;
+  const list = (Array.isArray(schedules) ? schedules : [schedules])
+    .filter((schedule) => schedule?.techhubId && schedule?.startAt)
+    .slice(-5);
+  const waiting = list.filter((schedule) => (schedule.status || "waiting") === "waiting");
   if (elements.cancelAutoCommentScheduleBtn) {
-    elements.cancelAutoCommentScheduleBtn.disabled = !hasSchedule;
+    elements.cancelAutoCommentScheduleBtn.disabled = waiting.length === 0;
   }
-  if (!hasSchedule) {
+  if (elements.scheduleAutoCommentBtn) {
+    elements.scheduleAutoCommentBtn.disabled = waiting.length >= 5;
+  }
+  if (!list.length) {
     showAdminMsg(elements.autoCommentScheduleInfo, "Chưa có lịch hẹn.", "muted");
     return;
   }
-  const base =
-    `Đã hẹn bài #${schedule.techhubId} lúc ${formatDateTime(schedule.startAt)}` +
-    ` · mục tiêu ${schedule.targetCount || "?"} cmt/${schedule.completionMinutes || 1} phút` +
-    (schedule.autoDeleteEnabled
-      ? ` · tự xóa từng cmt sau ${schedule.deleteAfterMinutes || 1} phút`
-      : "");
-  showAdminMsg(
-    elements.autoCommentScheduleInfo,
-    schedule.lastError ? `${base} · lỗi lần trước: ${schedule.lastError}` : base,
-    schedule.lastError ? "error" : "info"
-  );
+  elements.autoCommentScheduleInfo.classList.remove("hidden", "muted", "error");
+  elements.autoCommentScheduleInfo.classList.add("info");
+  elements.autoCommentScheduleInfo.innerHTML = list
+    .map((schedule, index) => {
+      const status = schedule.status || "waiting";
+      const statusText = status === "activated" ? "Đã kích hoạt" : status === "error" ? "Lỗi" : "Đang chờ";
+      const base =
+        `Lịch ${index + 1} · bài #${schedule.techhubId} · ${formatDateTime(schedule.startAt)}` +
+        ` · ${schedule.targetCount || "?"} cmt/${schedule.completionMinutes || 1} phút` +
+        (schedule.autoDeleteEnabled
+          ? ` · tự xóa sau ${schedule.deleteAfterMinutes || 1} phút`
+          : " · không tự xóa");
+      return `<div><strong>${escapeHtml(statusText)}</strong> · ${escapeHtml(base)}${
+        schedule.lastError ? ` · ${escapeHtml(schedule.lastError)}` : ""
+      }</div>`;
+    })
+    .join("");
 }
 
 function renderAutoCommentStatus(state, message = "", type = "info") {
   if (!state) return;
   currentAutoCommentState = { ...state };
   const lockedTechhubId = Number(state.active ? state.techhubId : state.schedule?.techhubId);
-  if (Number.isInteger(lockedTechhubId) && lockedTechhubId > 0) {
+  if (
+    autoCommentSelectedTechhubIds.length === 0 &&
+    Number.isInteger(lockedTechhubId) &&
+    lockedTechhubId > 0
+  ) {
     autoCommentSelectedTechhubId = lockedTechhubId;
+    autoCommentSelectedTechhubIds = [lockedTechhubId];
   }
-  elements.startAutoCommentBtn.disabled = !!state.active;
-  elements.stopAutoCommentBtn.disabled = !state.active;
-  setJobFlag("comment", !!state.active);
-  renderAutoCommentSchedule(state.schedule);
+  const activeJobs = Array.isArray(state.jobs) ? state.jobs.filter((job) => job.active) : [];
+  renderAutoCommentJobsLog(Array.isArray(state.jobs) ? state.jobs : []);
+  const activeJobCount = Number(state.activeJobCount) || activeJobs.length || (state.active ? 1 : 0);
+  const maxJobs = Number(state.maxJobs) || 5;
+  elements.startAutoCommentBtn.disabled = activeJobCount >= maxJobs;
+  elements.stopAutoCommentBtn.disabled = activeJobCount === 0;
+  setJobFlag("comment", activeJobCount > 0);
+  renderAutoCommentSchedule(state.schedules?.length ? state.schedules : state.schedule);
   updateSelectedPostLabel();
   const targetState = state.active ? state : state.schedule;
   if (targetState?.isExternalTarget && targetState.techhubId) {
-    if (elements.autoCommentExternalPostId) {
+    if (elements.autoCommentExternalPostId && activeJobCount === 0) {
       elements.autoCommentExternalPostId.value = String(targetState.techhubId);
     }
     showAdminMsg(
@@ -1333,38 +1592,55 @@ function renderAutoCommentStatus(state, message = "", type = "info") {
     );
   }
 
-  const waitingSchedule = !state.active && state.schedule?.techhubId;
+  const waitingSchedule = (state.schedules || []).find(
+    (schedule) => (schedule.status || "waiting") === "waiting"
+  ) || (!state.schedules?.length && state.schedule?.techhubId ? state.schedule : null);
   const statusText = state.active ? "Đang chạy" : waitingSchedule ? "Đang chờ" : "Đã dừng";
-  const detail = state.active && state.techhubId
-    ? `${statusText} · bài #${state.techhubId} · ${state.commentCount || 0}/${
-        state.targetCount || "?"
-      } cmt · @${state.username || "-"}`
+  const jobsDetail = activeJobs.length > 1
+    ? activeJobs
+        .map(
+          (job, index) =>
+            `job ${index + 1}: #${job.techhubId} · ${job.commentCount || 0}/${job.targetCount || "?"}` +
+            (job.autoDeleteEnabled ? ` · tự xóa ${job.deleteAfterMinutes || 1}p` : " · không xóa")
+        )
+        .join(" | ")
+    : null;
+  const detail = jobsDetail
+    ? `Đang chạy ${activeJobCount}/${maxJobs} · ${jobsDetail}`
+    : state.active && state.techhubId
+      ? `${statusText} · bài #${state.techhubId} · ${state.commentCount || 0}/${
+          state.targetCount || "?"
+        } cmt · @${state.username || "-"}`
     : waitingSchedule
-      ? `${statusText} · bài #${state.schedule.techhubId} · 0/${
-          state.schedule.targetCount || "?"
+      ? `${statusText} · bài #${waitingSchedule.techhubId} · 0/${
+          waitingSchedule.targetCount || "?"
         } cmt`
       : statusText;
   const displayedTarget = state.active
     ? state.targetCount
-    : state.schedule?.targetCount || state.targetCount;
-  if (displayedTarget && elements.autoCommentTargetCount) {
+    : waitingSchedule?.targetCount || state.targetCount;
+  if (displayedTarget && elements.autoCommentTargetCount && activeJobCount === 0) {
     elements.autoCommentTargetCount.value = String(displayedTarget);
   }
   const completionMinutes = state.active
     ? state.completionMinutes
-    : state.schedule?.completionMinutes;
-  if (completionMinutes && elements.autoCommentCompletionMinutes) {
+    : waitingSchedule?.completionMinutes;
+  if (completionMinutes && elements.autoCommentCompletionMinutes && activeJobCount === 0) {
     elements.autoCommentCompletionMinutes.value = String(completionMinutes);
   }
   const deleteSettings = state.active
     ? state
-    : state.schedule?.techhubId
-      ? state.schedule
+    : waitingSchedule?.techhubId
+      ? waitingSchedule
       : null;
-  if (elements.autoCommentAutoDelete && deleteSettings) {
+  if (elements.autoCommentAutoDelete && deleteSettings && activeJobCount === 0) {
     elements.autoCommentAutoDelete.checked = !!deleteSettings.autoDeleteEnabled;
   }
-  if (elements.autoCommentDeleteAfterMinutes && deleteSettings?.deleteAfterMinutes) {
+  if (
+    elements.autoCommentDeleteAfterMinutes &&
+    deleteSettings?.deleteAfterMinutes &&
+    activeJobCount === 0
+  ) {
     elements.autoCommentDeleteAfterMinutes.value = String(deleteSettings.deleteAfterMinutes);
   }
   const deleteQueueText = [
@@ -1379,6 +1655,54 @@ function renderAutoCommentStatus(state, message = "", type = "info") {
     message ? `${message} ${detail}${deleteQueueText}` : `${detail}${deleteQueueText}`,
     state.lastError ? "error" : type
   );
+}
+
+function renderAutoCommentJobsLog(jobs) {
+  if (!elements.autoCommentJobsLog) return;
+  const list = Array.isArray(jobs) ? jobs.slice(-5) : [];
+  if (!list.length) {
+    elements.autoCommentJobsLog.innerHTML =
+      '<div class="empty">Chưa có job auto comment.</div>';
+    return;
+  }
+  elements.autoCommentJobsLog.innerHTML = list
+    .map((job, index) => {
+      const target = Number(job.targetCount) || 0;
+      const count = Number(job.commentCount) || 0;
+      const completed = target > 0 && count >= target;
+      const status = job.active
+        ? "Đang chạy"
+        : job.lastError
+          ? "Lỗi"
+          : completed
+            ? "Hoàn tất"
+            : "Đã dừng";
+      const statusClass = job.active
+        ? "pending"
+        : job.lastError
+          ? "error"
+          : completed
+            ? "done"
+            : "error";
+      const deleteMode = job.autoDeleteEnabled
+        ? `Tự xóa sau ${Number(job.deleteAfterMinutes) || 1} phút`
+        : "Không tự xóa";
+      const lastActivity = job.lastCommentAt
+        ? `Comment gần nhất: ${formatDateTime(job.lastCommentAt)}`
+        : `Bắt đầu: ${formatDateTime(job.startedAt)}`;
+      return (
+        `<div class="schedule-item ${statusClass}">` +
+        `<div class="schedule-main"><strong>Job ${index + 1} · bài #${Number(job.techhubId) || "-"}</strong>` +
+        `<span class="badge ${statusClass}">${status}</span></div>` +
+        `<div class="schedule-meta">Tiến độ ${count}/${target || "?"} · ${escapeHtml(deleteMode)}</div>` +
+        `<div class="schedule-meta">${escapeHtml(lastActivity)}</div>` +
+        (job.lastError
+          ? `<div class="schedule-meta bad">${escapeHtml(job.lastError)}</div>`
+          : "") +
+        `</div>`
+      );
+    })
+    .join("");
 }
 
 async function loadAutoCommentStatus() {
@@ -1466,31 +1790,58 @@ function readAutoCommentDeleteOptions() {
   return { autoDeleteEnabled, deleteAfterMinutes, completionMinutes };
 }
 
-function getAutoCommentTarget() {
+function getAutoCommentTargets() {
   const rawExternalId = elements.autoCommentExternalPostId?.value?.trim() || "";
   if (rawExternalId) {
     const techhubId = Number(rawExternalId);
     if (!Number.isInteger(techhubId) || techhubId < 1) {
       throw new Error("ID bài thành viên khác phải là số nguyên dương.");
     }
-    return { techhubId, isExternalTarget: true };
+    return [{ techhubId, isExternalTarget: true }];
   }
-  const techhubId = Number(autoCommentSelectedTechhubId);
-  if (!Number.isInteger(techhubId) || techhubId < 1) {
-    throw new Error("Hãy chọn bài của anh hoặc nhập ID bài thành viên khác.");
+  const techhubIds = [...new Set(autoCommentSelectedTechhubIds.map(Number))].filter(
+    (techhubId) => Number.isInteger(techhubId) && techhubId > 0
+  );
+  if (techhubIds.length < 1 || techhubIds.length > 5) {
+    throw new Error("Hãy chọn từ 1 đến 5 bài của anh hoặc nhập ID bài thành viên khác.");
   }
-  return { techhubId, isExternalTarget: false };
+  return techhubIds.map((techhubId) => ({ techhubId, isExternalTarget: false }));
+}
+
+function assertAutoCommentBatchCapacity(targets, mode) {
+  const state = currentAutoCommentState || {};
+  const isSchedule = mode === "schedule";
+  const existing = isSchedule
+    ? (state.schedules || []).filter(
+        (schedule) => (schedule.status || "waiting") === "waiting"
+      )
+    : (state.jobs || []).filter((job) => job.active);
+  const max = Number(isSchedule ? state.maxSchedules : state.maxJobs) || 5;
+  const duplicate = targets.find((target) =>
+    existing.some((item) => Number(item.techhubId) === target.techhubId)
+  );
+  if (duplicate) {
+    throw new Error(
+      `Bài #${duplicate.techhubId} đã có ${isSchedule ? "lịch đang chờ" : "job đang chạy"}.`
+    );
+  }
+  const remaining = Math.max(0, max - existing.length);
+  if (targets.length > remaining) {
+    throw new Error(
+      `Hiện chỉ còn ${remaining}/${max} vị trí ${isSchedule ? "lịch hẹn" : "job"}. Hãy chọn ít bài hơn.`
+    );
+  }
 }
 
 async function startAutoComment() {
-  let target;
+  let targets;
   try {
-    target = getAutoCommentTarget();
+    targets = getAutoCommentTargets();
+    assertAutoCommentBatchCapacity(targets, "start");
   } catch (error) {
     showAdminMsg(elements.autoCommentMessage, error.message, "error");
     return;
   }
-  const { techhubId, isExternalTarget } = target;
   const targetCount = Number(elements.autoCommentTargetCount?.value);
   if (!Number.isInteger(targetCount) || targetCount < 1) {
     showAdminMsg(elements.autoCommentMessage, "Nhập số lượng cmt mong muốn (>= 1)", "error");
@@ -1504,8 +1855,9 @@ async function startAutoComment() {
     return;
   }
 
+  const postIds = targets.map((target) => `#${target.techhubId}`).join(", ");
   const confirmed = window.confirm(
-    `Bắt đầu comment vào bài #${techhubId}, ${targetCount} cmt trong khoảng ${deleteOptions.completionMinutes} phút?\n\n` +
+    `Bắt đầu auto comment cho ${targets.length} bài (${postIds}), mỗi bài ${targetCount} cmt trong khoảng ${deleteOptions.completionMinutes} phút?\n\n` +
       (deleteOptions.autoDeleteEnabled
         ? `Mỗi comment sẽ tự xóa sau ${deleteOptions.deleteAfterMinutes} phút.\n\n`
         : "") +
@@ -1514,22 +1866,45 @@ async function startAutoComment() {
   if (!confirmed) return;
 
   elements.startAutoCommentBtn.disabled = true;
+  let startedCount = 0;
   try {
-    showAdminMsg(elements.autoCommentMessage, "Đang khởi động...", "muted");
-    const response = await sendMessage({
-      action: "startAutoComment",
-      techhubId,
-      targetCount,
-      isExternalTarget,
-      ...deleteOptions,
-    });
-    if (!response?.success) {
-      throw new Error(response?.error || "Không thể bắt đầu auto comment");
+    showAdminMsg(
+      elements.autoCommentMessage,
+      `Đang khởi động ${targets.length} job...`,
+      "muted"
+    );
+    let latestState = null;
+    for (const target of targets) {
+      const response = await sendMessage({
+        action: "startAutoComment",
+        ...target,
+        targetCount,
+        ...deleteOptions,
+      });
+      if (!response?.success) {
+        throw new Error(
+          `Bài #${target.techhubId}: ${response?.error || "không thể bắt đầu auto comment"}`
+        );
+      }
+      startedCount += 1;
+      latestState = response.state;
     }
-    renderAutoCommentStatus(response.state, "Đã khởi động.", "success");
+    renderAutoCommentStatus(
+      latestState,
+      `Đã khởi động ${startedCount} job cho ${startedCount} bài.`,
+      "success"
+    );
   } catch (error) {
-    showAdminMsg(elements.autoCommentMessage, `Lỗi: ${error.message}`, "error");
-    elements.startAutoCommentBtn.disabled = false;
+    await loadAutoCommentStatus();
+    showAdminMsg(
+      elements.autoCommentMessage,
+      `${startedCount ? `Đã khởi động ${startedCount}/${targets.length} job. ` : ""}Lỗi: ${error.message}`,
+      "error"
+    );
+  } finally {
+    const activeCount = (currentAutoCommentState?.jobs || []).filter((job) => job.active).length;
+    const maxJobs = Number(currentAutoCommentState?.maxJobs) || 5;
+    elements.startAutoCommentBtn.disabled = activeCount >= maxJobs;
   }
 }
 
@@ -1539,14 +1914,14 @@ function setDefaultAutoCommentStartAt() {
 }
 
 async function scheduleAutoComment() {
-  let target;
+  let targets;
   try {
-    target = getAutoCommentTarget();
+    targets = getAutoCommentTargets();
+    assertAutoCommentBatchCapacity(targets, "schedule");
   } catch (error) {
     showAdminMsg(elements.autoCommentMessage, error.message, "error");
     return;
   }
-  const { techhubId, isExternalTarget } = target;
   const targetCount = Number(elements.autoCommentTargetCount?.value);
   if (!Number.isInteger(targetCount) || targetCount < 1) {
     showAdminMsg(elements.autoCommentMessage, "Nhập số lượng cmt mong muốn (>= 1)", "error");
@@ -1571,25 +1946,41 @@ async function scheduleAutoComment() {
   }
 
   elements.scheduleAutoCommentBtn.disabled = true;
+  let scheduledCount = 0;
   try {
-    const response = await sendMessage({
-      action: "scheduleAutoComment",
-      techhubId,
-      targetCount,
-      startAt: startAt.toISOString(),
-      isExternalTarget,
-      ...deleteOptions,
-    });
-    if (!response?.success) throw new Error(response?.error || "Không hẹn được");
+    let latestState = null;
+    for (const target of targets) {
+      const response = await sendMessage({
+        action: "scheduleAutoComment",
+        ...target,
+        targetCount,
+        startAt: startAt.toISOString(),
+        ...deleteOptions,
+      });
+      if (!response?.success) {
+        throw new Error(`Bài #${target.techhubId}: ${response?.error || "không hẹn được"}`);
+      }
+      scheduledCount += 1;
+      latestState = response.state;
+    }
     renderAutoCommentStatus(
-      response.state,
-      `Đã hẹn chạy lúc ${formatTime(startAt)}.`,
+      latestState,
+      `Đã hẹn ${scheduledCount} bài chạy lúc ${formatTime(startAt)}.`,
       "success"
     );
   } catch (error) {
-    showAdminMsg(elements.autoCommentMessage, `Lỗi: ${error.message}`, "error");
+    await loadAutoCommentStatus();
+    showAdminMsg(
+      elements.autoCommentMessage,
+      `${scheduledCount ? `Đã hẹn ${scheduledCount}/${targets.length} bài. ` : ""}Lỗi: ${error.message}`,
+      "error"
+    );
   } finally {
-    elements.scheduleAutoCommentBtn.disabled = false;
+    const waitingCount = (currentAutoCommentState?.schedules || []).filter(
+      (schedule) => (schedule.status || "waiting") === "waiting"
+    ).length;
+    const maxSchedules = Number(currentAutoCommentState?.maxSchedules) || 5;
+    elements.scheduleAutoCommentBtn.disabled = waitingCount >= maxSchedules;
   }
 }
 
@@ -1645,6 +2036,15 @@ function formatPostScore(score) {
   return Number(score).toFixed(1);
 }
 
+function setPostsUltraCredits(value) {
+  const nextCredits = Math.max(0, Math.trunc(Number(value) || 0));
+  if (availableUltraCredits === nextCredits) return;
+  availableUltraCredits = nextCredits;
+  renderMyPosts(cachedPosts);
+}
+
+globalThis.setPostsUltraCredits = setPostsUltraCredits;
+
 function renderMyPosts(posts) {
   cachedPosts = Array.isArray(posts) ? posts : [];
   // Job auto-comment cũ không được giữ một lựa chọn không còn trong danh sách.
@@ -1653,28 +2053,30 @@ function renderMyPosts(posts) {
     !cachedPosts.some((post) => Number(post.techhub_id) === selectedTechhubId)
   ) {
     selectedTechhubId = null;
-    if (elements.deleteTechhubId) elements.deleteTechhubId.value = "";
   }
-  if (
-    Number.isInteger(autoCommentSelectedTechhubId) &&
-    !cachedPosts.some(
-      (post) => Number(post.techhub_id) === autoCommentSelectedTechhubId
-    ) &&
-    !currentAutoCommentState?.active &&
-    !currentAutoCommentState?.schedule?.techhubId
-  ) {
-    autoCommentSelectedTechhubId = null;
-  }
+  autoCommentSelectedTechhubIds = autoCommentSelectedTechhubIds.filter((techhubId) =>
+    cachedPosts.some((post) => Number(post.techhub_id) === techhubId)
+  );
+  autoCommentSelectedTechhubId = autoCommentSelectedTechhubIds[0] || null;
+  deleteSelectedTechhubIds = deleteSelectedTechhubIds.filter((techhubId) =>
+    cachedPosts.some((post) => Number(post.techhub_id) === techhubId)
+  );
   populateAiPostSelectors();
   if (!elements.myPostsList) return;
 
   const totalScore = cachedPosts.reduce((sum, p) => sum + calcPostScore(p), 0);
   if (elements.statPosts) elements.statPosts.textContent = String(cachedPosts.length);
   if (elements.statScore) elements.statScore.textContent = formatPostScore(totalScore);
+  if (elements.postsUltraNotice) {
+    elements.postsUltraNotice.classList.toggle("hidden", availableUltraCredits < 1);
+    elements.postsUltraNotice.textContent = availableUltraCredits > 0
+      ? `Bạn có ${availableUltraCredits} lượt Ultra. Chọn “Đẩy Ultra” tại bài muốn ưu tiên.`
+      : "";
+  }
 
   if (cachedPosts.length === 0) {
     elements.myPostsList.innerHTML =
-      '<div class="empty">Chưa có bài trong DB. Bấm <strong>Quét bài</strong> để đồng bộ.</div>';
+      '<div class="empty">Chưa có bài đã lưu. Bấm <strong>Đồng bộ bài</strong> để lấy từ TechHub.</div>';
     updateSelectedPostLabel();
     return;
   }
@@ -1697,7 +2099,6 @@ function renderMyPosts(posts) {
   const rows = visible
     .map((p) => {
       const id = Number(p.techhub_id);
-      const selected = id === selectedTechhubId;
       const title = escapeHtml(p.title || "(không tiêu đề)");
       const status = escapeHtml(p.status || "-");
       const statusClass = status === "open" ? "open" : "other";
@@ -1706,8 +2107,10 @@ function renderMyPosts(posts) {
       const votes = Number(p.votes_score) || 0;
       const medals = Number(p.medals_count) || 0;
       const score = formatPostScore(calcPostScore(p));
+      const canRedeemUltra =
+        availableUltraCredits > 0 && String(p.verification_status || "") === "verified";
       return (
-        `<tr class="${selected ? "selected" : ""}" data-techhub-id="${id}">` +
+        `<tr data-techhub-id="${id}">` +
         `<td class="cell-title">` +
         `<a class="post-link" href="${url}" target="_blank" rel="noopener noreferrer" title="Mở trên TechHub">${title}</a>` +
         `<div class="post-sub"><span>#${id}</span><span>@${escapeHtml(
@@ -1722,17 +2125,13 @@ function renderMyPosts(posts) {
         `<td class="cell-date" data-label="Ngày tạo">${escapeHtml(
           formatRelativeDate(p.created_at)
         )}</td>` +
-        `<td class="cell-action">` +
-        `<div class="row-actions">` +
-        `<button type="button" class="mini-btn${
-          selected ? " is-selected" : ""
-        }" data-select-id="${id}">${selected ? "Đang chọn" : "Chọn"}</button>` +
-        (isAdminUser
-          ? `<button type="button" class="mini-btn" data-post-action="reply" data-post-id="${id}">AI trả lời</button>` +
-            `<button type="button" class="mini-btn" data-post-action="discussion" data-post-id="${id}">AI thảo luận</button>`
+        (availableUltraCredits > 0
+          ? `<td class="cell-action">${
+              canRedeemUltra
+                ? `<button type="button" class="mini-btn" data-ultra-post-id="${id}">Đẩy Ultra</button>`
+                : ""
+            }</td>`
           : "") +
-        `</div>` +
-        `</td>` +
         `</tr>`
       );
     })
@@ -1741,7 +2140,7 @@ function renderMyPosts(posts) {
   elements.myPostsList.innerHTML =
     '<table class="data-table"><thead><tr>' +
     "<th>Tiêu đề</th><th>Điểm</th><th>Medal</th><th>Vote</th><th>Cmt</th>" +
-    "<th>Trạng thái</th><th>Ngày tạo</th><th></th>" +
+    `<th>Trạng thái</th><th>Ngày tạo</th>${availableUltraCredits > 0 ? "<th>Ultra</th>" : ""}` +
     `</tr></thead><tbody>${rows}</tbody></table>`;
   updateSelectedPostLabel();
 }
@@ -1777,9 +2176,9 @@ async function loadMyPosts() {
 async function syncMyPosts() {
   elements.syncMyPostsBtn.disabled = true;
   try {
-    showAdminMsg(elements.postsMessage, "Đang quét bài từ TechHub...", "muted");
+    showAdminMsg(elements.postsMessage, "Đang đồng bộ bài từ TechHub...", "muted");
     const response = await sendMessage({ action: "syncMyPosts" });
-    if (!response?.success) throw new Error(response?.error || "Quét bài thất bại");
+    if (!response?.success) throw new Error(response?.error || "Đồng bộ bài thất bại");
     renderMyPosts(response.posts || []);
     showAdminMsg(
       elements.postsMessage,
@@ -1787,7 +2186,7 @@ async function syncMyPosts() {
       "success"
     );
   } catch (error) {
-    showAdminMsg(elements.postsMessage, `Lỗi quét bài: ${error.message}`, "error");
+    showAdminMsg(elements.postsMessage, `Lỗi đồng bộ bài: ${error.message}`, "error");
   } finally {
     elements.syncMyPostsBtn.disabled = false;
   }
@@ -3267,6 +3666,34 @@ function setDefaultDeleteAt() {
   elements.deleteAtInput.value = toLocalInputValue(new Date(Date.now() + 60 * 60 * 1000));
 }
 
+function getDeleteSelectedTechhubIds() {
+  const selected = elements.deleteTechhubId
+    ? [...elements.deleteTechhubId.selectedOptions]
+        .map((option) => Number(option.value))
+        .filter((id) => Number.isInteger(id) && id > 0)
+    : deleteSelectedTechhubIds;
+  deleteSelectedTechhubIds = [...new Set(selected)].slice(0, 5);
+  return deleteSelectedTechhubIds;
+}
+
+function renderDeleteSelectedLabel() {
+  if (!elements.deleteSelectedLabel) return;
+  const ids = getDeleteSelectedTechhubIds();
+  if (!ids.length) {
+    showAdminMsg(elements.deleteSelectedLabel, "Chưa chọn bài.", "muted");
+    return;
+  }
+  const labels = ids.map((id) => {
+    const post = cachedPosts.find((item) => Number(item.techhub_id) === id);
+    return `#${id}${post?.title ? ` · ${post.title}` : ""}`;
+  });
+  showAdminMsg(
+    elements.deleteSelectedLabel,
+    `Đã chọn ${ids.length}/5 bài: ${labels.join(" | ")}`,
+    "info"
+  );
+}
+
 function renderScheduledDeletes(items) {
   if (!elements.scheduledDeletesList) return;
   const list = Array.isArray(items) ? items : [];
@@ -3329,10 +3756,10 @@ async function loadScheduledDeletes() {
 }
 
 async function scheduleDeletePost() {
-  const techhubId = Number(elements.deleteTechhubId.value);
+  const techhubIds = getDeleteSelectedTechhubIds();
   const deleteAt = elements.deleteAtInput.value;
-  if (!Number.isInteger(techhubId) || techhubId < 1) {
-    showAdminMsg(elements.deleteScheduleMessage, "Nhập techhub_id hợp lệ", "error");
+  if (techhubIds.length < 1 || techhubIds.length > 5) {
+    showAdminMsg(elements.deleteScheduleMessage, "Hãy chọn từ 1 đến 5 bài.", "error");
     return;
   }
   if (!deleteAt) {
@@ -3341,34 +3768,54 @@ async function scheduleDeletePost() {
   }
 
   const confirmed = window.confirm(
-    `Hẹn xóa bài #${techhubId} lúc ${new Date(deleteAt).toLocaleString()}?\n\n` +
-      "Bài sẽ bị xóa trên TechHub khi đến giờ."
+    `Hẹn xóa ${techhubIds.length} bài (${techhubIds.map((id) => `#${id}`).join(", ")}) ` +
+      `lúc ${new Date(deleteAt).toLocaleString()}?\n\n` +
+      "Các bài sẽ bị xóa trên TechHub khi đến giờ."
   );
   if (!confirmed) return;
 
   elements.scheduleDeleteBtn.disabled = true;
+  let scheduledCount = 0;
   try {
-    const response = await sendMessage({
-      action: "scheduleDeletePost",
-      techhubId,
-      deleteAt: new Date(deleteAt).toISOString(),
-    });
-    if (!response?.success) throw new Error(response?.error || "Không hẹn được");
-    renderScheduledDeletes(response.items || []);
-    showAdminMsg(elements.deleteScheduleMessage, response.message || "Đã hẹn xóa", "success");
+    let latestItems = [];
+    const isoDeleteAt = new Date(deleteAt).toISOString();
+    for (const techhubId of techhubIds) {
+      const response = await sendMessage({
+        action: "scheduleDeletePost",
+        techhubId,
+        deleteAt: isoDeleteAt,
+      });
+      if (!response?.success) {
+        throw new Error(`Bài #${techhubId}: ${response?.error || "không hẹn được"}`);
+      }
+      scheduledCount += 1;
+      latestItems = response.items || latestItems;
+    }
+    renderScheduledDeletes(latestItems);
+    showAdminMsg(
+      elements.deleteScheduleMessage,
+      `Đã hẹn xóa ${scheduledCount} bài lúc ${new Date(deleteAt).toLocaleString()}.`,
+      "success"
+    );
   } catch (error) {
-    showAdminMsg(elements.deleteScheduleMessage, `Lỗi: ${error.message}`, "error");
+    await loadScheduledDeletes();
+    showAdminMsg(
+      elements.deleteScheduleMessage,
+      `${scheduledCount ? `Đã hẹn ${scheduledCount}/${techhubIds.length} bài. ` : ""}Lỗi: ${error.message}`,
+      "error"
+    );
   } finally {
     elements.scheduleDeleteBtn.disabled = false;
   }
 }
 
 async function deletePostNow() {
-  const techhubId = Number(elements.deleteTechhubId.value);
-  if (!Number.isInteger(techhubId) || techhubId < 1) {
-    showAdminMsg(elements.deleteScheduleMessage, "Nhập techhub_id hợp lệ", "error");
+  const techhubIds = getDeleteSelectedTechhubIds();
+  if (techhubIds.length !== 1) {
+    showAdminMsg(elements.deleteScheduleMessage, "Xóa ngay yêu cầu chọn đúng 1 bài.", "error");
     return;
   }
+  const [techhubId] = techhubIds;
   const confirmed = window.confirm(
     `XÓA NGAY bài #${techhubId} trên TechHub?\n\nKhông hoàn tác được.`
   );

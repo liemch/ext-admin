@@ -45,7 +45,28 @@
       user_reconcile: "muted",
       legacy: "muted",
     }[status] || "muted";
-    return `<span class="badge ${cls}">${escapeHtml(status || "?")}</span>`;
+    const label = {
+      verified: "Đã xác minh",
+      rejected: "Không hợp lệ",
+      stale: "Cần kiểm tra lại",
+      unverified: "Chưa xác minh",
+      succeeded: "Thành công",
+      partial: "Một phần",
+      failed: "Thất bại",
+      session_required: "Cần đăng nhập",
+      pending: "Đang chờ",
+      claimed: "Đã nhận",
+      running: "Đang chạy",
+      retry_wait: "Chờ thử lại",
+      cancelled: "Đã hủy",
+      post_hint: "User mở bài",
+      feed_discovery: "Quét chuyên mục",
+      user_reconcile: "Theo tác giả",
+      hint: "User mở bài",
+      feed: "Quét chuyên mục",
+      legacy: "Dữ liệu cũ",
+    }[status] || status || "?";
+    return `<span class="badge ${cls}">${escapeHtml(label)}</span>`;
   }
 
   async function refreshPostSyncOverview() {
@@ -57,16 +78,38 @@
     try {
       const s = await PostSyncClient.getPostSyncStatus();
       const leader = (s.activeLeaders || [])[0];
+      const stored = await chrome.storage.local.get("engagementDevice");
+      const currentDeviceId = stored.engagementDevice?.deviceId || null;
+      const isThisMachine = !!leader && leader.claimed_by_device === currentDeviceId;
+      const queue = s.queue || {};
+      const waitingCount = Object.entries(queue).reduce((sum, [status, value]) => {
+        return ["pending", "retry_wait", "claimed", "running"].includes(status)
+          ? sum + (Number(value) || 0)
+          : sum;
+      }, 0);
+      const machineText = leader
+        ? isThisMachine
+          ? "Máy này đang hoạt động"
+          : "Máy admin khác đang xử lý"
+        : "Chưa có máy xử lý";
+      const guidance = s.sessionRequiredCount > 0
+        ? `<div class="post-sync-guidance bad">Có ${s.sessionRequiredCount} yêu cầu thiếu phiên đăng nhập. Mở TechHub, đăng nhập lại rồi bấm <strong>Đồng bộ ngay</strong>.</div>`
+        : waitingCount > 0
+          ? `<div class="post-sync-guidance warn">Có ${waitingCount} yêu cầu đang chờ. Bấm <strong>Đồng bộ ngay</strong> để xử lý ngay.</div>`
+          : `<div class="post-sync-guidance ok">Không có yêu cầu tồn đọng. Hệ thống vẫn tự kiểm tra định kỳ.</div>`;
       el("postSyncOverview").innerHTML = `
+        ${guidance}
         <div class="grid-2">
-          <div class="card mini"><div class="label">Leader</div><div class="value">${leader ? "🟢 online" : "⚪ không có leader"}</div><div class="sub muted">${leader ? escapeHtml(leader.claimed_by_device || "—") : ""}</div></div>
-          <div class="card mini"><div class="label">Lease hết hạn</div><div class="value">${leader ? formatTime(leader.lease_until) : "—"}</div></div>
-          <div class="card mini"><div class="label">Queue</div><div class="value">${Object.entries(s.queue || {}).map(([k, v]) => `${k}:${v}`).join(" · ") || "trống"}</div></div>
-          <div class="card mini"><div class="label">Session required</div><div class="value">${s.sessionRequiredCount || 0}</div></div>
-          <div class="card mini"><div class="label">Request 24h</div><div class="value">${s.requestCount24h || 0}</div></div>
-          <div class="card mini"><div class="label">Bài mới 24h</div><div class="value">${s.newPosts24h || 0} mới · ${s.updated24h || 0} cập nhật</div></div>
+          <div class="card mini"><div class="label">Máy phụ trách</div><div class="value">${escapeHtml(machineText)}</div><div class="sub muted">Tự động kiểm tra mỗi 5 phút</div></div>
+          <div class="card mini"><div class="label">Đang chờ xử lý</div><div class="value">${waitingCount} yêu cầu</div><div class="sub muted">${waitingCount ? "Có thể bấm Đồng bộ ngay" : "Hàng đợi đã trống"}</div></div>
+          <div class="card mini"><div class="label">Kết quả 24 giờ</div><div class="value">${s.newPosts24h || 0} bài mới</div><div class="sub muted">${s.updated24h || 0} bài được cập nhật</div></div>
+          <div class="card mini"><div class="label">Đăng nhập TechHub</div><div class="value">${s.sessionRequiredCount > 0 ? "Cần kiểm tra lại" : "Sẵn sàng"}</div><div class="sub muted">${s.sessionRequiredCount || 0} yêu cầu đang thiếu phiên</div></div>
         </div>
-        ${s.sessionRequiredCount > 0 ? `<p class="warn">⚠ Có job bị chờ phiên — mở tab TechHub để đăng nhập lại rồi bấm "Kiểm tra phiên".</p>` : ""}
+        <details class="post-sync-inline-detail">
+          <summary>Xem trạng thái kỹ thuật</summary>
+          <div>Leader: ${leader ? escapeHtml(leader.claimed_by_device || "—") : "—"} · hết quyền lúc ${leader ? formatTime(leader.lease_until) : "—"}</div>
+          <div>Queue: ${Object.entries(queue).map(([key, value]) => `${escapeHtml(key)}: ${Number(value) || 0}`).join(" · ") || "trống"} · request 24h: ${s.requestCount24h || 0}</div>
+        </details>
       `;
     } catch (error) {
       el("postSyncOverview").innerHTML = `<p class="bad">Không tải được trạng thái: ${escapeHtml(error.message)}</p>`;
@@ -150,14 +193,51 @@
     }
   }
 
-  async function requestFeedScan() {
+  async function syncPostsNow() {
     const slug = el("postSyncCommunitySlug")?.value.trim() || "cai-tien-moi-ngay";
+    const button = el("postSyncFeedBtn");
+    const originalText = button?.textContent || "Đồng bộ ngay";
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Đang đồng bộ…";
+    }
     try {
+      const session = await chrome.runtime.sendMessage({ action: "postSyncCheckSession" });
+      if (!session?.success || !session.ok) {
+        throw new Error(session?.error || "Phiên TechHub chưa sẵn sàng. Hãy mở TechHub và đăng nhập lại.");
+      }
       await PostSyncClient.requestPostSync("feed", { communitySlug: slug });
-      flash("Đã xếp hàng quét feed.");
-      setTimeout(refreshPostSyncOverview, 500);
+      flash("Đã tạo yêu cầu, đang lấy bài mới…", "warn");
+      let handledCount = 0;
+      let feedCompleted = false;
+      for (let i = 0; i < 5; i += 1) {
+        const result = await runLeaderNow({ announce: false, refresh: false });
+        if (!result || result.error) {
+          throw new Error(result?.error || "Không thể chạy đồng bộ.");
+        }
+        if (result.handled === 0) break;
+        handledCount += 1;
+        if (result.outcome === "success" && result.jobType === "feed_discovery") {
+          feedCompleted = true;
+          break;
+        }
+      }
+      flash(
+        feedCompleted
+          ? "Đồng bộ bài mới hoàn tất."
+          : handledCount > 0
+            ? `Đã xử lý ${handledCount} yêu cầu; phần còn lại sẽ tiếp tục tự chạy.`
+            : "Yêu cầu đã được xếp hàng và sẽ do máy leader xử lý.",
+        feedCompleted ? "ok" : "warn"
+      );
+      await refreshAllPostSync();
     } catch (error) {
-      flash(`Lỗi: ${error.message}`, "bad");
+      flash(`Không đồng bộ được: ${error.message}`, "bad");
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = originalText;
+      }
     }
   }
 
@@ -170,9 +250,36 @@
         flash(`Cooldown ${res.cooldownMinutes} phút, thử lại sau.`, "warn");
       } else {
         flash(`Đã xếp hàng quét @${username}.`);
+        await runLeaderNow();
       }
     } catch (error) {
       flash(`Lỗi: ${error.message}`, "bad");
+    }
+  }
+
+  async function runLeaderNow(options = {}) {
+    const { announce = true, refresh = true } = options;
+    const button = el("postSyncRunNowBtn");
+    if (button) button.disabled = true;
+    try {
+      const response = await chrome.runtime.sendMessage({ action: "postSyncRunLeaderTick" });
+      if (!response?.success) throw new Error(response?.error || "Leader không chạy được.");
+      const result = response.result || {};
+      const message = result.outcome === "success"
+        ? `Leader đã xử lý ${result.jobType || "job"}${result.username ? ` @${result.username}` : ""}.`
+        : result.handled === 0
+          ? "Đã nhận leader; hiện không có job tới hạn."
+          : result.error
+            ? `Leader lỗi: ${result.error}`
+            : "Leader đã chạy một lượt.";
+      if (announce) flash(message, result.error ? "bad" : "ok");
+      if (refresh) await refreshAllPostSync();
+      return result;
+    } catch (error) {
+      if (announce) flash(`Lỗi xử lý yêu cầu: ${error.message}`, "bad");
+      return { error: error.message, handled: 0 };
+    } finally {
+      if (button) button.disabled = false;
     }
   }
 
@@ -233,15 +340,19 @@
 
   function bindPostSyncUI() {
     el("postSyncRefreshBtn")?.addEventListener("click", refreshAllPostSync);
-    el("postSyncFeedBtn")?.addEventListener("click", requestFeedScan);
+    el("postSyncRunNowBtn")?.addEventListener("click", runLeaderNow);
+    el("postSyncFeedBtn")?.addEventListener("click", syncPostsNow);
     el("postSyncUserBtn")?.addEventListener("click", requestUserScan);
     el("postSyncNewDays")?.addEventListener("change", refreshNewPosts);
     el("postSyncNewFilter")?.addEventListener("change", refreshNewPosts);
     el("postSyncCheckSessionBtn")?.addEventListener("click", async () => {
-      if (typeof PostSyncWorker !== "undefined") {
-        const r = await PostSyncWorker.checkSessionQuiet();
-        flash(r.ok ? "Phiên TechHub ổn." : "Phiên hết hạn.", r.ok ? "ok" : "bad");
-      }
+      const r = await chrome.runtime.sendMessage({ action: "postSyncCheckSession" });
+      flash(
+        r?.success && r.ok
+          ? "Đăng nhập TechHub đang hoạt động."
+          : `Phiên TechHub chưa sẵn sàng${r?.error ? `: ${r.error}` : "."}`,
+        r?.success && r.ok ? "ok" : "bad"
+      );
     });
   }
 
@@ -251,6 +362,7 @@
     refreshNewPosts,
     refreshRunHistory,
     refreshSources,
+    runLeaderNow,
     renderMyPostsCache,
     bindPostSyncUI,
     statusBadge,

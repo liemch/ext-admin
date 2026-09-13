@@ -63,8 +63,7 @@
         ? stored[ENGAGEMENT_SETTINGS_KEY]
         : {};
     const settings = {
-      // Participation is controlled globally by admin. Every installed user
-      // keeps its local alarm enabled so it can observe the server-side state.
+      // User không tự bật/tắt; cổng điều phối nằm hoàn toàn ở server/admin.
       enabled: true,
       intervalMinutes: clampInt(saved.intervalMinutes, DEFAULT_SETTINGS.intervalMinutes, 1, 1440),
       tasksPerWake: clampInt(saved.tasksPerWake, DEFAULT_SETTINGS.tasksPerWake, 1, 10),
@@ -78,13 +77,6 @@
       legacyDelaySec: clampInt(saved.legacyDelaySec, DEFAULT_SETTINGS.legacyDelaySec, 1, 600),
       dailyCapPosts: clampInt(saved.dailyCapPosts, DEFAULT_SETTINGS.dailyCapPosts, 1, 50),
     };
-    // Remove any old local opt-out during migration to admin-controlled mode.
-    if (saved.enabled !== true || stored[LEGACY_ENABLED_KEY] !== true) {
-      await chrome.storage.local.set({
-        [ENGAGEMENT_SETTINGS_KEY]: { ...saved, enabled: true },
-        [LEGACY_ENABLED_KEY]: true,
-      });
-    }
     return settings;
   }
 

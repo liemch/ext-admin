@@ -90,6 +90,44 @@
   function requestPostSync(scope, extra = {}) {
     return postSyncAdmin("requestPostSync", { scope, ...extra });
   }
+  async function saveScannedPosts(username, articles) {
+    const rows = Array.isArray(articles) ? articles : [];
+    let saved = 0;
+    let skipped = 0;
+    const CHUNK_SIZE = 200;
+    for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+      const result = await postSyncAdmin("saveScannedPosts", {
+        username,
+        articles: rows.slice(i, i + CHUNK_SIZE),
+      });
+      saved += Number(result?.saved) || 0;
+      skipped += Number(result?.skipped) || 0;
+    }
+    return { ok: true, saved, skipped };
+  }
+  async function saveMyScannedPosts(articles) {
+    const rows = Array.isArray(articles) ? articles : [];
+    let saved = 0;
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+    const CHUNK_SIZE = 200;
+    for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+      const result = await callPostSyncApi("saveMyScannedPosts", {
+        articles: rows.slice(i, i + CHUNK_SIZE),
+      });
+      saved += Number(result?.saved) || 0;
+      created += Number(result?.created) || 0;
+      updated += Number(result?.updated) || 0;
+      skipped += Number(result?.skipped) || 0;
+    }
+    return { ok: true, saved, created, updated, skipped };
+  }
+  function reconcileMyScannedPosts(liveTechhubIds) {
+    return callPostSyncApi("reconcileMyScannedPosts", {
+      liveTechhubIds: Array.isArray(liveTechhubIds) ? liveTechhubIds : [],
+    });
+  }
   function claimPostSyncJob(deviceId, leaseSeconds) {
     return postSyncAdmin("claimPostSyncJob", { deviceId, leaseSeconds }, { useLeaderDevice: true });
   }
@@ -155,6 +193,9 @@
     submitPostHint,
     postSyncAdmin,
     requestPostSync,
+    saveScannedPosts,
+    saveMyScannedPosts,
+    reconcileMyScannedPosts,
     claimPostSyncJob,
     startPostSyncRun,
     extendPostSyncLease,

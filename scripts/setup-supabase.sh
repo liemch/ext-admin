@@ -9,8 +9,9 @@
 #    4. Deploy 4 edge functions: nvidia-proxy, admin-api, engagement-api, post-sync-api
 #    5. Áp migration 011 (chặn anon tự cấp is_admin / xóa user),
 #       012 (hàng đợi tương tác giữa các user),
-#       013 (đồng bộ bài viết — hints/feed/reconcile)
-#       20260911100410 (hardening quyền ghi + global leader lease + RPC atomic)
+#       013 (đồng bộ bài viết — hints/feed/reconcile),
+#       20260911100410 (hardening quyền ghi + global leader lease + RPC atomic),
+#       014 (preferences + pool tương tác tự cân bằng)
 #    6. Test 4 function bằng curl
 #    7. In sẵn 2 khối config.js: một cho máy admin, một cho user thường
 #
@@ -122,6 +123,8 @@ step "Áp migration 013 (đồng bộ bài viết — post-sync)"
 apply_migration "supabase/migrations/013_post_sync.sql"
 step "Áp migration hardening post-sync (quyền ghi + leader lease + RPC atomic)"
 apply_migration "supabase/migrations/20260911100410_post_sync_hardening.sql"
+step "Áp migration 014 (preferences + pool tương tác tự cân bằng)"
+apply_migration "supabase/migrations/014_engagement_user_pool.sql"
 
 # ---------- 8. Test ----------
 BASE="https://${PROJECT_REF}.supabase.co/functions/v1"

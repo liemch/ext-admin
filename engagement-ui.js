@@ -125,10 +125,6 @@
       if (!response?.success) throw new Error(response?.error || "Không tải được trạng thái.");
 
       const { settings, status, queueConfigured } = response;
-      if ($("engagementEnabled")) {
-        $("engagementEnabled").checked = !!settings.enabled;
-        $("engagementEnabled").disabled = true;
-      }
       if ($("engIntervalMinutes")) $("engIntervalMinutes").value = settings.intervalMinutes;
       if ($("engTasksPerWake")) $("engTasksPerWake").value = settings.tasksPerWake;
       if ($("engDelaySec")) $("engDelaySec").value = settings.delayBetweenTasksSec;
@@ -176,36 +172,56 @@
           const queue = await sendMessage({ action: "getEngagementQueueStatus" });
           if (queue?.success) {
             const globallyEnabled = queue.engagementEnabled !== false;
-            if ($("engagementEnabled")) {
-              $("engagementEnabled").checked = globallyEnabled;
-              $("engagementEnabled").disabled = true;
-            }
             if ($("engagementOnlineState")) {
               $("engagementOnlineState").textContent = queue.killSwitch
                 ? "Admin đang tạm dừng"
-                : globallyEnabled ? "Admin đã bật — đang nhận task" : "Admin đã tắt";
+                : !globallyEnabled
+                  ? "Admin đã tạm dừng hệ thống"
+                  : queue.preferences?.enabled === false
+                    ? "Admin đã tạm dừng tài khoản"
+                    : queue.pool?.waitingForPeers
+                      ? "Chờ thành viên khác"
+                    : "Đang tham gia pool";
             }
-            if ($("engagementVotesToday")) {
-              $("engagementVotesToday").textContent = queue.today?.vote ?? 0;
+            if ($("engagementContributedToday")) {
+              $("engagementContributedToday").textContent = queue.benefit?.contributed ?? queue.today?.succeeded ?? 0;
             }
-            if ($("engagementCommentsToday")) {
-              $("engagementCommentsToday").textContent =
-                (queue.today?.comment ?? 0) + (queue.today?.reply ?? 0);
+            if ($("engagementReceivedToday")) {
+              $("engagementReceivedToday").textContent = queue.benefit?.received?.total ?? 0;
             }
+            const threshold = queue.benefit?.ultraThreshold ?? 20;
+            const ultraCredits = queue.benefit?.ultraCredits ?? 0;
+            if ($("engagementUltraProgress")) {
+              $("engagementUltraProgress").textContent = `${queue.benefit?.ultraProgress ?? 0}/${threshold}`;
+            }
+            if ($("engagementUltraCredits")) {
+              $("engagementUltraCredits").textContent = `${ultraCredits} lượt có thể dùng`;
+            }
+            globalThis.setPostsUltraCredits?.(ultraCredits);
             if ($("engagementPendingCount")) {
               $("engagementPendingCount").textContent = queue.pendingCount ?? 0;
+            }
+            if (queue.pool?.waitingForPeers) {
+              showAdminMsg(
+                msgEl,
+                "Pool chỉ chạy khi có ít nhất 2 user hợp lệ, đang online và mỗi user có bài verified trong Posts.",
+                "muted"
+              );
             }
             renderActivity(queue);
           }
         } catch (error) {
           console.warn("[EngagementUI] queue status failed:", error);
+          globalThis.setPostsUltraCredits?.(0);
         }
       } else if ($("engagementActivityList")) {
+        globalThis.setPostsUltraCredits?.(0);
         $("engagementActivityList").innerHTML =
           '<div class="empty">Máy này đang chạy chế độ máy đơn. Cấu hình engagement-api để dùng hàng đợi trung tâm.</div>';
       }
       return { settings, status, queueConfigured };
     } catch (error) {
+      globalThis.setPostsUltraCredits?.(0);
       showAdminMsg(msgEl, `Lỗi: ${error.message}`, "error");
       return null;
     }
@@ -232,25 +248,79 @@
     `).join("");
   }
 
-  async function toggleEnabled() {
-    const checkbox = $("engagementEnabled");
-    if (!checkbox) return;
-    const enabled = checkbox.checked;
-    checkbox.disabled = true;
+  async function redeemUltraForPost(techhubId, button) {
+    if (!window.confirm(`Dùng 1 lượt Ultra để ưu tiên bài #${techhubId}?`)) return;
+    if (button) button.disabled = true;
     try {
-      const response = await sendMessage({ action: "setEngagementEnabled", enabled });
-      if (!response?.success) throw new Error(response?.error || "Không cập nhật được.");
+      if (!Number.isInteger(techhubId) || techhubId <= 0) throw new Error("Bài được chọn không hợp lệ.");
+      const response = await sendMessage({ action: "redeemEngagementUltra", techhubId });
+      if (!response?.success) throw new Error(response?.error || "Không dùng được lượt Ultra.");
+      globalThis.setPostsUltraCredits?.(response.reward?.ultra_credits ?? 0);
       showAdminMsg(
-        $("engagementUserMessage"),
-        enabled ? "Đã bật nhận nhiệm vụ tương tác." : "Đã tắt nhận nhiệm vụ tương tác.",
-        enabled ? "success" : "muted"
+        $("postsMessage"),
+        `Đã dùng Ultra cho bài #${techhubId}; hệ thống sẽ ưu tiên ${response.discussions} chuỗi.`,
+        "success"
       );
       await loadEngagementState();
     } catch (error) {
-      checkbox.checked = !enabled;
-      showAdminMsg($("engagementUserMessage"), `Lỗi: ${error.message}`, "error");
+      showAdminMsg($("postsMessage"), `Lỗi dùng Ultra: ${error.message}`, "error");
     } finally {
-      checkbox.disabled = false;
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function copyMyDiscussionPrompt() {
+    const techhubId = Number($("myDiscussionPostId")?.value);
+    const button = $("copyMyDiscussionPromptBtn");
+    if (button) button.disabled = true;
+    try {
+      if (!Number.isInteger(techhubId) || techhubId <= 0) throw new Error("Chọn bài của bạn.");
+      const response = await sendMessage({ action: "buildMyEngagementDiscussionPrompt", techhubId });
+      if (!response?.success) throw new Error(response?.error || "Không tạo được prompt.");
+      await navigator.clipboard.writeText(response.prompt);
+      showAdminMsg(
+        $("myDiscussionMessage"),
+        `Đã copy prompt cho ${response.count} chuỗi. Dán vào ChatGPT/Gemini rồi đưa JSON trở lại đây.`,
+        "success"
+      );
+    } catch (error) {
+      showAdminMsg($("myDiscussionMessage"), `Lỗi: ${error.message}`, "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function submitMyDiscussion() {
+    const techhubId = Number($("myDiscussionPostId")?.value);
+    const raw = String($("myDiscussionJsonInput")?.value || "");
+    const button = $("submitMyDiscussionBtn");
+    if (button) button.disabled = true;
+    try {
+      if (!Number.isInteger(techhubId) || techhubId <= 0) throw new Error("Chọn bài của bạn.");
+      if (!globalThis.DiscussionImport) throw new Error("Thiếu bộ kiểm tra JSON.");
+      const checked = globalThis.DiscussionImport.validateThreads(raw);
+      if (checked.errors.length || !checked.threads.length) {
+        throw new Error(checked.errors[0]?.error || "JSON chưa có chuỗi hợp lệ.");
+      }
+      const parsed = JSON.parse(raw);
+      const response = await sendMessage({
+        action: "submitMyEngagementThreads",
+        techhubId,
+        threads: parsed,
+      });
+      if (!response?.success) throw new Error(response?.error || "Không gửi được chuỗi.");
+      const imported = Array.isArray(response.imported) ? response.imported.length : 0;
+      showAdminMsg(
+        $("myDiscussionMessage"),
+        `Đã đưa ${imported} chuỗi vào pool. Hệ thống đã tự chọn user khác đang online.`,
+        "success"
+      );
+      if ($("myDiscussionJsonInput")) $("myDiscussionJsonInput").value = "";
+      await loadEngagementState();
+    } catch (error) {
+      showAdminMsg($("myDiscussionMessage"), `Lỗi: ${error.message}`, "error");
+    } finally {
+      if (button) button.disabled = false;
     }
   }
 
@@ -278,6 +348,19 @@
 
   // ---------------------------------------------------------- admin: settings
 
+  async function loadPoolSettings() {
+    const response = await sendMessage({ action: "engagementGetPoolSettings" });
+    if (!response?.success) throw new Error(response?.error || "Không tải được điều phối pool.");
+    const settings = response.settings || {};
+    if ($("poolReceivePostLimit")) $("poolReceivePostLimit").value = settings.receivePostLimit ?? 3;
+    if ($("poolDiscussionsPerPost")) $("poolDiscussionsPerPost").value = settings.discussionsPerPost ?? 40;
+    if ($("threadPromptCount")) $("threadPromptCount").value = settings.discussionsPerPost ?? 40;
+    if ($("poolRepeatInterval")) $("poolRepeatInterval").value = settings.repeatIntervalMinutes ?? 45;
+    if ($("poolContributionCap")) $("poolContributionCap").value = settings.dailyContributionCap ?? 20;
+    if ($("poolUltraThreshold")) $("poolUltraThreshold").value = settings.ultraThreshold ?? 20;
+    return settings;
+  }
+
   async function saveMachineSettings() {
     const payload = {
       intervalMinutes: Number($("engIntervalMinutes")?.value),
@@ -286,11 +369,113 @@
       dailyCapPosts: Number($("engDailyCap")?.value),
     };
     try {
-      const response = await sendMessage({ action: "saveEngagementSettings", settings: payload });
-      if (!response?.success) throw new Error(response?.error || "Không lưu được.");
-      showAdminMsg($("engSettingsMessage"), "Đã lưu cài đặt máy này.", "success");
+      const [localResponse, poolResponse] = await Promise.all([
+        sendMessage({ action: "saveEngagementSettings", settings: payload }),
+        sendMessage({
+          action: "engagementSetPoolSettings",
+          settings: {
+            enabled: true,
+            receivePostLimit: Number($("poolReceivePostLimit")?.value),
+            discussionsPerPost: Number($("poolDiscussionsPerPost")?.value),
+            repeatIntervalMinutes: Number($("poolRepeatInterval")?.value),
+            dailyContributionCap: Number($("poolContributionCap")?.value),
+            ultraThreshold: Number($("poolUltraThreshold")?.value),
+          },
+        }),
+      ]);
+      if (!localResponse?.success) throw new Error(localResponse?.error || "Không lưu được nhịp máy.");
+      if (!poolResponse?.success) throw new Error(poolResponse?.error || "Không lưu được pool.");
+      showAdminMsg($("engSettingsMessage"), "Đã lưu điều phối chung cho toàn bộ user.", "success");
     } catch (error) {
       showAdminMsg($("engSettingsMessage"), `Lỗi: ${error.message}`, "error");
+    }
+  }
+
+  async function saveUserPolicy() {
+    const username = String($("poolPolicyUsername")?.value || "").trim();
+    try {
+      if (!username) throw new Error("Nhập username cần điều phối.");
+      const response = await sendMessage({
+        action: "engagementSetUserPolicy",
+        username,
+        enabled: $("poolPolicyEnabled")?.checked !== false,
+      });
+      if (!response?.success) throw new Error(response?.error || "Không cập nhật được user.");
+      showAdminMsg(
+        $("engSettingsMessage"),
+        response.preferences?.enabled === false
+          ? `Đã tạm dừng @${username} khỏi pool.`
+          : `Đã mở lại pool cho @${username}.`,
+        "success"
+      );
+    } catch (error) {
+      showAdminMsg($("engSettingsMessage"), `Lỗi: ${error.message}`, "error");
+    }
+  }
+
+  async function buildDiscussionPrompt() {
+    const techhubId = Number($("threadDefaultPostId")?.value);
+    const visitor = String($("threadDefaultVisitor")?.value || "").trim();
+    const count = Math.min(50, Math.max(1, Number($("threadPromptCount")?.value) || 1));
+    if (!Number.isInteger(techhubId) || techhubId <= 0) throw new Error("Nhập ID bài đích trước.");
+    if (!visitor) throw new Error("Nhập User A sẽ mở đầu chuỗi.");
+    const response = await sendMessage({
+      action: "buildEngagementDiscussionPrompt",
+      techhubId,
+      visitor,
+      count,
+    });
+    if (!response?.success) throw new Error(response?.error || "Không tạo được prompt.");
+    return response.prompt;
+  }
+
+  async function copyDiscussionPrompt() {
+    try {
+      await navigator.clipboard.writeText(await buildDiscussionPrompt());
+      showAdminMsg($("threadImportMessage"), "Đã copy prompt. Dán vào ChatGPT/Gemini rồi đưa JSON kết quả trở lại ô bên dưới.", "success");
+    } catch (error) {
+      showAdminMsg($("threadImportMessage"), `Không copy được prompt: ${error.message}`, "error");
+    }
+  }
+
+  async function pushComments() {
+    const techhubId = Number($("threadDefaultPostId")?.value);
+    const discussions = Number($("pushCommentCount")?.value || $("poolDiscussionsPerPost")?.value || 1);
+    try {
+      const response = await sendMessage({ action: "engagementPushComments", techhubId, discussions });
+      if (!response?.success) throw new Error(response?.error || "Không tạo được Push.");
+      if ($("threadPromptCount")) $("threadPromptCount").value = response.discussions;
+      await navigator.clipboard.writeText(await buildDiscussionPrompt());
+      showAdminMsg($("threadImportMessage"), `Đã ưu tiên bài #${techhubId} cho ${response.discussions} chuỗi và copy prompt. Dán vào ChatGPT/Gemini rồi nhập JSON kết quả.`, "success");
+    } catch (error) {
+      showAdminMsg($("threadImportMessage"), `Lỗi Push: ${error.message}`, "error");
+    }
+  }
+
+  async function refreshBoosts() {
+    const list = $("boostRequestsList");
+    if (!list) return;
+    list.innerHTML = '<div class="empty">Đang tải…</div>';
+    try {
+      const response = await sendMessage({ action: "engagementListBoosts", status: "active" });
+      if (!response?.success) throw new Error(response?.error || "Không tải được yêu cầu.");
+      const boosts = Array.isArray(response.boosts) ? response.boosts : [];
+      if (!boosts.length) {
+        list.innerHTML = '<div class="empty">Không có yêu cầu Push/Ultra đang chờ.</div>';
+        return;
+      }
+      list.innerHTML = boosts.map((boost) => `
+        <div class="schedule-item">
+          <div class="schedule-main">
+            <strong>#${esc(boost.techhub_id)} · @${esc(boost.owner_username)}</strong>
+            <span class="badge ${boost.source === "ultra" ? "ok" : "info"}">${esc(boost.source)}</span>
+            <span class="schedule-meta">${esc(boost.requested_discussions)} chuỗi · ${esc(fmtAgo(boost.created_at))}</span>
+          </div>
+          <button class="mini-btn" data-prepare-boost="${esc(boost.techhub_id)}|${esc(boost.requested_discussions)}" type="button">Chuẩn bị nội dung</button>
+        </div>
+      `).join("");
+    } catch (error) {
+      list.innerHTML = `<div class="empty">Lỗi: ${esc(error.message)}</div>`;
     }
   }
 
@@ -515,7 +700,7 @@
         serverErrors.length ? "error" : "success"
       );
       if (serverErrors.length) renderThreadPreview([], serverErrors);
-      await refreshThreads();
+      await Promise.all([refreshThreads(), refreshBoosts()]);
     } catch (error) {
       showAdminMsg($("threadImportMessage"), `Lỗi: ${error.message}`, "error");
     }
@@ -800,7 +985,20 @@
   // ---------------------------------------------------------- init
 
   function bindEvents() {
-    // User participation is read-only; only the admin global control changes it.
+    if ($("myPostsList")) {
+      $("myPostsList").addEventListener("click", (event) => {
+        const button = event.target.closest("[data-ultra-post-id]");
+        if (!button) return;
+        event.preventDefault();
+        redeemUltraForPost(Number(button.dataset.ultraPostId), button);
+      });
+    }
+    if ($("copyMyDiscussionPromptBtn")) {
+      $("copyMyDiscussionPromptBtn").addEventListener("click", copyMyDiscussionPrompt);
+    }
+    if ($("submitMyDiscussionBtn")) {
+      $("submitMyDiscussionBtn").addEventListener("click", submitMyDiscussion);
+    }
     if ($("refreshEngagementBtn")) {
       $("refreshEngagementBtn").addEventListener("click", () => loadEngagementState());
     }
@@ -823,6 +1021,28 @@
     }
     if ($("saveEngSettingsBtn")) {
       $("saveEngSettingsBtn").addEventListener("click", saveMachineSettings);
+    }
+    if ($("savePoolUserPolicyBtn")) {
+      $("savePoolUserPolicyBtn").addEventListener("click", saveUserPolicy);
+    }
+    if ($("copyThreadPromptBtn")) {
+      $("copyThreadPromptBtn").addEventListener("click", copyDiscussionPrompt);
+    }
+    if ($("pushCommentsBtn")) {
+      $("pushCommentsBtn").addEventListener("click", pushComments);
+    }
+    if ($("refreshBoostsBtn")) {
+      $("refreshBoostsBtn").addEventListener("click", refreshBoosts);
+    }
+    if ($("boostRequestsList")) {
+      $("boostRequestsList").addEventListener("click", async (event) => {
+        const button = event.target.closest("[data-prepare-boost]");
+        if (!button) return;
+        const [techhubId, count] = String(button.dataset.prepareBoost || "").split("|");
+        if ($("threadDefaultPostId")) $("threadDefaultPostId").value = techhubId;
+        if ($("threadPromptCount")) $("threadPromptCount").value = count;
+        await copyDiscussionPrompt();
+      });
     }
     if ($("planCampaignBtn")) {
       $("planCampaignBtn").addEventListener("click", planCampaign);
@@ -931,7 +1151,13 @@
     await loadEngagementState();
     await waitForInit();
     if (isAdminView()) {
-      await refreshCampaigns().catch(() => {});
+      await Promise.all([
+        refreshCampaigns().catch(() => {}),
+        refreshBoosts().catch(() => {}),
+        loadPoolSettings().catch((error) => {
+          showAdminMsg($("engSettingsMessage"), `Lỗi tải điều phối: ${error.message}`, "error");
+        }),
+      ]);
     }
   }
 
