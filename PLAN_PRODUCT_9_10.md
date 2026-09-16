@@ -1,6 +1,6 @@
 # Kế hoạch phát triển My Angel thành sản phẩm 9/10
 
-> Bản rà soát ngày 16/09/2026, đối chiếu source tại commit `840604e`.
+> Bản rà soát ngày 17/09/2026, đối chiếu source tại commit `840604e`.
 > Đây là đặc tả mục tiêu triển khai; không phải thông báo các tính năng đã chạy
 > trên production. Trạng thái migration/function remote chưa được xác minh.
 
@@ -56,8 +56,11 @@ chuyển user cũ sang auto-post chỉ vì nâng cấp extension.
   tài khoản. Nhân bản để biên tập phải qua kiểm tra trùng và duyệt lại.
 - “Đến giờ đăng” nghĩa là chạy khi browser/thiết bị sẵn sàng trong cửa sổ đã chọn.
   Không cam kết chạy khi máy tắt hoặc trình duyệt đã thoát.
-- Bản đầu luôn duyệt nội dung. Tự duyệt theo điểm AI, chiến dịch Tăng tốc và
-  lịch lặp vô hạn là phần sau pilot.
+- Pilot luôn duyệt từng nội dung. Sau khi đạt gate mới mở **Tự động có kiểm soát**:
+  user tự cấp quyền theo phạm vi chủ đề, tone, quota và giờ chạy; nội dung ngoài
+  phạm vi vẫn phải duyệt. Điểm AI không bao giờ tự tạo quyền phát ngôn thay user.
+- Chiến dịch Tăng tốc và lịch lặp vô hạn vẫn là phần sau pilot, tách khỏi quyền
+  tự động có kiểm soát để user không vô tình bật cả ba hành vi cùng lúc.
 
 ### 0.4 Quan hệ với các plan cũ
 
@@ -143,7 +146,9 @@ User chỉ chọn các thông tin dễ hiểu:
 - Giọng điệu: tự nhiên, chuyên môn hoặc thân thiện.
 - Số chuỗi mong muốn.
 - Cách tạo: copy prompt/dán JSON hoặc AI tích hợp nếu đã bật.
-- MVP luôn duyệt trước; tự chạy nội dung đã duyệt không đồng nghĩa tự duyệt draft.
+- Pilot luôn duyệt trước; tự chạy nội dung đã duyệt không đồng nghĩa tự duyệt draft.
+- Sau pilot có thể chọn Tự động có kiểm soát theo policy do chính user cấu hình;
+  đây là opt-in mới, không kế thừa từ công tắc tham gia mạng lưới.
 
 AI tạo chuỗi 2 hoặc 3 turn, luân phiên A/B. UI hiển thị preview theo dạng hội
 thoại và cho phép user sửa từng turn trước khi xác nhận.
@@ -184,6 +189,8 @@ Mỗi user cần có:
 - Giới hạn hành động hằng ngày.
 - Giờ yên lặng theo múi giờ Asia/Ho_Chi_Minh.
 - Chế độ luôn preview trước khi dùng nội dung AI.
+- Sau pilot: lựa chọn Tự động có kiểm soát với phạm vi chủ đề, tone được phép,
+  quota, giờ chạy và ngày hết hạn; mặc định tắt.
 - Quyền phê duyệt gắn với revision; duyệt của chủ bài không thay duyệt của visitor.
 - Nút bỏ qua một task không phù hợp.
 - Lịch sử bài, nội dung, thời gian, actor và kết quả.
@@ -195,11 +202,18 @@ Consent phải được lưu có version và thời gian:
 consent_version
 engagement_enabled
 auto_publish_enabled
+delegated_engagement_enabled
+delegation_policy_version
+delegation_expires_at
 consented_at
 paused_at
 quiet_hours
 daily_action_limit
 ```
+
+Phạm vi chi tiết của Tự động có kiểm soát lưu ở policy version bất biến riêng,
+không nhét JSON có thể bị sửa tại chỗ vào profile. Mỗi lần thay đổi tạo version
+mới và audit version đã được dùng cho từng action.
 
 Khi thay đổi đáng kể hành vi hoặc privacy policy, tăng `consent_version` và yêu
 cầu user xác nhận lại.
@@ -266,9 +280,10 @@ approved_at
 approved_by
 ```
 
-AI chỉ tạo draft. MVP chỉ queue sau khi các actor liên quan có phê duyệt hợp lệ
-cho bản nội dung sẽ dùng tên mình. Điểm AI hỗ trợ người duyệt, không thay thế
-phê duyệt hoặc được coi là bằng chứng nội dung đúng. Tự duyệt để sau pilot.
+AI chỉ tạo draft. Pilot chỉ queue sau khi các actor liên quan phê duyệt đúng bản
+nội dung sẽ dùng tên mình. Sau pilot, standing authorization hợp lệ có thể thay
+click duyệt từng lần theo mục 18.1. Điểm AI chỉ hỗ trợ đánh giá; không phải quyền
+phê duyệt và không được coi là bằng chứng nội dung đúng.
 
 ## 5. Tinh gọn giao diện admin
 
@@ -649,7 +664,7 @@ Nếu policy nói có nút disconnect thì UI phải thực sự có chức năn
 - `publishing-worker.js`
 - `publishing-ui.js`
 - `supabase/functions/publishing-api/index.ts`
-- Migration security/role số tăng dần tiếp theo.
+- Migration identity/consent và hardening grants số tăng dần tiếp theo.
 - Tái sử dụng migration 016 đã có; không tạo lại cột moderator trong migration mới.
 - Migration content/publishing số tăng dần tiếp theo.
 - `scripts/test-publishing.mjs`
@@ -1076,6 +1091,7 @@ approval của revision mới là quyền đăng nội dung cụ thể.
 
 ### 18.1 Ai duyệt và ai được sửa
 
+- Trong pilot, các quy tắc dưới đây yêu cầu duyệt từng `script_revision`.
 - Tác giả B duyệt kịch bản trên bài của mình; việc đó không thay visitor A
   đồng ý cho hệ thống nói thay tài khoản A.
 - Sau khi ghép A, A duyệt các turn được giao cùng ngữ cảnh toàn chuỗi. B cũng
@@ -1085,6 +1101,13 @@ approval của revision mới là quyền đăng nội dung cụ thể.
   Không sửa/xóa comment đã đăng trên TechHub chỉ vì đổi draft trong hệ thống.
 - Sau khi A đã đăng turn đầu, giữ A cho turn ba. Không đổi actor giữa chừng
   để một người khác giả làm cùng người đang nói.
+
+Sau pilot, user có thể tự bật **Tự động có kiểm soát**. Khi đó approval của actor
+có thể được thỏa bởi một standing authorization còn hạn và khớp toàn bộ policy:
+nhóm/chủ đề được phép, tone, độ dài, quota, quiet hours và mức rủi ro nội dung.
+Server lưu `delegation_policy_version` cùng revision đã queue để audit. Sửa policy,
+pause, revoke device hoặc hết hạn làm mất quyền cho mọi turn chưa bắt đầu; nội dung
+ngoài policy quay về `awaiting_approval`, không tự nới policy hoặc bỏ qua user.
 
 ### 18.2 Ghép người và chờ
 
@@ -1250,6 +1273,11 @@ access. Không mô tả 016 như hoàn tất toàn bộ security roadmap.
 - Server: xác định actor từ credential, kiểm tra ownership trên mọi ID được gửi;
   danh sách theo user không đủ nếu endpoint lấy chi tiết vẫn đọc ID bất kỳ.
 
+Standing authorization chỉ do user tạo/sửa/tắt trên thiết bị đã approved. Admin
+có thể đặt trần chặt hơn hoặc tắt feature toàn hệ thống, nhưng không thể bật hay
+mở rộng policy thay user. Audit phải trả lời được revision nào chạy theo approval
+từng lần, revision nào chạy theo policy version nào và policy có hiệu lực lúc nào.
+
 ### 20.3 Hợp đồng API mới phải có trước khi code UI
 
 Mỗi action định nghĩa request, response, role, idempotency, lỗi và test ID.
@@ -1358,6 +1386,17 @@ deploy. Không đánh dấu xong chỉ vì đã có UI hoặc test kiểm tra ch
 - Nghiệm thu: user thường không dùng token chung để gọi AI không giới hạn;
   timeout generation không tự tiêu thụ lại budget vô hạn.
 
+### R9 — Tự động có kiểm soát sau pilot
+
+- Phụ thuộc: R3, R8 và pilot đạt toàn bộ gate ở mục 22; mặc định feature flag tắt.
+- Đầu ra: policy versioned do user tự cấu hình, allowlist chủ đề/tone, quota và
+  thời hạn; engine đánh giá policy server-side; audit và nút thu hồi tức thì.
+- Nghiệm thu: nội dung khớp policy chạy không cần click từng task; chỉ cần lệch
+  một điều kiện thì quay về chờ duyệt. Pause/revoke/policy mới chặn mọi turn chưa
+  bắt đầu; admin không thể bật hoặc mở rộng delegation bằng API đặc quyền.
+- Rollout: mở theo nhóm nhỏ, so sánh tỷ lệ hoàn thành và phản hồi kiểm soát với
+  chế độ duyệt tay; tự tắt nếu có action ngoài policy hoặc khiếu nại sai tài khoản.
+
 ## 22. Demo nghiệm thu và định nghĩa 9/10 bằng bằng chứng
 
 ### 22.1 Demo bắt buộc trước mở rộng
@@ -1376,6 +1415,11 @@ Minh; một ngày browser tắt thì hiển thị trễ/chờ xử lý đúng po
 session hết; parent comment bị xóa; user pause sau claim; admin sửa draft đang
 có lịch; request complete gửi hai lần. Có kết quả dự kiến cho từng tình huống,
 không bỏ qua case lỗi để chỉ demo đường thành công.
+
+**Demo D — Tự động có kiểm soát:** sau khi pilot đạt gate, Lan tự cho phép chủ đề
+“Cải tiến quy trình”, tone chuyên môn, tối đa 2 action/ngày trong 30 ngày. Một turn
+khớp policy chạy không cần click; turn khác tone chuyển chờ duyệt. Lan bấm pause
+thì turn chưa bắt đầu bị chặn; admin thử mở rộng policy qua API và bị từ chối.
 
 ### 22.2 Cách tính metric để không tự đánh giá sai
 
@@ -1408,4 +1452,4 @@ không được bù bằng nhiều tính năng hay số comment cao.
 Checklist bàn giao mỗi release: commit/branch, file/contract thay đổi, test và
 demo đã chạy, migration/function cần deploy theo đúng thứ tự, feature flag,
 metric theo dõi, rollback và phần chưa kiểm chứng. Trong lần rà soát plan này
-chỉ chỉnh tài liệu; chưa triển khai các ticket R0–R8 hoặc xác minh production.
+chỉ chỉnh tài liệu; chưa triển khai các ticket R0–R9 hoặc xác minh production.
