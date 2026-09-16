@@ -17,7 +17,7 @@
 
 | Bảng | Vai trò |
 |------|---------|
-| `users` | Profile đã sync + `is_admin` |
+| `users` | Profile đã sync + `is_admin` / `is_moderator` / `is_locked` |
 | `posts` | Bài đã quét + `is_ultra` |
 | `settings` | `enable_auto_reply`, `enable_ai_reply`, `auto_reply_max_per_run`, … |
 | `comment_templates` | Template `kind=comment` hoặc `kind=reply` |
@@ -48,12 +48,13 @@ Cột bổ sung trên `posts` (migration 013): `verification_status` (unverified
 | `engagement-api` | Pool tương tác tự cân bằng + hàng đợi lease; campaign/kịch bản cũ giữ tương thích — chỉ phân bổ bài `verification_status = verified` | `ADMIN_TOKEN` cho admin; máy user dùng device token tự sinh |
 | `post-sync-api` | Mỗi user tự đồng bộ bài TechHub của mình vào `posts`, đồng thời dọn bài đã xóa sau một lượt quét đầy đủ; giữ API leader cũ để tương thích/bảo trì | Device token cho `saveMyScannedPosts` + `reconcileMyScannedPosts` + `listNewPosts`, khóa theo username; `ADMIN_TOKEN` cho action quản trị cũ |
 
-Deploy + set secrets + áp migration 011 + 012 + 013 + hardening một phát: `bash scripts/setup-supabase.sh`.
+Deploy + set secrets + áp migration 011 → 016 và hardening post-sync một phát:
+`bash scripts/setup-supabase.sh`.
 
 ## Setup project mới
 
 1. Tạo project Supabase → lấy URL + anon key
-2. SQL Editor → Run `migrations/001` → `002` → (`003` nếu upgrade) → `004_ai_reply_drafts.sql` → `005_ai_discussion.sql` → `006_root_self_discussion.sql` → `007_posts_medals_count.sql` → `008_discussion_draft_queue.sql` → `009_reply_draft_queue.sql` → `010` (community) → `011_restrict_users_writes.sql` → `012_cross_user_engagement.sql` → `013_post_sync.sql` → `20260911100410_post_sync_hardening.sql` → `014_engagement_user_pool.sql`
+2. SQL Editor → Run `migrations/001` → `002` → (`003` nếu upgrade) → `004_ai_reply_drafts.sql` → `005_ai_discussion.sql` → `006_root_self_discussion.sql` → `007_posts_medals_count.sql` → `008_discussion_draft_queue.sql` → `009_reply_draft_queue.sql` → `010` (community) → `011_restrict_users_writes.sql` → `012_cross_user_engagement.sql` → `013_post_sync.sql` → `20260911100410_post_sync_hardening.sql` → `014_engagement_user_pool.sql` → `015_expand_discussion_thread_quota.sql` → `016_add_moderator_role.sql`
 3. Sửa `YOUR_TECHHUB_USERNAME` trong `002` → Run
 4. Điền `NVIDIA_CONFIG.apiKey` trong `config.js` (lấy tại https://build.nvidia.com/settings/api-keys)
 5. Reload extension
@@ -72,7 +73,7 @@ Deploy + set secrets + áp migration 011 + 012 + 013 + hardening một phát: `b
 ```sql
 SELECT key, value FROM settings ORDER BY key;
 SELECT kind, count(*) FROM comment_templates WHERE is_active GROUP BY kind;
-SELECT username, is_admin FROM users;
+SELECT username, is_admin, is_moderator, is_locked FROM users;
 SELECT count(*) FROM reply_drafts;
 SELECT count(*) FROM discussion_drafts;
 SELECT status, count(*) FROM engagement_tasks GROUP BY status;

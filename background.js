@@ -503,7 +503,7 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
 // Lắng nghe message từ popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (ADMIN_ONLY_ACTIONS.has(request.action)) {
-    ensureActionAllowed()
+    ensureActionAllowed(request.action)
       .then(() => handlePopupMessage(request, sendResponse))
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;
@@ -511,8 +511,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return handlePopupMessage(request, sendResponse);
 });
 
-// Action chỉ quản trị viên được dùng
+// Action đặc quyền; mod chỉ được dùng tập MODERATOR_ACTIONS.
 // (menu Tự động hóa / Bài người khác / Nguy hiểm / Người dùng)
+const MODERATOR_ACTIONS = new Set([
+  "startAutoComment",
+  "stopAutoComment",
+  "scheduleAutoComment",
+  "cancelAutoCommentSchedule",
+  "scheduleDeletePost",
+  "cancelScheduledDelete",
+  "deletePostNow",
+]);
+
 const ADMIN_ONLY_ACTIONS = new Set([
   "runInteractions",
   "setCrossInteractionEnabled",
@@ -581,16 +591,16 @@ const ADMIN_ONLY_ACTIONS = new Set([
 ]);
 
 /**
- * Kiểm tra user hiện tại (từ storage + Supabase) có quyền admin và không bị khóa.
- * Ném lỗi nếu không được phép dùng action quản trị.
+ * Kiểm tra quyền admin/mod theo action và trạng thái tài khoản.
+ * Ném lỗi nếu không được phép thực hiện thao tác.
  */
-async function ensureActionAllowed() {
-  const profile = await new Promise((resolve) => {
-    chrome.storage.local.get("userProfile", (result) => resolve(result.userProfile || null));
-  });
-  if (!profile?.username) {
-    throw new Error("Không tìm thấy phiên TechHub. Mở TechHub và đăng nhập trước.");
+async function ensureActionAllowed(action) {
+  const liveProfile = await readCurrentUserProfileFromTechHub();
+  if (!liveProfile?.username || liveProfile._techhubSessionVerified !== true) {
+    throw new Error("Không xác nhận được tài khoản TechHub hiện tại. Mở TechHub và đăng nhập trước.");
   }
+  const { _techhubSessionVerified, ...profile } = liveProfile;
+  await chrome.storage.local.set({ userProfile: profile });
   const user = await supabase.findUserByUsername(profile.username);
   if (!user) {
     throw new Error("Tài khoản chưa được đăng ký trong hệ thống.");
@@ -598,8 +608,8 @@ async function ensureActionAllowed() {
   if (user.is_locked) {
     throw new Error("Tài khoản đã bị khóa khỏi extension.");
   }
-  if (!user.is_admin) {
-    throw new Error("Chức năng này chỉ dành cho quản trị viên.");
+  if (!user.is_admin && !(user.is_moderator && MODERATOR_ACTIONS.has(action))) {
+    throw new Error("Bạn không có quyền sử dụng chức năng này.");
   }
 }
 
@@ -643,44 +653,20 @@ function handlePopupMessage(request, sendResponse) {
   }
 
   if (request.action === "getUserProfile") {
-    chrome.storage.local.get("userProfile", (result) => {
-      if (result.userProfile) {
-        console.log("[Background] Found user profile in storage");
-        sendResponse({ success: true, userProfile: result.userProfile });
-      } else {
-        // Lấy userProfile từ localStorage của tab TechHub
-        console.log("[Background] Profile not in storage, querying tabs...");
-        chrome.tabs.query({}, async (tabs) => {
-          const techhubTabs = tabs.filter(t => t.url && t.url.includes("techhub.fpt.net"));
-          console.log("[Background] TechHub tabs found:", techhubTabs.length);
-          if (techhubTabs.length > 0) {
-            try {
-              console.log("[Background] Executing script on tab:", techhubTabs[0].id);
-              const results = await chrome.scripting.executeScript({
-                target: { tabId: techhubTabs[0].id },
-                func: () => {
-                  const userProfile = localStorage.getItem("userProfile");
-                  return userProfile ? JSON.parse(userProfile) : null;
-                },
-              });
-              console.log("[Background] Script results:", results);
-              if (results && results[0] && results[0].result) {
-                chrome.storage.local.set({ userProfile: results[0].result });
-                sendResponse({ success: true, userProfile: results[0].result });
-              } else {
-                sendResponse({ success: false, error: "Không tìm thấy userProfile trong localStorage của TechHub. Vui lòng đăng nhập lại." });
-              }
-            } catch (error) {
-              console.error("[Background] Error executing script:", error);
-              sendResponse({ success: false, error: "Lỗi khi đọc userProfile: " + error.message });
-            }
-          } else {
-            console.log("[Background] No TechHub tabs found");
-            sendResponse({ success: false, error: "Vui lòng mở TechHub và đăng nhập trước khi sử dụng." });
-          }
-        });
+    (async () => {
+      const { profile: liveProfile, reason } = await inspectCurrentUserProfileFromTechHub();
+      if (liveProfile?.username && liveProfile._techhubSessionVerified === true) {
+        const { _techhubSessionVerified, ...userProfile } = liveProfile;
+        await chrome.storage.local.set({ userProfile });
+        return { success: true, userProfile, sessionVerified: true };
       }
-    });
+      return {
+        success: false,
+        error: reason || "Chưa xác nhận được tài khoản TechHub hiện tại.",
+      };
+    })()
+      .then(sendResponse)
+      .catch(() => sendResponse({ success: false, error: "Không đọc được profile TechHub. Vui lòng thử lại." }));
     return true;
   }
 
@@ -1405,6 +1391,7 @@ function handlePopupMessage(request, sendResponse) {
   if (request.action === "updateUserStatus") {
     const payload = { username: request.username };
     if (request.isAdmin !== undefined) payload.isAdmin = !!request.isAdmin;
+    if (request.isModerator !== undefined) payload.isModerator = !!request.isModerator;
     if (request.isLocked !== undefined) payload.isLocked = !!request.isLocked;
     adminApiRequest("updateUserStatus", payload)
       .then((result) => sendResponse({ success: true, user: result.user || null }))
@@ -1795,24 +1782,125 @@ async function refreshCSRFToken() {
   return null;
 }
 
-async function readCurrentUserProfileFromTechHub() {
+function isTechHubTab(tab) {
+  try {
+    const url = new URL(tab?.url || "");
+    return url.protocol === "https:" && url.hostname === "techhub.fpt.net";
+  } catch (_) {
+    return false;
+  }
+}
+
+async function inspectCurrentUserProfileFromTechHub() {
   try {
     const tabs = await chrome.tabs.query({});
-    const techhubTab = tabs.find((tab) => tab.url?.includes("techhub.fpt.net"));
-    if (!techhubTab?.id) return null;
+    const techhubTabs = tabs.filter(isTechHubTab).sort((a, b) => Number(b.active) - Number(a.active));
+    if (!techhubTabs.length) return { profile: null, reason: "Không tìm thấy tab TechHub trong cửa sổ Edge này." };
 
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: techhubTab.id },
-      func: () => {
-        const rawProfile = localStorage.getItem("userProfile");
-        return rawProfile ? JSON.parse(rawProfile) : null;
-      },
-    });
-    return results?.[0]?.result || null;
+    let lastResult = null;
+    let scriptingError = null;
+    for (const techhubTab of techhubTabs) {
+      if (!techhubTab.id) continue;
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: techhubTab.id },
+          func: async () => {
+        // Máy mới có thể chưa có userProfile trong localStorage; dùng phiên
+        // TechHub đang đăng nhập để lấy profile từ API cùng origin.
+        let reason;
+        try {
+          const response = await fetch("/api/v1/accounts/profile", {
+            method: "GET",
+            credentials: "include",
+          });
+          if (response.ok) {
+            let payload;
+            try {
+              payload = await response.json();
+            } catch (_) {
+              reason = "TechHub trả dữ liệu profile không phải JSON.";
+            }
+            const queue = [{ value: payload, path: "root", depth: 0 }];
+            const seen = new Set();
+            const paths = [];
+            let profile = null;
+            let username = null;
+            while (queue.length && !username) {
+              const current = queue.shift();
+              const value = current.value;
+              if (!value || typeof value !== "object" || seen.has(value)) continue;
+              seen.add(value);
+              const keys = Object.keys(value).slice(0, 30);
+              paths.push(`${current.path}: ${keys.join(",")}`);
+              const candidate = value.username || value.user_name;
+              if (typeof candidate === "string" && candidate.trim()) {
+                profile = value;
+                username = candidate.trim();
+                break;
+              }
+              if (current.depth < 4) {
+                for (const key of ["data", "user", "profile", "account", "result", "me", "info"]) {
+                  if (value[key] && typeof value[key] === "object") {
+                    queue.push({ value: value[key], path: `${current.path}.${key}`, depth: current.depth + 1 });
+                  }
+                }
+              }
+            }
+            if (username) {
+              return { profile: {
+                username,
+                display_name: profile?.display_name || profile?.full_name || username,
+                email: profile?.email || null,
+                avatar: profile?.avatar || null,
+                _techhubSessionVerified: true,
+              }, reason: null };
+            }
+            if (!reason) reason = `TechHub trả HTTP 200 nhưng không có username. Cấu trúc: ${paths.slice(0, 6).join(" | ").slice(0, 350)}`;
+          } else {
+            reason = `API profile TechHub trả HTTP ${response.status}.`;
+          }
+        } catch (_) {
+          reason = "Không gọi được API profile TechHub từ tab hiện tại.";
+        }
+        try {
+          const raw = localStorage.getItem("userProfile");
+          const profile = raw ? JSON.parse(raw) : null;
+          if (profile?.username) {
+            return { profile: { ...profile, _techhubSessionVerified: false }, reason };
+          }
+        } catch (_) {
+          // Cache của TechHub không có hoặc không hợp lệ.
+        }
+        return { profile: null, reason };
+          },
+        });
+        const result = results?.[0]?.result;
+        if (result?.profile?._techhubSessionVerified === true) return result;
+        lastResult = result || { profile: null, reason: "Edge không trả kết quả khi đọc tab TechHub." };
+      } catch (error) {
+        scriptingError = error;
+      }
+    }
+    if (lastResult) return lastResult;
+    const message = String(scriptingError?.message || "");
+    const reason = /cannot access contents|permission|host permission|not allowed/i.test(message)
+      ? "Edge chặn quyền đọc nội dung tab TechHub (SCRIPT_PERMISSION)."
+      : /no tab with id|tab was closed|frame was removed|frame with id/i.test(message)
+        ? "Tab TechHub đã đổi hoặc đóng khi My Angel đang đọc (TAB_CHANGED). Tải lại tab rồi thử lại."
+        : `Edge không chạy được đoạn đọc profile trên tab TechHub (SCRIPT_ERROR: ${scriptingError?.name || "unknown"}).`;
+    return { profile: null, reason };
   } catch (error) {
-    console.warn("[Background] Could not read current TechHub profile:", error);
-    return null;
+    console.warn("[Background] Could not read current TechHub profile:", error?.name || "UnknownError");
+    return {
+      profile: null,
+      reason: `Edge không liệt kê được tab TechHub (TABS_ERROR: ${error?.name || "unknown"}).`,
+    };
   }
+}
+
+async function readCurrentUserProfileFromTechHub() {
+  const result = await inspectCurrentUserProfileFromTechHub();
+  return result.profile;
 }
 
 function getAutoCommentStatus() {

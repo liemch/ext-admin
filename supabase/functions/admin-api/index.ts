@@ -115,7 +115,7 @@ Deno.serve(async (req) => {
       return json({ users, postCounts, todayInteractionCounts });
     }
 
-    // ===== Cấp / thu quyền admin, khóa / mở khóa =====
+    // ===== Cấp / thu quyền admin/moderator, khóa / mở khóa =====
     if (action === "updateUserStatus") {
       if (!username || username.length > 100) {
         return json({ error: "username không hợp lệ." }, 400);
@@ -124,6 +124,7 @@ Deno.serve(async (req) => {
         last_update: new Date().toISOString(),
       };
       if (typeof body.isAdmin === "boolean") payload.is_admin = body.isAdmin;
+      if (typeof body.isModerator === "boolean") payload.is_moderator = body.isModerator;
       if (typeof body.isLocked === "boolean") payload.is_locked = body.isLocked;
 
       const res = await fetch(

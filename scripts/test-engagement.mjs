@@ -46,6 +46,53 @@ function loadScript(rel) {
   return { module: result, sandbox: sandboxGlobal };
 }
 
+function loadEngagementClient(chrome) {
+  const code = read("engagement-client.js");
+  const sandboxGlobal = { crypto: globalThis.crypto };
+  const fn = new Function(
+    "window",
+    "globalThis",
+    "chrome",
+    `${code}\n;return globalThis.EngagementClient;`
+  );
+  return fn(undefined, sandboxGlobal, chrome);
+}
+
+section("engagement-client.js — cache device");
+{
+  const storedDevice = {
+    deviceId: "device-1",
+    token: "token-1",
+    username: "alice",
+    label: "Chrome/test",
+  };
+  let storageReads = 0;
+  let storageWrites = 0;
+  const chrome = {
+    storage: {
+      local: {
+        get: async () => {
+          storageReads += 1;
+          return { engagementDevice: storedDevice };
+        },
+        set: async () => {
+          storageWrites += 1;
+        },
+      },
+    },
+    runtime: {},
+  };
+  const client = loadEngagementClient(chrome);
+  await client.ensureEngagementDevice("alice");
+  await client.getEngagementDevice();
+  await client.ensureEngagementDevice("alice");
+  assert(storageReads === 1, "cache device tránh đọc storage lặp lại");
+  assert(storageWrites === 0, "heartbeat không ghi storage khi device không đổi");
+  await client.ensureEngagementDevice("bob");
+  await client.ensureEngagementDevice("bob");
+  assert(storageWrites === 1, "đổi username chỉ ghi device đúng một lần");
+}
+
 // ---------------------------------------------------------------- 1. discussion-import
 section("discussion-import.js — validate kịch bản");
 
@@ -214,6 +261,7 @@ section("Nhất quán background.js ↔ engagement-api");
 const background = read("background.js");
 const popup = read("popup.js");
 const edge = read("supabase/functions/engagement-api/index.ts");
+const adminApi = read("supabase/functions/admin-api/index.ts");
 assert((background.match(/const cfg = validateNvidiaConfig\(\);/g) || []).length === 3,
   "các luồng tạo mẫu chấp nhận NVIDIA proxy thay vì bắt buộc apiKey direct");
 assert(!background.includes('throw new Error("Chưa cấu hình NVIDIA_CONFIG.apiKey trong config.js")'),
@@ -343,6 +391,40 @@ assert(
 );
 assert(edge.includes("RATE_LIMIT_MAX"), "edge function có giới hạn tốc độ");
 assert(edge.includes("assertUserActive"), "edge function chặn tài khoản bị khóa");
+
+// ------------------------------------------ 6b. moderator role + user grants
+section("Moderator role và quyền đăng ký user");
+
+const moderatorMigration = read("supabase/migrations/016_add_moderator_role.sql");
+assert(
+  moderatorMigration.includes("is_moderator BOOLEAN NOT NULL DEFAULT FALSE"),
+  "migration 016 thêm moderator với default an toàn"
+);
+assert(
+  moderatorMigration.includes("REVOKE INSERT, UPDATE, DELETE ON public.users FROM anon, authenticated"),
+  "migration 016 thu quyền ghi toàn bảng users khỏi anon/authenticated"
+);
+assert(
+  moderatorMigration.includes("GRANT INSERT (full_name, username, email, avatar, last_update, created_at)"),
+  "user mới chỉ được insert các cột profile an toàn"
+);
+assert(
+  !moderatorMigration.match(/GRANT INSERT \([^)]*is_(?:admin|moderator|locked)/),
+  "anon không được insert cột đặc quyền"
+);
+assert(
+  adminApi.includes('typeof body.isModerator === "boolean"') &&
+    adminApi.includes("payload.is_moderator = body.isModerator"),
+  "admin-api hỗ trợ cấp/thu quyền moderator"
+);
+assert(
+  background.includes("user.is_moderator && MODERATOR_ACTIONS.has(action)"),
+  "background kiểm tra moderator theo allowlist action"
+);
+assert(
+  popup.includes('const MODERATOR_PANELS = new Set(["comment", "delete"])'),
+  "UI chỉ mở Auto comment và Hẹn xóa bài cho moderator"
+);
 
 // ------------------------------------------------- 7. mutual pool + admin policy + Ultra
 section("Pool tương tác tự cân bằng");

@@ -7,6 +7,8 @@
   "use strict";
 
   const ENGAGEMENT_DEVICE_KEY = "engagementDevice";
+  let engagementDeviceCache = null;
+  let engagementDeviceLoadPromise = null;
 
   const ENGAGEMENT_DEFAULTS = {
     intervalMinutes: 15,
@@ -55,16 +57,44 @@
     return `dev-${Date.now().toString(36)}-${randomToken(8)}`;
   }
 
+  function normalizeStoredDevice(value) {
+    return value && typeof value === "object" ? value : null;
+  }
+
+  async function getEngagementDevice() {
+    if (engagementDeviceCache) return engagementDeviceCache;
+    if (!engagementDeviceLoadPromise) {
+      engagementDeviceLoadPromise = chrome.storage.local
+        .get(ENGAGEMENT_DEVICE_KEY)
+        .then((stored) => {
+          engagementDeviceCache = normalizeStoredDevice(stored[ENGAGEMENT_DEVICE_KEY]);
+          return engagementDeviceCache;
+        })
+        .finally(() => {
+          engagementDeviceLoadPromise = null;
+        });
+    }
+    return engagementDeviceLoadPromise;
+  }
+
+  // Đồng bộ cache trong bộ nhớ khi một context khác của extension đổi device.
+  if (chrome.storage?.onChanged?.addListener) {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== "local" || !changes[ENGAGEMENT_DEVICE_KEY]) return;
+      engagementDeviceCache = normalizeStoredDevice(
+        changes[ENGAGEMENT_DEVICE_KEY].newValue
+      );
+      engagementDeviceLoadPromise = null;
+    });
+  }
+
   /**
    * Lấy hoặc tạo device token của máy này. Token KHÔNG bao giờ được log hay
    * gửi đi đâu ngoài engagement-api.
    */
   async function ensureEngagementDevice(username) {
-    const stored = await chrome.storage.local.get(ENGAGEMENT_DEVICE_KEY);
-    let device = stored[ENGAGEMENT_DEVICE_KEY];
-    if (!device || typeof device !== "object") {
-      device = null;
-    }
+    let device = await getEngagementDevice();
+    let changed = false;
     if (!device?.deviceId || !device?.token) {
       device = {
         deviceId: newDeviceId(),
@@ -73,9 +103,11 @@
         label: null,
         createdAt: new Date().toISOString(),
       };
+      changed = true;
     }
     if (username && device.username !== username) {
       device = { ...device, username, switchedAt: new Date().toISOString() };
+      changed = true;
     }
     if (!device.label) {
       try {
@@ -86,14 +118,13 @@
       } catch (_) {
         device.label = "Chrome extension";
       }
+      changed = true;
     }
-    await chrome.storage.local.set({ [ENGAGEMENT_DEVICE_KEY]: device });
+    engagementDeviceCache = device;
+    if (changed) {
+      await chrome.storage.local.set({ [ENGAGEMENT_DEVICE_KEY]: device });
+    }
     return device;
-  }
-
-  async function getEngagementDevice() {
-    const stored = await chrome.storage.local.get(ENGAGEMENT_DEVICE_KEY);
-    return stored[ENGAGEMENT_DEVICE_KEY] || null;
   }
 
   async function callEngagementApi(action, payload = {}, options = {}) {

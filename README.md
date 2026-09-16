@@ -102,6 +102,8 @@ bash scripts/setup-supabase.sh
    `engagement-api` — xem [`supabase/functions/engagement-api/README.md`](supabase/functions/engagement-api/README.md))
 9. `supabase/migrations/013_post_sync.sql` và `20260911100410_post_sync_hardening.sql` — đồng bộ bài, khóa quyền client và leader lease
 10. `supabase/migrations/014_engagement_user_pool.sql` — policy admin, pool, điểm và Ultra
+11. `supabase/migrations/015_expand_discussion_thread_quota.sql` — mở quota chuỗi thảo luận lên 50
+12. `supabase/migrations/016_add_moderator_role.sql` — thêm quyền moderator và khóa anon ghi cột đặc quyền
 
 Chi tiết bảng / kiểm tra: xem [`supabase/README.md`](supabase/README.md).
 
@@ -130,6 +132,7 @@ const POST_SYNC_API_CONFIG = {
 Phân quyền theo bảng `users`:
 
 - `is_admin = true`: thấy toàn bộ menu (Tự động hóa, Bài người khác, Nguy hiểm, Người dùng)
+- `is_moderator = true`: thêm Auto comment và Hẹn xóa bài, không có quyền quản trị hệ thống
 - `is_admin = false`: chỉ thấy Bài viết + Thống kê + Tương tác (xem tiến độ, dùng Ultra)
 - `is_locked = true`: bị chặn khỏi extension
 

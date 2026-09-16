@@ -11,7 +11,8 @@
 #       012 (hàng đợi tương tác giữa các user),
 #       013 (đồng bộ bài viết — hints/feed/reconcile),
 #       20260911100410 (hardening quyền ghi + global leader lease + RPC atomic),
-#       014 (preferences + pool tương tác tự cân bằng)
+#       014 (preferences + pool tương tác tự cân bằng),
+#       015 (mở rộng quota chuỗi), 016 (moderator + khóa cột đặc quyền)
 #    6. Test 4 function bằng curl
 #    7. In sẵn 2 khối config.js: một cho máy admin, một cho user thường
 #
@@ -125,6 +126,10 @@ step "Áp migration hardening post-sync (quyền ghi + leader lease + RPC atomic
 apply_migration "supabase/migrations/20260911100410_post_sync_hardening.sql"
 step "Áp migration 014 (preferences + pool tương tác tự cân bằng)"
 apply_migration "supabase/migrations/014_engagement_user_pool.sql"
+step "Áp migration 015 (mở rộng quota chuỗi thảo luận)"
+apply_migration "supabase/migrations/015_expand_discussion_thread_quota.sql"
+step "Áp migration 016 (moderator + khóa cột đặc quyền users)"
+apply_migration "supabase/migrations/016_add_moderator_role.sql"
 
 # ---------- 8. Test ----------
 BASE="https://${PROJECT_REF}.supabase.co/functions/v1"

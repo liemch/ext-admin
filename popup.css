@@ -1750,6 +1750,10 @@ body.not-admin .admin-only {
   display: none !important;
 }
 
+body.not-moderator .moderator-only {
+  display: none !important;
+}
+
 /* ============ Users panel ============ */
 
 .cell-user {

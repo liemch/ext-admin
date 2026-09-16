@@ -25,6 +25,14 @@
     return !!(url && adminToken);
   }
 
+  async function getSharedEngagementDevice() {
+    if (global.EngagementClient?.getEngagementDevice) {
+      return global.EngagementClient.getEngagementDevice();
+    }
+    const stored = await chrome.storage.local.get("engagementDevice");
+    return stored.engagementDevice || null;
+  }
+
   async function callPostSyncApi(action, payload = {}, options = {}) {
     const { url, adminToken } = getPostSyncApiConfig();
     if (!url) throw new Error("Chưa cấu hình POST_SYNC_API_CONFIG.url trong config.js");
@@ -34,15 +42,13 @@
       token = adminToken;
     } else {
       // Device token dùng chung với engagement.
-      const stored = await chrome.storage.local.get("engagementDevice");
-      const device = stored.engagementDevice;
+      const device = await getSharedEngagementDevice();
       if (!device?.token) throw new Error("Thiếu device token. Hãy heartbeat engagement trước.");
       token = device.token;
     }
     let requestPayload = payload;
     if (options.useLeaderDevice) {
-      const stored = await chrome.storage.local.get("engagementDevice");
-      const device = stored.engagementDevice;
+      const device = await getSharedEngagementDevice();
       if (!device?.deviceId || !device?.token) {
         throw new Error("Máy leader chưa đăng ký device engagement.");
       }

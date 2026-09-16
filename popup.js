@@ -158,17 +158,18 @@ const ADMIN_ONLY_PANELS = new Set([
   "engagement",
   "reply",
   "discussion",
-  "comment",
   "community",
   "external-discussion",
-  "delete",
   "users",
 ]);
+
+const MODERATOR_PANELS = new Set(["comment", "delete"]);
 
 const isTabView = new URLSearchParams(location.search).get("view") === "tab";
 
 let currentUserProfile = null;
 let isAdminUser = false;
+let isModeratorUser = false;
 let selectedTechhubId = null;
 let autoCommentSelectedTechhubId = null;
 let autoCommentSelectedTechhubIds = [];
@@ -347,7 +348,8 @@ async function openInTab() {
 }
 
 function showPanel(name, persist = true) {
-  if (!isAdminUser && ADMIN_ONLY_PANELS.has(name)) {
+  if ((!isAdminUser && ADMIN_ONLY_PANELS.has(name)) ||
+      (!isAdminUser && !isModeratorUser && MODERATOR_PANELS.has(name))) {
     name = "posts";
   }
   const panels = document.querySelectorAll(".panel");
@@ -460,6 +462,8 @@ function setupEventListeners() {
       const username = button.dataset.username;
       if (button.dataset.userAction === "admin") {
         toggleUserAdmin(username);
+      } else if (button.dataset.userAction === "moderator") {
+        toggleUserModerator(username);
       } else if (button.dataset.userAction === "lock") {
         toggleUserLock(username);
       } else if (button.dataset.userAction === "delete") {
@@ -803,12 +807,40 @@ async function loadAdminGate() {
       throw new Error("Không kết nối được Supabase (kiểm tra mạng/proxy).");
     }
 
-    const dbUser = await supabase.findUserByUsername(username);
-    if (!dbUser) {
-      showDenied(
-        `Tài khoản @${username} chưa được đăng ký. Liên hệ quản trị viên để được thêm vào hệ thống.`
-      );
+    if (!username) {
+      showError("Không tìm thấy username TechHub. Vui lòng đăng nhập lại.");
       return;
+    }
+
+    let dbUser = await supabase.findUserByUsername(username);
+    if (!dbUser) {
+      // Profile lưu cục bộ có thể cũ; xác nhận phiên TechHub còn hiệu lực.
+      if (!profileResponse.sessionVerified) {
+        const session = await sendMessage({ action: "checkTechHubSession" });
+        if (!session?.success || !session.ok) {
+          const status = session?.httpStatus ? ` (HTTP ${session.httpStatus})` : "";
+          showError(`Không xác nhận được phiên TechHub${status}. Đăng nhập rồi mở lại extension.`);
+          return;
+        }
+        if (session.username &&
+            String(session.username).toLowerCase() !== String(username).toLowerCase()) {
+          showError("Tài khoản TechHub hiện tại khác profile đã lưu. Đăng nhập lại rồi mở extension.");
+          return;
+        }
+      }
+      // Database mặc định is_admin/is_moderator = false và chặn client tự ghi quyền.
+      try {
+        dbUser = await supabase.createUser({
+          username,
+          fullName: currentUserProfile.display_name || username,
+          email: currentUserProfile.email,
+          avatar: currentUserProfile.avatar,
+        });
+      } catch (error) {
+        // Hai phiên mở đồng thời có thể cùng tạo một username; đọc lại nếu phiên kia đã tạo.
+        dbUser = await supabase.findUserByUsername(username);
+        if (!dbUser) throw error;
+      }
     }
     if (dbUser.is_locked) {
       showDenied(
@@ -817,17 +849,22 @@ async function loadAdminGate() {
       return;
     }
 
-    // Admin thấy toàn bộ menu; user thường chỉ thấy Bài viết + Thống kê
+    // Admin thấy toàn bộ menu; mod thêm Auto comment và Hẹn xóa bài.
     isAdminUser = !!dbUser.is_admin;
+    isModeratorUser = !!dbUser.is_moderator;
     document.body.classList.toggle("not-admin", !isAdminUser);
+    document.body.classList.toggle("not-moderator", !isAdminUser && !isModeratorUser);
 
     showAdmin();
     await loadMyPosts();
-    if (isAdminUser) {
+    if (isAdminUser || isModeratorUser) {
       setDefaultDeleteAt();
       setDefaultAutoCommentStartAt();
       await loadAutoCommentStatus();
       await loadAutoCommentDeleteLog();
+      await loadScheduledDeletes();
+    }
+    if (isAdminUser) {
       await loadAutoReplyStatus();
       await loadReplyDrafts();
       await loadAutoDiscussionStatus();
@@ -837,7 +874,6 @@ async function loadAdminGate() {
       if (Number(elements.externalDiscussionPostId?.value) > 0) {
         await loadExternalDiscussionPost();
       }
-      await loadScheduledDeletes();
     }
   } catch (error) {
     showError("Lỗi: " + error.message);
@@ -976,6 +1012,7 @@ function renderUsers() {
       const username = String(user.username || "-");
       const self = isSelfUsername(username);
       const isAdmin = !!user.is_admin;
+      const isModerator = !!user.is_moderator;
       const isLocked = !!user.is_locked;
       const posts = Number(usersPostCounts[user.username]) || 0;
       const todayCount = Number(usersTodayCounts[user.username]) || 0;
@@ -984,6 +1021,7 @@ function renderUsers() {
 
       const badges =
         (isAdmin ? '<span class="badge admin">Admin</span>' : "") +
+        (isModerator ? '<span class="badge admin">Mod</span>' : "") +
         (isLocked ? '<span class="badge locked">Khóa</span>' : "");
 
       return (
@@ -1014,6 +1052,9 @@ function renderUsers() {
         `<button type="button" class="mini-btn" data-user-action="admin" data-username="${escapeHtml(
           username
         )}"${self ? " disabled" : ""}${selfTitle}>${isAdmin ? "Thu quyền" : "Cấp quyền"}</button>` +
+        `<button type="button" class="mini-btn" data-user-action="moderator" data-username="${escapeHtml(
+          username
+        )}"${self ? " disabled" : ""}${selfTitle}>${isModerator ? "Thu mod" : "Cấp mod"}</button>` +
         `<button type="button" class="mini-btn" data-user-action="lock" data-username="${escapeHtml(
           username
         )}"${self ? " disabled" : ""}${selfTitle}>${
@@ -1066,6 +1107,21 @@ async function toggleUserAdmin(username) {
         : `Đã thu quyền admin của @${username}.`,
       "success"
     );
+  } catch (error) {
+    showAdminMsg(elements.usersMessage, `Lỗi: ${error.message}`, "error");
+  }
+}
+
+async function toggleUserModerator(username) {
+  const user = findCachedUser(username);
+  if (!user || isSelfUsername(username)) return;
+  const nextValue = !user.is_moderator;
+  try {
+    const response = await sendMessage({ action: "updateUserStatus", username, isModerator: nextValue });
+    if (!response?.success) throw new Error(response?.error || "Cập nhật thất bại");
+    if (response.user) Object.assign(user, response.user);
+    renderUsers();
+    showAdminMsg(elements.usersMessage, `${nextValue ? "Đã cấp" : "Đã thu"} quyền mod cho @${username}.`, "success");
   } catch (error) {
     showAdminMsg(elements.usersMessage, `Lỗi: ${error.message}`, "error");
   }
