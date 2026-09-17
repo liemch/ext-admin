@@ -415,11 +415,10 @@
       if (checked.errors.length || !checked.threads.length) {
         throw new Error(checked.errors[0]?.error || "JSON chưa có chuỗi hợp lệ.");
       }
-      const parsed = JSON.parse(raw);
       const response = await sendMessage({
         action: "submitMyEngagementThreads",
         techhubId,
-        threads: parsed,
+        threads: checked.threads,
       });
       if (!response?.success) throw new Error(response?.error || "Không gửi được chuỗi.");
       const imported = Array.isArray(response.imported) ? response.imported.length : 0;
@@ -736,13 +735,7 @@
       return { threads: [], errors: [{ index: -1, name: "", error: "Thiếu discussion-import.js." }], raw: [] };
     }
     const result = DiscussionImport.validateThreads(raw);
-    let parsed = [];
-    try {
-      parsed = JSON.parse(raw.trim() || "[]");
-    } catch (_) {
-      parsed = [];
-    }
-    return { ...result, raw: parsed };
+    return { ...result, raw: result.threads };
   }
 
   async function validateThreads() {

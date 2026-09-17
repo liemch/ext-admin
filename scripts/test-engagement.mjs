@@ -128,6 +128,13 @@ assert(result.threads[0].turns.length === 3, "thread 1 có 3 turn");
 assert(result.threads[0].actors.A === "visitor", "actors.A = visitor");
 assert(result.threads[0].actors.B === "author", "actors.B = author");
 
+result = di.validateThreads(JSON.stringify({ schemaVersion: 1, threads: NEW_FORMAT }));
+assert(result.errors.length === 0 && result.threads.length === 2,
+  "schemaVersion 1 với threads được import");
+result = di.validateThreads(JSON.stringify({ schemaVersion: 2, threads: NEW_FORMAT }));
+assert(result.errors.length === 1 && result.errors[0].error.includes("schemaVersion"),
+  "schemaVersion không hỗ trợ bị từ chối");
+
 result = di.validateThreads(
   JSON.stringify([{ discussion: "Hỏi&#x20;này", answer: "Đáp&#39; án &amp; thêm" }])
 );

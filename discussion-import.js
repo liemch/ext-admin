@@ -142,7 +142,7 @@
 
   /**
    * Parse + validate toàn bộ JSON kịch bản.
-   * @param {string|Array} input JSON text hoặc mảng đã parse.
+   * @param {string|Array|Object} input JSON text, mảng cũ hoặc schemaVersion 1.
    * @returns {{ threads: Array, errors: Array<{index:number,name:string,error:string}> }}
    * Không throw khi từng thread lỗi — gom lỗi để UI chỉ rõ thread/turn.
    */
@@ -171,6 +171,15 @@
           ],
         };
       }
+    }
+    if (parsed && !Array.isArray(parsed) && typeof parsed === "object" && "schemaVersion" in parsed) {
+      if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.threads)) {
+        return {
+          threads: [],
+          errors: [{ index: -1, name: "", error: "schemaVersion phải là 1 và threads phải là mảng." }],
+        };
+      }
+      parsed = parsed.threads;
     }
     if (!Array.isArray(parsed)) {
       return {
