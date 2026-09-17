@@ -28,11 +28,11 @@ token, project ref hoặc dữ liệu bài thật.
 
 ## Chưa xác minh vì cần tạo dữ liệu TechHub thật
 
-Ngày 17/09/2026 user đã cho phép tạo một bài mẫu. Phiên chạy hiện chưa có
-trình duyệt TechHub được kết nối và không có credential phiên trong môi trường,
-nên chưa gửi POST. Khi có phiên, dùng một tiêu đề duy nhất ghi rõ "Bài kiểm thử
-My Angel" và body ngắn giải thích bài này để xác minh API; chỉ tạo một bài,
-sau đó đọc detail/list để ghi fixture đã ẩn dữ liệu nhạy cảm.
+Ngày 17/09/2026 user đã cho phép tạo một bài mẫu, sau đó cung cấp tiêu đề và
+nội dung cụ thể, yêu cầu không thêm dấu hiệu "test" vào bài. Phiên chạy hiện
+chưa có trình duyệt TechHub được kết nối nên chưa gửi POST. Khi có phiên, chỉ
+tạo một bài với đúng nội dung user cung cấp, sau đó đọc detail/list để ghi
+fixture đã ẩn dữ liệu nhạy cảm. Không chép nội dung bài vào repo.
 
 Auto publish vẫn phải giữ feature flag tắt cho tới khi một người được phép dùng
 tài khoản kiểm thử chạy spike thủ công và lưu fixture đã xóa dữ liệu nhạy cảm.
