@@ -22,8 +22,17 @@ token, project ref hoặc dữ liệu bài thật.
   `POST https://techhub.fpt.net/api/v1/articles/` với `title`, `body`,
   `community`, `terms`, `description`, `featured`, `main_image`, `author` và
   `body_type`.
+- `HEAD /api/v1/articles/` không có phiên đăng nhập trả HTTP 401, header
+  `Allow: GET, POST, HEAD, OPTIONS` và `WWW-Authenticate: Bearer realm="api"`.
+  Điều này xác nhận route nhận POST; chưa xác định cơ chế xác thực của phiên user.
 
 ## Chưa xác minh vì cần tạo dữ liệu TechHub thật
+
+Ngày 17/09/2026 user đã cho phép tạo một bài mẫu. Phiên chạy hiện chưa có
+trình duyệt TechHub được kết nối và không có credential phiên trong môi trường,
+nên chưa gửi POST. Khi có phiên, dùng một tiêu đề duy nhất ghi rõ "Bài kiểm thử
+My Angel" và body ngắn giải thích bài này để xác minh API; chỉ tạo một bài,
+sau đó đọc detail/list để ghi fixture đã ẩn dữ liệu nhạy cảm.
 
 Auto publish vẫn phải giữ feature flag tắt cho tới khi một người được phép dùng
 tài khoản kiểm thử chạy spike thủ công và lưu fixture đã xóa dữ liệu nhạy cảm.
