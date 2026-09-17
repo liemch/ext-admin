@@ -571,6 +571,9 @@ const ADMIN_ONLY_ACTIONS = new Set([
   "engagementSetKillSwitch",
   "engagementSetEnabled",
   "engagementRevokeDevice",
+  "engagementCreateEnrollmentInvitation",
+  "engagementListEnrollmentRequests",
+  "engagementApproveDevice",
   "engagementGetPoolSettings",
   "engagementSetPoolSettings",
   "engagementSetUserPolicy",
@@ -601,15 +604,44 @@ async function ensureActionAllowed(action) {
   }
   const { _techhubSessionVerified, ...profile } = liveProfile;
   await chrome.storage.local.set({ userProfile: profile });
-  const user = await supabase.findUserByUsername(profile.username);
-  if (!user) {
-    throw new Error("Tài khoản chưa được đăng ký trong hệ thống.");
-  }
-  if (user.is_locked) {
+  const context = await getCurrentAccessContext(profile.username);
+  const user = context.account;
+  if (user.isLocked) {
     throw new Error("Tài khoản đã bị khóa khỏi extension.");
   }
-  if (!user.is_admin && !(user.is_moderator && MODERATOR_ACTIONS.has(action))) {
+  if (!user.isAdmin && !(user.isModerator && MODERATOR_ACTIONS.has(action))) {
     throw new Error("Bạn không có quyền sử dụng chức năng này.");
+  }
+}
+
+async function getCurrentAccessContext(username) {
+  const expected = String(username || "").trim();
+  if (!expected) throw new Error("Thiếu username TechHub.");
+  await EngagementClient.ensureEngagementDevice(expected);
+  try {
+    let identity;
+    try {
+      identity = await EngagementClient.engagementGetIdentityState();
+    } catch (error) {
+      if (!["DEVICE_ENROLLMENT_REQUIRED", "DEVICE_REVOKED"].includes(error.code)) throw error;
+      if (error.code === "DEVICE_REVOKED") {
+        await EngagementClient.resetEngagementDevice(expected);
+      }
+      await EngagementClient.engagementRequestEnrollment(expected);
+      identity = await EngagementClient.engagementGetIdentityState();
+    }
+    if (String(identity?.account?.username || "").toLowerCase() !== expected.toLowerCase()) {
+      throw new Error("Device token không thuộc tài khoản TechHub hiện tại.");
+    }
+    return identity;
+  } catch (deviceError) {
+    const cfg = EngagementClient.getEngagementApiConfig();
+    if (!cfg.adminToken) throw deviceError;
+    const adminContext = await EngagementClient.engagementAdmin("getAccessContext", { username: expected });
+    if (String(adminContext?.account?.username || "").toLowerCase() !== expected.toLowerCase()) {
+      throw new Error("Không xác minh được quyền của tài khoản hiện tại.");
+    }
+    return adminContext;
   }
 }
 
@@ -670,6 +702,18 @@ function handlePopupMessage(request, sendResponse) {
     return true;
   }
 
+  if (request.action === "getAccessContext") {
+    readCurrentUserProfileFromTechHub()
+      .then(async (profile) => {
+        if (!profile?.username) throw new Error("Không xác nhận được tài khoản TechHub hiện tại.");
+        const context = await getCurrentAccessContext(profile.username);
+        return { success: true, ...context };
+      })
+      .then(sendResponse)
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code }));
+    return true;
+  }
+
   if (request.action === "runInteractions") {
     runCrossInteraction(true);
     sendResponse({ success: true });
@@ -710,8 +754,58 @@ function handlePopupMessage(request, sendResponse) {
   }
 
   if (request.action === "setEngagementEnabled") {
-    sendResponse({ success: false, error: "Chế độ tương tác do admin điều phối." });
-    return false;
+    EngagementClient.engagementUpdateConsent({
+      consentVersion: request.consentVersion,
+      engagementEnabled: request.enabled === true,
+      autoPublishEnabled: request.autoPublishEnabled,
+      delegatedEngagementEnabled: request.delegatedEngagementEnabled,
+      dailyActionLimit: request.dailyActionLimit,
+      quietHours: request.quietHours,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code }));
+    return true;
+  }
+
+  if (request.action === "engagementRequestEnrollment") {
+    readCurrentUserProfileFromTechHub()
+      .then((profile) => {
+        const username = profile?.username || request.username;
+        if (!username) throw new Error("Hãy đăng nhập TechHub trước khi đăng ký thiết bị.");
+        return EngagementClient.engagementRequestEnrollment(username);
+      })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code }));
+    return true;
+  }
+
+  if (request.action === "engagementEnrollDevice") {
+    readCurrentUserProfileFromTechHub()
+      .then((profile) => {
+        const username = profile?.username || request.username;
+        if (!username) throw new Error("Hãy đăng nhập TechHub trước khi dùng mã mời.");
+        return EngagementClient.engagementEnrollDevice(username, request.invitationCode);
+      })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code }));
+    return true;
+  }
+
+  if (request.action === "engagementGetIdentityState") {
+    EngagementClient.engagementGetIdentityState()
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code }));
+    return true;
+  }
+
+  if (request.action === "engagementDisconnectDevice") {
+    EngagementClient.engagementDisconnectDevice()
+      .then(async (result) => {
+        await chrome.storage.local.remove(EngagementClient.ENGAGEMENT_DEVICE_KEY);
+        sendResponse({ success: true, ...result });
+      })
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code }));
+    return true;
   }
 
   if (request.action === "redeemEngagementUltra") {
@@ -1021,6 +1115,30 @@ function handlePopupMessage(request, sendResponse) {
     EngagementClient.engagementAdmin("listBoosts", {
       status: request.status || "active",
       limit: request.limit || 100,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementCreateEnrollmentInvitation") {
+    EngagementClient.engagementAdmin("createEnrollmentInvitation", { username: request.username })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementListEnrollmentRequests") {
+    EngagementClient.engagementAdmin("listEnrollmentRequests", {})
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementApproveDevice") {
+    EngagementClient.engagementAdmin("approveDevice", {
+      username: request.username,
+      deviceId: request.deviceId,
     })
       .then((result) => sendResponse({ success: true, ...result }))
       .catch((error) => sendResponse({ success: false, error: error.message }));

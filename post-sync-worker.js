@@ -328,10 +328,9 @@
     const knownUsernames = new Set(
       await (async () => {
         try {
-          const users = await supabase.getAllUsers();
-          return (users || [])
-            .filter((u) => u.is_locked !== true)
-            .map((u) => String(u.username || "").toLowerCase())
+          const result = await PostSyncClient.listActiveUsernames();
+          return (result?.usernames || [])
+            .map((username) => String(username || "").toLowerCase())
             .filter(Boolean);
         } catch {
           return [];

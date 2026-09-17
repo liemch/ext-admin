@@ -138,6 +138,7 @@ type Device = {
   username: string;
   token_hash: string;
   revoked: boolean;
+  enrollment_status?: "pending" | "approved" | "revoked";
 };
 
 type Auth = { kind: "admin" } | { kind: "device"; device: Device } | { kind: "none" };
@@ -151,12 +152,14 @@ async function resolveAuth(req: Request, rest: Rest): Promise<Auth> {
   const tokenHash = await sha256Hex(token);
   const rows = await rest.getJson<Device[]>("engagement_devices", {
     token_hash: `eq.${tokenHash}`,
-    select: "id,device_id,username,token_hash,revoked",
+    select: "id,device_id,username,token_hash,revoked,enrollment_status",
     limit: "1",
   });
   const device = rows?.[0];
   if (!device) return { kind: "none" };
-  if (device.revoked) throw new HttpError("Thiết bị đã bị thu hồi.", 403);
+  if (device.revoked || (device.enrollment_status || "approved") !== "approved") {
+    throw new HttpError("Thiết bị chưa được duyệt hoặc đã bị thu hồi.", 403);
+  }
   return { kind: "device", device };
 }
 
@@ -182,11 +185,11 @@ async function requireLeaderDevice(
   const devices = await rest.getJson<Device[]>("engagement_devices", {
     device_id: `eq.${deviceId}`,
     token_hash: `eq.${tokenHash}`,
-    select: "id,device_id,username,token_hash,revoked",
+    select: "id,device_id,username,token_hash,revoked,enrollment_status",
     limit: "1",
   });
   const device = firstRow(devices);
-  if (!device || device.revoked) {
+  if (!device || device.revoked || (device.enrollment_status || "approved") !== "approved") {
     throw new HttpError("Leader device không tồn tại hoặc đã bị thu hồi.", 403);
   }
   return device;
@@ -263,9 +266,9 @@ async function handleSubmitPostHint(rest: Rest, auth: Auth, body: Record<string,
   }
   const meta = (body.metadata as Record<string, unknown>) || {};
   const built = buildIdentifierKey({
-    techhubId: identifier.techhubId,
-    techhubUuid: identifier.techhubUuid,
-    url: identifier.url,
+    techhubId: identifier.techhubId == null ? null : Number(identifier.techhubId),
+    techhubUuid: identifier.techhubUuid == null ? null : String(identifier.techhubUuid),
+    url: identifier.url == null ? null : String(identifier.url),
   });
   if (!built.key) {
     throw new HttpError("Thiếu identifier hợp lệ (cần ít nhất techhubId, techhubUuid hoặc URL TechHub).", 400);
@@ -1390,14 +1393,18 @@ async function handleEnqueueJobs(rest: Rest, auth: Auth, body: Record<string, un
   // Cùng logic với requestPostSync(feed) + requestPostSync(due_users).
   const results: Array<Record<string, unknown>> = [];
   try {
-    const r = await handleRequestPostSync(rest, auth, { scope: "feed", communitySlug: body.communitySlug || "cai-tien-moi-ngay", force: body.force === true });
-    results.push({ kind: "feed", ok: true, ...r });
+    const response = await handleRequestPostSync(rest, auth, { scope: "feed", communitySlug: body.communitySlug || "cai-tien-moi-ngay", force: body.force === true });
+    const payload = await response.clone().json().catch(() => ({})) as Record<string, unknown>;
+    if (!response.ok) throw new Error(String(payload.error || `HTTP ${response.status}`));
+    results.push({ kind: "feed", ...payload, ok: true });
   } catch (error) {
     results.push({ kind: "feed", ok: false, error: error instanceof Error ? error.message : String(error) });
   }
   try {
-    const r = await handleRequestPostSync(rest, auth, { scope: "due_users" });
-    results.push({ kind: "due_users", ok: true, ...r });
+    const response = await handleRequestPostSync(rest, auth, { scope: "due_users" });
+    const payload = await response.clone().json().catch(() => ({})) as Record<string, unknown>;
+    if (!response.ok) throw new Error(String(payload.error || `HTTP ${response.status}`));
+    results.push({ kind: "due_users", ...payload, ok: true });
   } catch (error) {
     results.push({ kind: "due_users", ok: false, error: error instanceof Error ? error.message : String(error) });
   }
@@ -1504,6 +1511,17 @@ async function handleGetUserSyncStatus(rest: Rest, auth: Auth, body: Record<stri
   });
 }
 
+async function handleListActiveUsernames(rest: Rest, auth: Auth) {
+  requireAdmin(auth);
+  const users = await rest.getJson<Array<{ username: string }>>("users", {
+    is_locked: "eq.false",
+    select: "username",
+    order: "username.asc",
+    limit: "10000",
+  });
+  return json({ usernames: (users || []).map((user) => user.username).filter(Boolean) });
+}
+
 // ---------------- Router ----------------
 
 Deno.serve(async (req) => {
@@ -1555,6 +1573,7 @@ Deno.serve(async (req) => {
       case "listHints":         return await handleListPostHints(rest, auth, body);
       case "listNewPosts":      return await handleListNewPosts(rest, auth, body);
       case "getUserSyncStatus": return await handleGetUserSyncStatus(rest, auth, body);
+      case "listActiveUsernames": return await handleListActiveUsernames(rest, auth);
       case "listJobs":          return await handleListJobs(rest, auth, body);
       case "enqueueJobs":       return await handleEnqueueJobs(rest, auth, body);
       case "resubmitHint":      return await handleResubmitHint(rest, auth, body);

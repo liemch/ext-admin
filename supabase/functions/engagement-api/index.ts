@@ -204,6 +204,25 @@ type Device = {
   label: string | null;
   last_seen_at: string | null;
   revoked: boolean;
+  enrollment_status?: "pending" | "approved" | "revoked";
+  approved_at?: string | null;
+  approved_by?: string | null;
+  revoked_at?: string | null;
+};
+
+type UserConsent = {
+  username: string;
+  consent_version: number;
+  engagement_enabled: boolean;
+  auto_publish_enabled: boolean;
+  delegated_engagement_enabled: boolean;
+  delegation_policy_version: number | null;
+  delegation_expires_at: string | null;
+  consented_at: string | null;
+  paused_at: string | null;
+  quiet_hours: Record<string, unknown>;
+  daily_action_limit: number;
+  updated_at: string;
 };
 
 type EngagementPreferences = {
@@ -248,25 +267,21 @@ async function resolveAuth(
   });
   const device = rows?.[0];
   if (!device) {
-    // Token lạ: cho phép heartbeat tự đăng ký máy mới (bootstrap),
-    // các action khác yêu cầu thiết bị đã đăng ký.
-    const action = String(body.action || "");
-    if (action === "heartbeat") {
-      return { kind: "none" };
-    }
     return { kind: "none" };
   }
   if (device.revoked) {
-    throw new HttpError("Thiết bị đã bị thu hồi. Liên hệ quản trị viên.", 403);
+    throw new HttpError("Thiết bị đã bị thu hồi. Cần đăng ký lại.", 403, "DEVICE_REVOKED");
   }
   return { kind: "device", device, tokenHash };
 }
 
 class HttpError extends Error {
   status: number;
-  constructor(message: string, status = 400) {
+  code: string;
+  constructor(message: string, status = 400, code = "REQUEST_REJECTED") {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -279,6 +294,13 @@ function requireAdmin(auth: Auth): void {
 function requireDevice(auth: Auth): { device: Device; tokenHash: string } {
   if (auth.kind !== "device") {
     throw new HttpError("Unauthorized (thiếu device token).", 401);
+  }
+  if (auth.device.enrollment_status !== "approved") {
+    throw new HttpError(
+      "Thiết bị đang chờ duyệt.",
+      403,
+      "DEVICE_ENROLLMENT_REQUIRED"
+    );
   }
   return auth;
 }
@@ -312,6 +334,56 @@ function clampPreference(value: unknown, fallback: number, min: number, max: num
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, Math.floor(parsed)));
+}
+
+async function currentConsentVersion(rest: Rest): Promise<number> {
+  return clampPreference(await readSetting(rest, "current_consent_version"), 1, 1, 1000);
+}
+
+async function readUserConsent(rest: Rest, username: string): Promise<UserConsent | null> {
+  const rows = await rest.getJson<UserConsent[]>("user_consents", {
+    username: `eq.${username}`,
+    select: "*",
+    limit: "1",
+  });
+  return firstRow(rows);
+}
+
+async function requireEngagementConsent(rest: Rest, device: Device): Promise<UserConsent> {
+  const [consent, requiredVersion] = await Promise.all([
+    readUserConsent(rest, device.username),
+    currentConsentVersion(rest),
+  ]);
+  if (!consent || consent.consent_version !== requiredVersion) {
+    throw new HttpError(
+      "Bạn cần xác nhận lại quyền tham gia mạng lưới.",
+      403,
+      "CONSENT_REQUIRED"
+    );
+  }
+  if (!consent.engagement_enabled || consent.paused_at) {
+    throw new HttpError(
+      "Bạn đang tạm dừng mạng lưới thảo luận.",
+      403,
+      "ENGAGEMENT_PAUSED"
+    );
+  }
+  return consent;
+}
+
+function publicConsent(consent: UserConsent | null, requiredVersion: number) {
+  return consent || {
+    consent_version: requiredVersion,
+    engagement_enabled: false,
+    auto_publish_enabled: false,
+    delegated_engagement_enabled: false,
+    delegation_policy_version: null,
+    delegation_expires_at: null,
+    consented_at: null,
+    paused_at: null,
+    quiet_hours: { enabled: false, timezone: "Asia/Ho_Chi_Minh" },
+    daily_action_limit: 2,
+  };
 }
 
 async function getOrCreatePreferences(
@@ -422,6 +494,7 @@ async function ensureMutualPoolTasks(rest: Rest): Promise<{
   const [devices, activeUsers] = await Promise.all([
     rest.getJson<Array<{ username: string }>>("engagement_devices", {
       revoked: "eq.false",
+      enrollment_status: "eq.approved",
       last_seen_at: `gte.${sinceIso}`,
       select: "username",
       limit: "1000",
@@ -434,7 +507,21 @@ async function ensureMutualPoolTasks(rest: Rest): Promise<{
   ]);
   const activeUserSet = new Set((activeUsers || []).map((row) => row.username).filter(Boolean));
   const onlineNames = [...new Set((devices || []).map((row) => row.username).filter(Boolean))];
-  const memberOnlineNames = onlineNames.filter((name) => activeUserSet.has(name));
+  let memberOnlineNames = onlineNames.filter((name) => activeUserSet.has(name));
+  if (memberOnlineNames.length === 0) {
+    return { participants: 0, posts: 0, created: 0, waitingForPeers: true };
+  }
+  const requiredConsentVersion = await currentConsentVersion(rest);
+  const consentRows = await rest.getJson<Array<{ username: string }>>("user_consents", {
+    username: `in.(${memberOnlineNames.join(",")})`,
+    consent_version: `eq.${requiredConsentVersion}`,
+    engagement_enabled: "eq.true",
+    paused_at: "is.null",
+    select: "username",
+    limit: "1000",
+  });
+  const consentedNames = new Set((consentRows || []).map((row) => row.username));
+  memberOnlineNames = memberOnlineNames.filter((name) => consentedNames.has(name));
   if (memberOnlineNames.length === 0) {
     return { participants: 0, posts: 0, created: 0, waitingForPeers: true };
   }
@@ -845,12 +932,26 @@ async function getLockedUsernames(rest: Rest): Promise<Set<string>> {
 async function getUserByUsername(
   rest: Rest,
   username: string
-): Promise<{ username: string; is_locked: boolean; is_admin: boolean } | null> {
+): Promise<{
+  username: string;
+  full_name?: string | null;
+  avatar?: string | null;
+  is_locked: boolean;
+  is_admin: boolean;
+  is_moderator?: boolean;
+} | null> {
   const rows = await rest.getJson<
-    Array<{ username: string; is_locked: boolean; is_admin: boolean }>
+    Array<{
+      username: string;
+      full_name?: string | null;
+      avatar?: string | null;
+      is_locked: boolean;
+      is_admin: boolean;
+      is_moderator?: boolean;
+    }>
   >("users", {
     username: `eq.${username}`,
-    select: "username,is_locked,is_admin",
+    select: "username,full_name,avatar,is_locked,is_admin,is_moderator",
     limit: "1",
   });
   return firstRow(rows);
@@ -1199,6 +1300,181 @@ function backoffMinutes(attemptCount: number): number {
 // Action handlers
 // ---------------------------------------------------------------------------
 
+async function handleRequestEnrollment(
+  rest: Rest,
+  auth: Auth,
+  body: Record<string, unknown>,
+  token: string
+) {
+  if (!token) throw new HttpError("Thiếu device token.", 401, "DEVICE_TOKEN_REQUIRED");
+  if (auth.kind === "device") {
+    return json({
+      ok: true,
+      enrollmentStatus: auth.device.enrollment_status,
+      username: auth.device.username,
+    });
+  }
+  const username = String(body.username || "").trim();
+  const deviceId = String(body.deviceId || body.device_id || "").trim();
+  const label = String(body.label || "").trim().slice(0, 120) || null;
+  if (!isUsername(username) || !deviceId) {
+    throw new HttpError("Thiếu username/deviceId hợp lệ.", 400, "ENROLLMENT_INVALID");
+  }
+  const user = await getUserByUsername(rest, username);
+  if (!user || user.is_locked) {
+    throw new HttpError("Tài khoản chưa sẵn sàng để đăng ký thiết bị.", 403, "ENROLLMENT_USER_UNAVAILABLE");
+  }
+  const tokenHash = await sha256Hex(token);
+  const created = await rest.postJson<Device[]>("engagement_devices", {
+    device_id: deviceId,
+    username,
+    token_hash: tokenHash,
+    label,
+    last_seen_at: null,
+    revoked: false,
+    enrollment_status: "pending",
+  }, "resolution=ignore-duplicates");
+  let device = firstRow(created);
+  if (!device) {
+    const rows = await rest.getJson<Device[]>("engagement_devices", {
+      username: `eq.${username}`,
+      device_id: `eq.${deviceId}`,
+      select: "*",
+      limit: "1",
+    });
+    device = firstRow(rows);
+    if (!device || device.token_hash !== tokenHash) {
+      throw new HttpError(
+        "Thiết bị này đã có một yêu cầu đăng ký khác.",
+        409,
+        "ENROLLMENT_CONFLICT"
+      );
+    }
+  }
+  return json({ ok: true, enrollmentStatus: device.enrollment_status || "pending", username });
+}
+
+async function handleEnrollDevice(
+  rest: Rest,
+  body: Record<string, unknown>,
+  token: string
+) {
+  const code = String(body.invitationCode || "").trim();
+  const deviceId = String(body.deviceId || body.device_id || "").trim();
+  const label = String(body.label || "").trim().slice(0, 120) || null;
+  if (!token || !code || !deviceId) {
+    throw new HttpError("Thiếu mã mời hoặc thông tin thiết bị.", 400, "ENROLLMENT_INVALID");
+  }
+  const [codeHash, tokenHash] = await Promise.all([sha256Hex(code), sha256Hex(token)]);
+  try {
+    const rows = await rest.rpc<Array<{ device_id: string; username: string; enrollment_status: string }>>(
+      "consume_device_enrollment_invitation",
+      {
+        p_code_hash: codeHash,
+        p_device_id: deviceId,
+        p_token_hash: tokenHash,
+        p_label: label,
+        p_now: new Date().toISOString(),
+      }
+    );
+    const enrolled = firstRow(rows);
+    return json({ ok: true, enrollmentStatus: "approved", username: enrolled?.username || null });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const codeName = message.match(/(ENROLLMENT_[A-Z_]+|DEVICE_[A-Z_]+)/)?.[1]
+      || "ENROLLMENT_REJECTED";
+    throw new HttpError("Mã mời không hợp lệ, đã dùng hoặc đã hết hạn.", 403, codeName);
+  }
+}
+
+async function handleGetIdentityState(rest: Rest, auth: Auth) {
+  if (auth.kind !== "device") {
+    throw new HttpError("Thiết bị chưa gửi yêu cầu đăng ký.", 403, "DEVICE_ENROLLMENT_REQUIRED");
+  }
+  const requiredVersion = await currentConsentVersion(rest);
+  const [consent, account] = await Promise.all([
+    readUserConsent(rest, auth.device.username),
+    getUserByUsername(rest, auth.device.username),
+  ]);
+  if (!account) throw new HttpError("Tài khoản không còn trong hệ thống.", 403, "ACCOUNT_NOT_FOUND");
+  return json({
+    ok: true,
+    enrollmentStatus: auth.device.enrollment_status,
+    username: auth.device.username,
+    account: {
+      username: account.username,
+      fullName: account.full_name || account.username,
+      avatar: account.avatar || null,
+      isLocked: account.is_locked,
+      isAdmin: account.is_admin,
+      isModerator: account.is_moderator === true,
+    },
+    consent: publicConsent(consent, requiredVersion),
+  });
+}
+
+async function handleGetAccessContext(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  requireAdmin(auth);
+  const username = String(body.username || "").trim();
+  if (!isUsername(username)) throw new HttpError("username không hợp lệ.", 400);
+  const account = await getUserByUsername(rest, username);
+  if (!account) throw new HttpError("Tài khoản chưa được cấp quyền sử dụng My Angel.", 404, "ACCOUNT_NOT_FOUND");
+  return json({
+    ok: true,
+    account: {
+      username: account.username,
+      fullName: account.full_name || account.username,
+      avatar: account.avatar || null,
+      isLocked: account.is_locked,
+      isAdmin: account.is_admin,
+      isModerator: account.is_moderator === true,
+    },
+  });
+}
+
+async function handleUpdateConsent(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  const { device } = requireDevice(auth);
+  const requiredVersion = await currentConsentVersion(rest);
+  const requestedVersion = clampPreference(body.consentVersion, 0, 0, 1000);
+  if (requestedVersion !== requiredVersion) {
+    throw new HttpError("Phiên bản consent không còn hợp lệ.", 409, "CONSENT_VERSION_STALE");
+  }
+  const previous = await readUserConsent(rest, device.username);
+  const engagementEnabled = body.engagementEnabled === true;
+  if (body.autoPublishEnabled === true || body.delegatedEngagementEnabled === true) {
+    throw new HttpError("Tính năng này chưa được mở.", 403, "FEATURE_DISABLED");
+  }
+  const autoPublishEnabled = false;
+  const delegatedEnabled = false;
+  const dailyLimit = clampPreference(body.dailyActionLimit, previous?.daily_action_limit || 2, 1, 100);
+  const nowIso = new Date().toISOString();
+  const quietHours = body.quietHours && typeof body.quietHours === "object"
+    ? body.quietHours
+    : previous?.quiet_hours || { enabled: false, timezone: "Asia/Ho_Chi_Minh" };
+  const saved = await rest.rpc<UserConsent[]>("update_user_consent", {
+    p_username: device.username,
+    p_device_id: device.device_id,
+    p_consent_version: requiredVersion,
+    p_engagement_enabled: engagementEnabled,
+    p_auto_publish_enabled: autoPublishEnabled,
+    p_delegated_engagement_enabled: delegatedEnabled,
+    p_quiet_hours: quietHours,
+    p_daily_action_limit: dailyLimit,
+    p_now: nowIso,
+  });
+  return json({ ok: true, consent: firstRow(saved) });
+}
+
+async function handleDisconnectDevice(rest: Rest, auth: Auth) {
+  const { device } = requireDevice(auth);
+  await rest.rpc("disconnect_engagement_device", {
+    p_username: device.username,
+    p_device_id: device.device_id,
+    p_now: new Date().toISOString(),
+  });
+  return json({ ok: true, disconnected: true });
+}
+
 async function handleHeartbeat(
   rest: Rest,
   auth: Auth,
@@ -1206,112 +1482,59 @@ async function handleHeartbeat(
   token: string
 ) {
   const username = String(body.username || "").trim();
-  const deviceId = String(body.deviceId || body.device_id || "").trim();
   const label = String(body.label || "").trim().slice(0, 120) || null;
   const nowIso = new Date().toISOString();
-
-  let device: Device | null =
-    auth.kind === "device" ? auth.device : null;
-
-  if (!device) {
-    // Đăng ký máy mới: cần username + deviceId + token mới.
-    if (!token) throw new HttpError("Thiếu device token.", 401);
-    if (!username || !isUsername(username)) {
-      throw new HttpError("Thiếu username hợp lệ để đăng ký thiết bị.", 400);
-    }
-    if (!deviceId) throw new HttpError("Thiếu deviceId.", 400);
-    const user = await getUserByUsername(rest, username);
-    if (!user) throw new HttpError(`Tài khoản @${username} chưa có trong hệ thống.`, 403);
-    if (user.is_locked) {
-      throw new HttpError(`Tài khoản @${username} đã bị khóa.`, 403);
-    }
-    const tokenHash = await sha256Hex(token);
-    const created = await rest.postJson<Device[]>(
-      "engagement_devices",
-      {
-        device_id: deviceId,
-        username,
-        token_hash: tokenHash,
-        label,
-        last_seen_at: nowIso,
-        revoked: false,
-      },
-      "resolution=ignore-duplicates"
+  if (!token || auth.kind !== "device") {
+    throw new HttpError(
+      "Thiết bị chưa đăng ký. Hãy dùng mã mời hoặc gửi yêu cầu duyệt.",
+      403,
+      "DEVICE_ENROLLMENT_REQUIRED"
     );
-    device = firstRow(created);
-    if (!device) {
-      // Trùng (username, device_id) nhưng token khác: thay token mới, thu hồi ngầm token cũ.
-      const existing = await rest.getJson<Device[]>("engagement_devices", {
-        username: `eq.${username}`,
-        device_id: `eq.${deviceId}`,
-        select: "*",
-        limit: "1",
-      });
-      const row = firstRow(existing);
-      if (!row) throw new HttpError("Không đăng ký được thiết bị.", 500);
-      const updated = await rest.patchJson<Device[]>(
-        "engagement_devices",
-        { id: `eq.${row.id}` },
-        { token_hash: tokenHash, label, last_seen_at: nowIso, revoked: false, updated_at: nowIso }
-      );
-      device = firstRow(updated) || row;
-    }
-  } else {
-    // Thiết bị cũ: kiểm tra tài khoản còn hoạt động không (có thể bị khóa sau
-    // khi đăng ký). Đổi tài khoản thì nhánh dưới kiểm tra tài khoản mới.
-    if (!username || username === device.username) {
-      await assertUserActive(rest, device.username);
-    }
-    // Đổi tài khoản TechHub trên cùng máy: trả claim cũ, nhận actor mới.
-    if (username && username !== device.username) {
-      if (!isUsername(username)) throw new HttpError("Username mới không hợp lệ.", 400);
-      const user = await getUserByUsername(rest, username);
-      if (!user) throw new HttpError(`Tài khoản @${username} chưa có trong hệ thống.`, 403);
-      if (user.is_locked) throw new HttpError(`Tài khoản @${username} đã bị khóa.`, 403);
-      // Giải phóng claim treo của actor cũ trên máy này.
-      await rest.rpc("release_actor_claims", {
-        p_actor: device.username,
-        p_device_id: device.device_id,
-        p_now: nowIso,
-      }).catch(() => 0);
-      // Tránh vi phạm unique (username, device_id): xóa dòng trùng cũ nếu có.
-      await rest.del("engagement_devices", {
-        username: `eq.${username}`,
-        device_id: `eq.${device.device_id}`,
-      }).catch(() => null);
-      const updated = await rest.patchJson<Device[]>(
-        "engagement_devices",
-        { id: `eq.${device.id}` },
-        { username, label: label ?? device.label, last_seen_at: nowIso, updated_at: nowIso }
-      );
-      device = firstRow(updated) || { ...device, username };
-      await logEvent(rest, {
-        actor_username: username,
-        event: "account_switched",
-        detail: { device_id: device.device_id },
-      });
-    } else {
-      await rest.patch(
-        "engagement_devices",
-        { id: `eq.${device.id}` },
-        { last_seen_at: nowIso, updated_at: nowIso }
-      );
-      device = { ...device, last_seen_at: nowIso };
-    }
   }
+  const device = auth.device;
+  if (device.enrollment_status !== "approved") {
+    return json({
+      ok: true,
+      serverTime: nowIso,
+      enrollmentStatus: "pending",
+      device: { deviceId: device.device_id, username: device.username },
+    });
+  }
+  if (username && username !== device.username) {
+    throw new HttpError(
+      "Tài khoản TechHub đã đổi. Thiết bị cần đăng ký lại cho tài khoản mới.",
+      409,
+      "DEVICE_USERNAME_MISMATCH"
+    );
+  }
+  await assertUserActive(rest, device.username);
+  await rest.patch(
+    "engagement_devices",
+    { id: `eq.${device.id}` },
+    { label: label ?? device.label, last_seen_at: nowIso, updated_at: nowIso }
+  );
+
+  const requiredVersion = await currentConsentVersion(rest);
+  const consent = await readUserConsent(rest, device.username);
+  const consentActive = !!consent
+    && consent.consent_version === requiredVersion
+    && consent.engagement_enabled
+    && !consent.paused_at;
 
   const preferences = await getOrCreatePreferences(rest, device.username);
-  const queuedTurns = preferences.enabled
+  const queuedTurns = preferences.enabled && consentActive
     ? await queueDueDiscussionTurns(rest, device.username)
     : 0;
-  if (!preferences.enabled) {
+  if (!preferences.enabled || !consentActive) {
     await rest.rpc("release_actor_claims", {
       p_actor: device.username,
       p_device_id: device.device_id,
       p_now: nowIso,
     }).catch(() => 0);
   }
-  const pool = await ensureMutualPoolTasks(rest);
+  const pool = consentActive
+    ? await ensureMutualPoolTasks(rest)
+    : { participants: 0, posts: 0, created: 0, waitingForPeers: false };
   await cancelTasksForInvalidPosts(rest, device.username);
   const pending = await rest.getJson<Array<{ id: number }>>("engagement_tasks", {
     actor_username: `eq.${device.username}`,
@@ -1333,8 +1556,10 @@ async function handleHeartbeat(
     device: {
       deviceId: device.device_id,
       username: device.username,
-      lastSeenAt: device.last_seen_at,
+      lastSeenAt: nowIso,
     },
+    enrollmentStatus: "approved",
+    consent: publicConsent(consent, requiredVersion),
     killSwitch,
     engagementEnabled: await isEngagementEnabled(rest),
     pendingCount: pending?.length ?? 0,
@@ -1558,6 +1783,7 @@ async function cancelTasksForInvalidPosts(rest: Rest, actorUsername: string) {
 
 async function handleClaimTask(rest: Rest, auth: Auth) {
   const { device } = requireDevice(auth);
+  const consent = await requireEngagementConsent(rest, device);
   if (!(await isEngagementEnabled(rest))) {
     return json({ task: null, engagementEnabled: false, killSwitch: false });
   }
@@ -1569,20 +1795,24 @@ async function handleClaimTask(rest: Rest, auth: Auth) {
   if (!preferences.enabled) {
     return json({ task: null, engagementEnabled: true, participationEnabled: false, killSwitch: false });
   }
+  const effectiveDailyCap = Math.min(
+    preferences.daily_contribution_cap,
+    consent.daily_action_limit
+  );
   const completedToday = await rest.getJson<Array<{ id: number }>>("engagement_tasks", {
     actor_username: `eq.${device.username}`,
     status: "eq.succeeded",
     completed_at: `gte.${startOfTodayVnIso()}`,
     select: "id",
-    limit: String(preferences.daily_contribution_cap),
+    limit: String(effectiveDailyCap),
   });
-  if ((completedToday || []).length >= preferences.daily_contribution_cap) {
+  if ((completedToday || []).length >= effectiveDailyCap) {
     return json({
       task: null,
       engagementEnabled: true,
       killSwitch: false,
       dailyCapReached: true,
-      dailyContributionCap: preferences.daily_contribution_cap,
+      dailyContributionCap: effectiveDailyCap,
     });
   }
   const nowIso = new Date().toISOString();
@@ -2230,6 +2460,7 @@ async function handleGetStatus(
 
 async function handleRedeemUltra(rest: Rest, auth: Auth, body: Record<string, unknown>) {
   const { device } = requireDevice(auth);
+  await requireEngagementConsent(rest, device);
   const techhubId = toPositiveInt(body.techhubId);
   if (!techhubId) throw new HttpError("techhubId không hợp lệ.", 400);
   const discussions = clampPreference(
@@ -2264,6 +2495,7 @@ async function handleRedeemUltra(rest: Rest, auth: Auth, body: Record<string, un
 
 async function handleSubmitOwnThreads(rest: Rest, auth: Auth, body: Record<string, unknown>) {
   const { device } = requireDevice(auth);
+  await requireEngagementConsent(rest, device);
   await assertUserActive(rest, device.username);
   const techhubId = toPositiveInt(body.techhubId);
   if (!techhubId) throw new HttpError("techhubId không hợp lệ.", 400);
@@ -2309,13 +2541,27 @@ async function handleSubmitOwnThreads(rest: Rest, auth: Auth, body: Record<strin
   );
   const devices = await rest.getJson<Array<{ username: string }>>("engagement_devices", {
     revoked: "eq.false",
+    enrollment_status: "eq.approved",
     last_seen_at: `gte.${new Date(Date.now() - offlineMinutes * 60 * 1000).toISOString()}`,
     select: "username",
     limit: "1000",
   });
-  const candidateNames = [...new Set((devices || [])
+  let candidateNames = [...new Set((devices || [])
     .map((row) => row.username)
     .filter((name) => name && name !== device.username))];
+  if (candidateNames.length) {
+    const requiredVersion = await currentConsentVersion(rest);
+    const consents = await rest.getJson<Array<{ username: string }>>("user_consents", {
+      username: `in.(${candidateNames.join(",")})`,
+      consent_version: `eq.${requiredVersion}`,
+      engagement_enabled: "eq.true",
+      paused_at: "is.null",
+      select: "username",
+      limit: "1000",
+    });
+    const consented = new Set((consents || []).map((row) => row.username));
+    candidateNames = candidateNames.filter((name) => consented.has(name));
+  }
   const [activeUsers, candidatePosts] = await Promise.all([
     getActiveUsernames(rest),
     candidateNames.length
@@ -2497,6 +2743,7 @@ async function handlePlanCampaign(
   const sinceIso = new Date(Date.now() - 30 * 60 * 1000).toISOString();
   const seen = await rest.getJson<Array<{ username: string }>>("engagement_devices", {
     revoked: "eq.false",
+    enrollment_status: "eq.approved",
     last_seen_at: `gte.${sinceIso}`,
     select: "username",
     limit: "5000",
@@ -2510,7 +2757,21 @@ async function handlePlanCampaign(
         limit: "5000",
       })
     : [];
-  const optedIn = new Set((preferences || []).map((row) => row.username));
+  const requiredConsentVersion = await currentConsentVersion(rest);
+  const consentRows = online.length
+    ? await rest.getJson<Array<{ username: string }>>("user_consents", {
+        username: `in.(${online.join(",")})`,
+        consent_version: `eq.${requiredConsentVersion}`,
+        engagement_enabled: "eq.true",
+        paused_at: "is.null",
+        select: "username",
+        limit: "5000",
+      })
+    : [];
+  const consented = new Set((consentRows || []).map((row) => row.username));
+  const optedIn = new Set(
+    (preferences || []).map((row) => row.username).filter((name) => consented.has(name))
+  );
   const activeUsers = await getActiveUsernames(rest);
   const requested = input.actorUsernames?.length
     ? new Set(input.actorUsernames.map((name) => name.trim()).filter(Boolean))
@@ -3087,7 +3348,7 @@ async function handleImportThreads(
     let prevTurnId: number | null = null;
     let firstTurn: { id: number; turn_index: number; actor_username: string; content: string } | null = null;
     for (const turn of item.turns) {
-      const createdTurns = await rest.postJson<Array<{ id: number }>>("discussion_turns", {
+      const createdTurns: Array<{ id: number }> = await rest.postJson<Array<{ id: number }>>("discussion_turns", {
         thread_id: threadRow.id,
         turn_index: turn.turn,
         actor_key: turn.actorKey,
@@ -3096,7 +3357,7 @@ async function handleImportThreads(
         status: "pending",
         depends_on_turn_id: prevTurnId,
       });
-      const turnRow = firstRow(createdTurns);
+      const turnRow: { id: number } | null = firstRow(createdTurns);
       if (!turnRow) break;
       if (turn.turn === 1) {
         firstTurn = {
@@ -3484,7 +3745,7 @@ async function handleGetOpsStats(rest: Rest, auth: Auth) {
       limit: "100",
     }),
     rest.getJson<Device[]>("engagement_devices", {
-      select: "device_id,username,label,last_seen_at,revoked",
+      select: "device_id,username,label,last_seen_at,revoked,enrollment_status,approved_at,revoked_at",
       order: "last_seen_at.desc",
       limit: "100",
     }),
@@ -3615,7 +3876,14 @@ async function handleRevokeDevice(
   await rest.patch(
     "engagement_devices",
     { device_id: `eq.${deviceId}`, username: `eq.${username}` },
-    { revoked, updated_at: new Date().toISOString() }
+    {
+      revoked,
+      enrollment_status: revoked ? "revoked" : "pending",
+      revoked_at: revoked ? new Date().toISOString() : null,
+      approved_at: revoked ? null : undefined,
+      approved_by: revoked ? null : undefined,
+      updated_at: new Date().toISOString(),
+    }
   );
   if (revoked) {
     await rest.rpc("release_actor_claims", {
@@ -3625,6 +3893,85 @@ async function handleRevokeDevice(
     }).catch(() => 0);
   }
   return json({ ok: true, deviceId, username, revoked });
+}
+
+function randomInvitationCode(): string {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("").toUpperCase();
+  return `${hex.slice(0, 8)}-${hex.slice(8, 16)}-${hex.slice(16)}`;
+}
+
+async function handleCreateEnrollmentInvitation(
+  rest: Rest,
+  auth: Auth,
+  body: Record<string, unknown>
+) {
+  requireAdmin(auth);
+  const username = String(body.username || "").trim();
+  if (!isUsername(username)) throw new HttpError("username không hợp lệ.", 400);
+  const existingUser = await getUserByUsername(rest, username);
+  if (!existingUser) {
+    await rest.postJson("users", {
+      username,
+      full_name: username,
+      is_admin: false,
+      is_moderator: false,
+      is_locked: false,
+      last_update: new Date().toISOString(),
+    }, "resolution=ignore-duplicates");
+  }
+  await assertUserActive(rest, username);
+  const invitationCode = randomInvitationCode();
+  const codeHash = await sha256Hex(invitationCode);
+  const expiresAt = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+  const created = await rest.post("device_enrollment_invitations", {
+    username,
+    code_hash: codeHash,
+    expires_at: expiresAt,
+    created_by: "admin",
+  });
+  if (!created.ok) throw new HttpError("Không tạo được mã mời.", 500, "ENROLLMENT_CREATE_FAILED");
+  return json({ ok: true, username, invitationCode, expiresAt });
+}
+
+async function handleListEnrollmentRequests(rest: Rest, auth: Auth) {
+  requireAdmin(auth);
+  const devices = await rest.getJson<Device[]>("engagement_devices", {
+    enrollment_status: "eq.pending",
+    select: "id,device_id,username,label,enrollment_status,created_at,updated_at",
+    order: "created_at.asc",
+    limit: "200",
+  });
+  return json({ ok: true, devices: devices || [] });
+}
+
+async function handleApproveDevice(
+  rest: Rest,
+  auth: Auth,
+  body: Record<string, unknown>
+) {
+  requireAdmin(auth);
+  const deviceId = String(body.deviceId || "").trim();
+  const username = String(body.username || "").trim();
+  if (!deviceId || !isUsername(username)) {
+    throw new HttpError("Thiếu deviceId/username hợp lệ.", 400);
+  }
+  const rows = await rest.patchJson<Device[]>("engagement_devices", {
+    device_id: `eq.${deviceId}`,
+    username: `eq.${username}`,
+    enrollment_status: "eq.pending",
+    revoked: "eq.false",
+  }, {
+    enrollment_status: "approved",
+    approved_at: new Date().toISOString(),
+    approved_by: "admin",
+    updated_at: new Date().toISOString(),
+  });
+  if (!firstRow(rows)) {
+    throw new HttpError("Không tìm thấy yêu cầu đang chờ.", 404, "ENROLLMENT_NOT_FOUND");
+  }
+  return json({ ok: true, device: firstRow(rows) });
 }
 
 // ---------------------------------------------------------------------------
@@ -3673,6 +4020,18 @@ Deno.serve(async (req) => {
     const auth = await resolveAuth(req, rest, body);
 
     switch (action) {
+      case "requestEnrollment":
+        return await handleRequestEnrollment(rest, auth, body, bearer);
+      case "enrollDevice":
+        return await handleEnrollDevice(rest, body, bearer);
+      case "getIdentityState":
+        return await handleGetIdentityState(rest, auth);
+      case "getAccessContext":
+        return await handleGetAccessContext(rest, auth, body);
+      case "updateConsent":
+        return await handleUpdateConsent(rest, auth, body);
+      case "disconnectDevice":
+        return await handleDisconnectDevice(rest, auth);
       case "heartbeat":
         return await handleHeartbeat(rest, auth, body, bearer);
       case "redeemUltra":
@@ -3734,12 +4093,18 @@ Deno.serve(async (req) => {
         return await handleListBoosts(rest, auth, body);
       case "revokeDevice":
         return await handleRevokeDevice(rest, auth, body);
+      case "createEnrollmentInvitation":
+        return await handleCreateEnrollmentInvitation(rest, auth, body);
+      case "listEnrollmentRequests":
+        return await handleListEnrollmentRequests(rest, auth);
+      case "approveDevice":
+        return await handleApproveDevice(rest, auth, body);
       default:
         return json({ error: `Action không hỗ trợ: ${action}` }, 400);
     }
   } catch (error) {
     if (error instanceof HttpError) {
-      return json({ error: error.message }, error.status);
+      return json({ error: error.message, code: error.code }, error.status);
     }
     console.error("[engagement-api] Unhandled:", error);
     return json(

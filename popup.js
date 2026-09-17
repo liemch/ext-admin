@@ -812,37 +812,15 @@ async function loadAdminGate() {
       return;
     }
 
-    let dbUser = await supabase.findUserByUsername(username);
-    if (!dbUser) {
-      // Profile lưu cục bộ có thể cũ; xác nhận phiên TechHub còn hiệu lực.
-      if (!profileResponse.sessionVerified) {
-        const session = await sendMessage({ action: "checkTechHubSession" });
-        if (!session?.success || !session.ok) {
-          const status = session?.httpStatus ? ` (HTTP ${session.httpStatus})` : "";
-          showError(`Không xác nhận được phiên TechHub${status}. Đăng nhập rồi mở lại extension.`);
-          return;
-        }
-        if (session.username &&
-            String(session.username).toLowerCase() !== String(username).toLowerCase()) {
-          showError("Tài khoản TechHub hiện tại khác profile đã lưu. Đăng nhập lại rồi mở extension.");
-          return;
-        }
-      }
-      // Database mặc định is_admin/is_moderator = false và chặn client tự ghi quyền.
-      try {
-        dbUser = await supabase.createUser({
-          username,
-          fullName: currentUserProfile.display_name || username,
-          email: currentUserProfile.email,
-          avatar: currentUserProfile.avatar,
-        });
-      } catch (error) {
-        // Hai phiên mở đồng thời có thể cùng tạo một username; đọc lại nếu phiên kia đã tạo.
-        dbUser = await supabase.findUserByUsername(username);
-        if (!dbUser) throw error;
-      }
+    const accessResponse = await sendMessage({ action: "getAccessContext" });
+    if (!accessResponse?.success || !accessResponse.account) {
+      throw new Error(accessResponse?.error || "Không xác minh được quyền tài khoản.");
     }
-    if (dbUser.is_locked) {
+    const account = accessResponse.account;
+    if (String(account.username || "").toLowerCase() !== String(username).toLowerCase()) {
+      throw new Error("Quyền thiết bị không khớp tài khoản TechHub hiện tại.");
+    }
+    if (account.isLocked) {
       showDenied(
         `Tài khoản @${username} đã bị khóa khỏi extension. Liên hệ quản trị viên để mở lại.`
       );
@@ -850,8 +828,8 @@ async function loadAdminGate() {
     }
 
     // Admin thấy toàn bộ menu; mod thêm Auto comment và Hẹn xóa bài.
-    isAdminUser = !!dbUser.is_admin;
-    isModeratorUser = !!dbUser.is_moderator;
+    isAdminUser = !!account.isAdmin;
+    isModeratorUser = !!account.isModerator;
     document.body.classList.toggle("not-admin", !isAdminUser);
     document.body.classList.toggle("not-moderator", !isAdminUser && !isModeratorUser);
 

@@ -10,9 +10,11 @@ Mỗi extension đang đăng nhập một tài khoản TechHub sẽ nhận các 
 - Chia đều lượt tương tác, không cho một tài khoản hoặc một bài nhận quá nhiều lượt trong thời gian ngắn.
 - Mỗi thao tác có trạng thái, lịch sử và cơ chế retry; không tạo trùng khi extension hoặc service worker khởi động lại.
 
-### Điều chỉnh sản phẩm — pool do admin điều phối
+### Điều chỉnh sản phẩm — consent user và trần do admin điều phối
 
-- User không tự bật/tắt pool và không sửa số bài, số chuỗi, khoảng lặp hay quota đóng góp. Admin quản lý cấu hình chung và có thể tạm dừng riêng từng user.
+- User chủ động opt-in/pause pool và đặt giới hạn hành động của mình. Admin quản lý
+  trần chung, số bài, số chuỗi, khoảng lặp và có thể tạm dừng riêng từng user.
+  Mức hữu hiệu luôn là mức thấp hơn giữa user và admin; admin không bật consent hộ user.
 - Heartbeat tự bổ sung task theo policy admin chỉ khi có ít nhất 2 user khác nhau:
   còn trong bảng `users`, không bị khóa, đang online/bật tham gia và mỗi user có
   ít nhất một bài `open + verified` trong `posts`. Không lấy bài của người ngoài
@@ -182,7 +184,11 @@ Cung cấp các action:
 - `advanceThread`: hoàn tất một turn và mở turn kế tiếp theo dependency.
 - `planCampaign`, `pauseCampaign`, `cancelCampaign`: chỉ admin.
 
-Client không ghi trực tiếp vào ba bảng điều phối. Bật RLS, thu quyền ghi của `anon`, và cho Edge Function dùng service role. Mỗi máy user cần device token riêng, lưu hash token trên server để khóa hoặc thu hồi từng máy.
+Client không ghi trực tiếp vào các bảng điều phối/consent. Bật RLS, thu quyền ghi
+của `anon`, và cho Edge Function dùng service role. Mỗi máy user cần device token
+riêng; server chỉ lưu hash. Device mới ở trạng thái pending cho tới khi admin duyệt
+hoặc user dùng mã mời một lần gắn username. Đổi tài khoản cần enrollment mới;
+heartbeat không được hồi sinh device revoked.
 
 ## 6. Quy tắc phân công
 
@@ -221,6 +227,8 @@ Chỉ tạo reply task sau khi comment trước thành công và có `techhub_co
 Tách thành hai menu độc lập:
 
 - **Bài viết của tôi** dành cho mọi user: danh sách bài cache, số comment/vote và form chọn bài verified để copy prompt/nhập JSON tạo chuỗi cho bài của chính mình. Danh sách chỉ hiển thị dữ liệu và link mở bài, không đặt nút tắt AI trên từng dòng.
+- **Quyền tham gia và thiết bị** nằm trong Bài viết của tôi: enrollment, opt-in/pause,
+  giới hạn hằng ngày và ngắt kết nối. User không cần thấy token hoặc lease.
 - **AI trả lời**, **AI thảo luận** và **Auto comment** là các menu admin riêng; mỗi menu có bộ chọn bài của chính nó, không dùng lựa chọn chung từ danh sách Bài viết. Auto comment cho chọn một lô tối đa 5 bài của admin, tạo job/lịch riêng cho từng bài và worker xử lý luân phiên.
 - **Tương tác chéo** chỉ admin truy cập để cấu hình, vận hành và xử lý lỗi của pool. User thường không thấy menu này.
 - Khi user có `ultra_credits`, danh sách **Bài viết của tôi** hiện nút “Đẩy Ultra” trên từng bài verified. Sau khi dùng hết lượt, thông báo và toàn bộ nút Ultra được ẩn.

@@ -8,6 +8,7 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
+  let identityState = null;
 
   function esc(value) {
     return String(value ?? "")
@@ -117,6 +118,118 @@
   }
 
   // ---------------------------------------------------------- lớp user
+
+  function renderIdentityState(state) {
+    identityState = state || null;
+    const status = state?.enrollmentStatus || "not_registered";
+    const labels = {
+      approved: "Đã duyệt",
+      pending: "Đang chờ admin duyệt",
+      revoked: "Đã bị thu hồi",
+      not_registered: "Chưa đăng ký",
+    };
+    if ($("identityEnrollmentStatus")) {
+      $("identityEnrollmentStatus").textContent = labels[status] || status;
+    }
+    const approved = status === "approved";
+    const consent = state?.consent || {};
+    if ($("engagementConsentToggle")) {
+      $("engagementConsentToggle").disabled = !approved;
+      $("engagementConsentToggle").checked = approved && consent.engagement_enabled === true && !consent.paused_at;
+    }
+    if ($("engagementDailyActionLimit")) {
+      $("engagementDailyActionLimit").value = consent.daily_action_limit || 2;
+      $("engagementDailyActionLimit").disabled = !approved;
+    }
+    if ($("disconnectEngagementDeviceBtn")) {
+      $("disconnectEngagementDeviceBtn").disabled = !approved;
+    }
+  }
+
+  async function loadIdentityState() {
+    try {
+      const response = await sendMessage({ action: "engagementGetIdentityState" });
+      if (!response?.success) {
+        if (response?.code === "DEVICE_ENROLLMENT_REQUIRED") {
+          renderIdentityState({ enrollmentStatus: "not_registered", consent: null });
+          return null;
+        }
+        throw new Error(response?.error || "Không đọc được trạng thái thiết bị.");
+      }
+      renderIdentityState(response);
+      return response;
+    } catch (error) {
+      renderIdentityState({ enrollmentStatus: "not_registered", consent: null });
+      showAdminMsg($("identityConsentMessage"), `Lỗi: ${error.message}`, "error");
+      return null;
+    }
+  }
+
+  async function requestEnrollment() {
+    try {
+      const response = await sendMessage({ action: "engagementRequestEnrollment" });
+      if (!response?.success) throw new Error(response?.error || "Không gửi được yêu cầu.");
+      showAdminMsg($("identityConsentMessage"), "Đã gửi yêu cầu. Admin cần duyệt thiết bị này.", "success");
+      await loadIdentityState();
+    } catch (error) {
+      showAdminMsg($("identityConsentMessage"), `Lỗi: ${error.message}`, "error");
+    }
+  }
+
+  async function enrollWithInvitation() {
+    const invitationCode = String($("invitationCodeInput")?.value || "").trim();
+    if (!invitationCode) {
+      showAdminMsg($("identityConsentMessage"), "Hãy nhập mã mời.", "error");
+      return;
+    }
+    try {
+      const response = await sendMessage({ action: "engagementEnrollDevice", invitationCode });
+      if (!response?.success) throw new Error(response?.error || "Đăng ký thất bại.");
+      if ($("invitationCodeInput")) $("invitationCodeInput").value = "";
+      showAdminMsg($("identityConsentMessage"), "Thiết bị đã được duyệt. Bạn có thể bật tham gia.", "success");
+      await loadIdentityState();
+    } catch (error) {
+      showAdminMsg($("identityConsentMessage"), `Lỗi: ${error.message}`, "error");
+    }
+  }
+
+  async function updateOwnConsent() {
+    const checkbox = $("engagementConsentToggle");
+    if (!checkbox || !identityState?.consent) return;
+    checkbox.disabled = true;
+    try {
+      const response = await sendMessage({
+        action: "setEngagementEnabled",
+        consentVersion: identityState.consent.consent_version,
+        enabled: checkbox.checked,
+        dailyActionLimit: Number($("engagementDailyActionLimit")?.value) || 2,
+      });
+      if (!response?.success) throw new Error(response?.error || "Không cập nhật được consent.");
+      renderIdentityState({ ...identityState, consent: response.consent });
+      showAdminMsg(
+        $("identityConsentMessage"),
+        checkbox.checked ? "Bạn đã bật tham gia mạng lưới." : "Đã dừng việc mới ngay.",
+        checkbox.checked ? "success" : "muted"
+      );
+    } catch (error) {
+      checkbox.checked = !checkbox.checked;
+      showAdminMsg($("identityConsentMessage"), `Lỗi: ${error.message}`, "error");
+    } finally {
+      checkbox.disabled = identityState?.enrollmentStatus !== "approved";
+    }
+  }
+
+  async function disconnectOwnDevice() {
+    if (!window.confirm("Ngắt kết nối thiết bị này? Bạn sẽ cần đăng ký lại để tham gia.")) return;
+    try {
+      const response = await sendMessage({ action: "engagementDisconnectDevice" });
+      if (!response?.success) throw new Error(response?.error || "Không ngắt kết nối được.");
+      renderIdentityState({ enrollmentStatus: "not_registered", consent: null });
+      showAdminMsg($("identityConsentMessage"), "Đã ngắt kết nối và tắt mọi quyền tự động.", "success");
+    } catch (error) {
+      showAdminMsg($("identityConsentMessage"), `Lỗi: ${error.message}`, "error");
+    }
+  }
 
   async function loadEngagementState() {
     const msgEl = $("engagementUserMessage");
@@ -915,7 +1028,7 @@
         <div class="schedule-item">
           <div class="schedule-main">
             <strong>@${esc(device.username)}</strong>
-            ${device.revoked ? statusBadge("blocked") : statusBadge("active")}
+            ${statusBadge(device.revoked ? "blocked" : (device.enrollment_status || "active"))}
             <span class="schedule-meta">${esc(device.label || "thiết bị")} · ${esc(String(device.device_id).slice(0, 8))}… · thấy ${esc(fmtAgo(device.last_seen_at) || "chưa bao giờ")}</span>
           </div>
           <div class="schedule-actions">
@@ -927,6 +1040,65 @@
       `).join("");
     }
     list.innerHTML = html;
+  }
+
+  async function refreshEnrollmentRequests() {
+    const list = $("pendingEnrollmentList");
+    if (!list) return;
+    try {
+      const response = await sendMessage({ action: "engagementListEnrollmentRequests" });
+      if (!response?.success) throw new Error(response?.error || "Không tải được yêu cầu.");
+      const devices = response.devices || [];
+      list.innerHTML = devices.length
+        ? devices.map((device) => `
+          <div class="schedule-item">
+            <div class="schedule-main">
+              <strong>@${esc(device.username)}</strong> ${statusBadge("pending")}
+              <span class="schedule-meta">${esc(device.label || "thiết bị")} · ${esc(String(device.device_id).slice(0, 12))}…</span>
+            </div>
+            <div class="schedule-actions">
+              <button class="mini-btn" data-enrollment-approve="${esc(device.device_id)}|${esc(device.username)}" type="button">Duyệt</button>
+            </div>
+          </div>
+        `).join("")
+        : '<div class="empty">Chưa có yêu cầu chờ duyệt.</div>';
+    } catch (error) {
+      list.innerHTML = `<div class="empty">Lỗi: ${esc(error.message)}</div>`;
+    }
+  }
+
+  async function createEnrollmentInvitation() {
+    const username = String($("enrollmentInviteUsername")?.value || "").trim();
+    if (!username) {
+      showAdminMsg($("enrollmentInviteOutput"), "Hãy nhập username.", "error");
+      return;
+    }
+    try {
+      const response = await sendMessage({ action: "engagementCreateEnrollmentInvitation", username });
+      if (!response?.success) throw new Error(response?.error || "Không tạo được mã mời.");
+      showAdminMsg(
+        $("enrollmentInviteOutput"),
+        `Mã cho @${response.username}: ${response.invitationCode} · hết hạn ${fmtTime(response.expiresAt)}`,
+        "success"
+      );
+    } catch (error) {
+      showAdminMsg($("enrollmentInviteOutput"), `Lỗi: ${error.message}`, "error");
+    }
+  }
+
+  async function approveEnrollment(deviceId, username) {
+    try {
+      const response = await sendMessage({
+        action: "engagementApproveDevice",
+        deviceId,
+        username,
+      });
+      if (!response?.success) throw new Error(response?.error || "Không duyệt được thiết bị.");
+      showAdminMsg($("opsMessage"), `Đã duyệt thiết bị của @${username}.`, "success");
+      await Promise.all([refreshEnrollmentRequests(), refreshOps()]);
+    } catch (error) {
+      showAdminMsg($("opsMessage"), `Lỗi: ${error.message}`, "error");
+    }
   }
 
   async function toggleKillSwitch() {
@@ -985,6 +1157,21 @@
   // ---------------------------------------------------------- init
 
   function bindEvents() {
+    if ($("requestEnrollmentBtn")) {
+      $("requestEnrollmentBtn").addEventListener("click", requestEnrollment);
+    }
+    if ($("enrollDeviceBtn")) {
+      $("enrollDeviceBtn").addEventListener("click", enrollWithInvitation);
+    }
+    if ($("engagementConsentToggle")) {
+      $("engagementConsentToggle").addEventListener("change", updateOwnConsent);
+    }
+    if ($("engagementDailyActionLimit")) {
+      $("engagementDailyActionLimit").addEventListener("change", updateOwnConsent);
+    }
+    if ($("disconnectEngagementDeviceBtn")) {
+      $("disconnectEngagementDeviceBtn").addEventListener("click", disconnectOwnDevice);
+    }
     if ($("myPostsList")) {
       $("myPostsList").addEventListener("click", (event) => {
         const button = event.target.closest("[data-ultra-post-id]");
@@ -1094,7 +1281,10 @@
       $("refreshTasksBtn").addEventListener("click", refreshTasks);
     }
     if ($("refreshOpsBtn")) {
-      $("refreshOpsBtn").addEventListener("click", refreshOps);
+      $("refreshOpsBtn").addEventListener("click", () => {
+        refreshOps();
+        refreshEnrollmentRequests();
+      });
     }
     if ($("killSwitchToggle")) {
       $("killSwitchToggle").addEventListener("change", toggleKillSwitch);
@@ -1131,6 +1321,17 @@
         toggleDevice(deviceId, username, revoke === "1");
       });
     }
+    if ($("createEnrollmentInviteBtn")) {
+      $("createEnrollmentInviteBtn").addEventListener("click", createEnrollmentInvitation);
+    }
+    if ($("pendingEnrollmentList")) {
+      $("pendingEnrollmentList").addEventListener("click", (event) => {
+        const button = event.target.closest("[data-enrollment-approve]");
+        if (!button) return;
+        const [deviceId, username] = String(button.dataset.enrollmentApprove).split("|");
+        approveEnrollment(deviceId, username);
+      });
+    }
     // Cập nhật trạng thái khi background broadcast tiến trình tương tác.
     try {
       chrome.runtime.onMessage.addListener((message) => {
@@ -1148,6 +1349,7 @@
     // Kiểm tra phiên + tải trạng thái ngay khi mở panel (không chờ init chính
     // xong mới kiểm tra phiên, nhưng phần admin vẫn cần chờ phân quyền).
     await checkSession(false);
+    await loadIdentityState();
     await loadEngagementState();
     await waitForInit();
     if (isAdminView()) {
@@ -1157,6 +1359,7 @@
         loadPoolSettings().catch((error) => {
           showAdminMsg($("engSettingsMessage"), `Lỗi tải điều phối: ${error.message}`, "error");
         }),
+        refreshEnrollmentRequests().catch(() => {}),
       ]);
     }
   }

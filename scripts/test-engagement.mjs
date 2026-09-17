@@ -88,9 +88,11 @@ section("engagement-client.js — cache device");
   await client.ensureEngagementDevice("alice");
   assert(storageReads === 1, "cache device tránh đọc storage lặp lại");
   assert(storageWrites === 0, "heartbeat không ghi storage khi device không đổi");
-  await client.ensureEngagementDevice("bob");
+  const switchedDevice = await client.ensureEngagementDevice("bob");
   await client.ensureEngagementDevice("bob");
   assert(storageWrites === 1, "đổi username chỉ ghi device đúng một lần");
+  assert(switchedDevice.deviceId !== storedDevice.deviceId, "đổi username tạo enrollment mới thay vì rebind device cũ");
+  assert(switchedDevice.token !== storedDevice.token, "đổi username xoay device token local");
 }
 
 // ---------------------------------------------------------------- 1. discussion-import
@@ -392,6 +394,63 @@ assert(
 assert(edge.includes("RATE_LIMIT_MAX"), "edge function có giới hạn tốc độ");
 assert(edge.includes("assertUserActive"), "edge function chặn tài khoản bị khóa");
 
+// ------------------------------------------ 6a. identity, enrollment + consent
+section("R1 identity, enrollment và consent");
+
+const identityMigration = read("supabase/migrations/20260917020158_identity_consent_enrollment.sql");
+for (const table of ["device_enrollment_invitations", "user_consents", "user_consent_events"]) {
+  assert(identityMigration.includes(`CREATE TABLE IF NOT EXISTS public.${table}`), `R1 tạo bảng ${table}`);
+  assert(identityMigration.includes(`ALTER TABLE public.${table} ENABLE ROW LEVEL SECURITY`), `R1 bật RLS cho ${table}`);
+}
+assert(identityMigration.includes("consume_device_enrollment_invitation"), "R1 có RPC consume mã mời atomic");
+assert(identityMigration.includes("CREATE OR REPLACE FUNCTION public.update_user_consent"), "consent và audit được cập nhật atomic bằng RPC");
+assert(identityMigration.includes("FOR UPDATE"), "mã mời được khóa trước khi consume");
+assert(identityMigration.includes("consumed_at IS NOT NULL"), "mã mời đã dùng bị chặn replay");
+assert(identityMigration.includes("v_existing.enrollment_status = 'revoked'"), "RPC không hồi sinh device revoked");
+assert(
+  identityMigration.includes("REVOKE ALL ON FUNCTION public.consume_device_enrollment_invitation") &&
+    identityMigration.includes("TO service_role"),
+  "RPC enrollment chỉ dành cho service role"
+);
+assert(identityMigration.includes("engagement_enabled BOOLEAN NOT NULL DEFAULT FALSE"), "consent engagement mặc định tắt");
+assert(identityMigration.includes("auto_publish_enabled BOOLEAN NOT NULL DEFAULT FALSE"), "consent auto publish mặc định tắt");
+assert(
+  identityMigration.includes('DROP POLICY IF EXISTS "ext_users_all" ON public.users') &&
+    identityMigration.includes("REVOKE ALL ON public.users FROM anon, authenticated"),
+  "R1 chặn client đọc/ghi trực tiếp users của tài khoản khác"
+);
+assert(edge.includes('case "requestEnrollment"'), "API hỗ trợ gửi yêu cầu enrollment pending");
+assert(edge.includes('case "enrollDevice"'), "API hỗ trợ mã mời một lần");
+assert(edge.includes('case "updateConsent"'), "API cho chính device cập nhật consent");
+assert(edge.includes('case "disconnectDevice"'), "API cho user ngắt kết nối device");
+assert(edge.includes("DEVICE_USERNAME_MISMATCH"), "heartbeat chặn token tự rebind username");
+assert(edge.includes("requireEngagementConsent(rest, device)"), "claim/submit chịu consent gate server-side");
+assert(edge.includes('enrollment_status: "eq.approved"'), "pool chỉ lấy device đã approved");
+assert(clientSrc.includes('callEngagementApi("requestEnrollment"'), "client có request enrollment");
+assert(clientSrc.includes('callEngagementApi("updateConsent"'), "client có update consent");
+assert(background.includes('request.action === "engagementDisconnectDevice"'), "background có action disconnect");
+for (const id of [
+  "identityEnrollmentStatus",
+  "requestEnrollmentBtn",
+  "invitationCodeInput",
+  "enrollDeviceBtn",
+  "engagementConsentToggle",
+  "engagementDailyActionLimit",
+  "disconnectEngagementDeviceBtn",
+  "enrollmentInviteUsername",
+  "createEnrollmentInviteBtn",
+  "pendingEnrollmentList",
+]) {
+  assert(html.includes(`id="${id}"`), `R1 UI có ${id}`);
+}
+assert(ui.includes("loadIdentityState"), "UI tải enrollment/consent khi mở extension");
+assert(ui.includes("consentVersion: identityState.consent.consent_version"), "UI gửi đúng consent version");
+assert(edge.includes('case "createEnrollmentInvitation"'), "admin có action tạo mã mời");
+assert(edge.includes('case "approveDevice"'), "admin có action duyệt device pending");
+assert(edge.includes('case "getAccessContext"'), "role/lock được đọc qua ownership API");
+assert(background.includes('request.action === "getAccessContext"'), "popup lấy role qua background/API");
+assert(!popup.includes("supabase.findUserByUsername(username)"), "popup không đọc trực tiếp users để phân quyền");
+
 // ------------------------------------------ 6b. moderator role + user grants
 section("Moderator role và quyền đăng ký user");
 
@@ -418,7 +477,7 @@ assert(
   "admin-api hỗ trợ cấp/thu quyền moderator"
 );
 assert(
-  background.includes("user.is_moderator && MODERATOR_ACTIONS.has(action)"),
+  background.includes("user.isModerator && MODERATOR_ACTIONS.has(action)"),
   "background kiểm tra moderator theo allowlist action"
 );
 assert(

@@ -262,6 +262,52 @@
               <div class="card">
                 <div class="card-head">
                   <div>
+                    <h2>Quyền tham gia và thiết bị</h2>
+                    <p>Bạn quyết định tài khoản này có tham gia mạng lưới hay không</p>
+                  </div>
+                </div>
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label>Trạng thái thiết bị</label>
+                      <span id="identityEnrollmentStatus">Đang kiểm tra…</span>
+                    </div>
+                    <button id="requestEnrollmentBtn" class="btn btn-secondary" type="button">Gửi yêu cầu duyệt</button>
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="invitationCodeInput">Mã mời một lần</label>
+                      <span>Mã do admin cấp, hết hạn sau 24 giờ</span>
+                    </div>
+                    <div class="inline-inputs">
+                      <input id="invitationCodeInput" type="text" autocomplete="off" spellcheck="false" placeholder="XXXXXXXX-XXXXXXXX-XXXXXXXX" />
+                      <button id="enrollDeviceBtn" class="btn btn-secondary" type="button">Đăng ký</button>
+                    </div>
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="engagementConsentToggle">Tham gia mạng lưới thảo luận</label>
+                      <span>Có thể tạm dừng ngay; mặc định tắt trên thiết bị mới</span>
+                    </div>
+                    <input id="engagementConsentToggle" class="switch" type="checkbox" disabled />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="engagementDailyActionLimit">Giới hạn hành động mỗi ngày</label>
+                      <span>Server dùng mức thấp hơn giữa giới hạn của bạn và admin</span>
+                    </div>
+                    <input id="engagementDailyActionLimit" type="number" min="1" max="100" value="2" />
+                  </div>
+                  <div class="card-actions">
+                    <button id="disconnectEngagementDeviceBtn" class="btn btn-secondary" type="button">Ngắt kết nối thiết bị</button>
+                  </div>
+                  <div id="identityConsentMessage" class="msg hidden"></div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <div>
                     <h2>Tạo thảo luận cho bài của tôi</h2>
                     <p>Chọn bài, copy gợi ý sang ChatGPT/Gemini rồi dán JSON để tạo chuỗi trong pool</p>
                   </div>
@@ -805,6 +851,23 @@
                   </div>
                 </div>
                 <div id="opsMessage" class="msg hidden"></div>
+                <div class="list-label">Đăng ký thiết bị</div>
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="enrollmentInviteUsername">Tạo mã mời cho username</label>
+                      <span>Mã dùng một lần và hết hạn sau 24 giờ</span>
+                    </div>
+                    <div class="inline-inputs">
+                      <input id="enrollmentInviteUsername" type="text" placeholder="username" spellcheck="false" />
+                      <button id="createEnrollmentInviteBtn" class="btn btn-secondary" type="button">Tạo mã</button>
+                    </div>
+                  </div>
+                  <div id="enrollmentInviteOutput" class="msg hidden"></div>
+                </div>
+                <div id="pendingEnrollmentList" class="schedule-list">
+                  <div class="empty">Chưa có yêu cầu chờ duyệt.</div>
+                </div>
                 <div class="list-label">Thiết bị đã đăng ký</div>
                 <div id="devicesList" class="schedule-list">
                   <div class="empty">Chưa có dữ liệu.</div>

@@ -12,7 +12,8 @@
 #       013 (đồng bộ bài viết — hints/feed/reconcile),
 #       20260911100410 (hardening quyền ghi + global leader lease + RPC atomic),
 #       014 (preferences + pool tương tác tự cân bằng),
-#       015 (mở rộng quota chuỗi), 016 (moderator + khóa cột đặc quyền)
+#       015 (mở rộng quota chuỗi), 016 (moderator + khóa cột đặc quyền),
+#       20260917020158 (device enrollment + consent versioned)
 #    6. Test 4 function bằng curl
 #    7. In sẵn 2 khối config.js: một cho máy admin, một cho user thường
 #
@@ -130,6 +131,8 @@ step "Áp migration 015 (mở rộng quota chuỗi thảo luận)"
 apply_migration "supabase/migrations/015_expand_discussion_thread_quota.sql"
 step "Áp migration 016 (moderator + khóa cột đặc quyền users)"
 apply_migration "supabase/migrations/016_add_moderator_role.sql"
+step "Áp migration identity/consent (device enrollment + user opt-in)"
+apply_migration "supabase/migrations/20260917020158_identity_consent_enrollment.sql"
 
 # ---------- 8. Test ----------
 BASE="https://${PROJECT_REF}.supabase.co/functions/v1"
@@ -203,8 +206,8 @@ const SUPABASE_CONFIG = {
 
 const ADMIN_API_CONFIG = { url: "", token: "" };
 
-// Hàng đợi tương tác chéo — máy user chỉ cần url (thiết bị tự đăng ký,
-// server lưu hash token để thu hồi; KHÔNG gửi adminToken cho user):
+// Hàng đợi tương tác chéo — máy user chỉ cần url. Thiết bị mới cần mã mời
+// hoặc admin duyệt; server chỉ lưu hash token. KHÔNG gửi adminToken cho user:
 const ENGAGEMENT_API_CONFIG = {
   url: "$BASE/engagement-api",
   adminToken: "",

@@ -25,6 +25,8 @@
 | `reply_drafts` | Draft AI gen trước khi reply |
 | `discussion_drafts` | Draft AI gen cho comment thảo luận độc lập |
 | `engagement_devices` | Máy đã đăng ký (hash device token, `revoked` để thu hồi) |
+| `device_enrollment_invitations` | Mã mời một lần, gắn username và hết hạn sau 24 giờ |
+| `user_consents` / `user_consent_events` | Consent versioned hiện tại và audit thay đổi/pause/disconnect |
 | `engagement_campaigns` | Campaign vote/comment + phạm vi bài + quota |
 | `engagement_tasks` | Task hàng đợi (lease, `idempotency_key`, `session_required`) |
 | `engagement_events` | Nhật ký claim/succeed/fail/retry (dọn định kỳ) |
@@ -49,12 +51,13 @@ Cột bổ sung trên `posts` (migration 013): `verification_status` (unverified
 | `post-sync-api` | Mỗi user tự đồng bộ bài TechHub của mình vào `posts`, đồng thời dọn bài đã xóa sau một lượt quét đầy đủ; giữ API leader cũ để tương thích/bảo trì | Device token cho `saveMyScannedPosts` + `reconcileMyScannedPosts` + `listNewPosts`, khóa theo username; `ADMIN_TOKEN` cho action quản trị cũ |
 
 Deploy + set secrets + áp migration 011 → 016 và hardening post-sync một phát:
-`bash scripts/setup-supabase.sh`.
+`bash scripts/setup-supabase.sh`. Không dùng lệnh này để deploy một thay đổi nhỏ
+trên project đang hoạt động vì script sinh lại token.
 
 ## Setup project mới
 
 1. Tạo project Supabase → lấy URL + anon key
-2. SQL Editor → Run `migrations/001` → `002` → (`003` nếu upgrade) → `004_ai_reply_drafts.sql` → `005_ai_discussion.sql` → `006_root_self_discussion.sql` → `007_posts_medals_count.sql` → `008_discussion_draft_queue.sql` → `009_reply_draft_queue.sql` → `010` (community) → `011_restrict_users_writes.sql` → `012_cross_user_engagement.sql` → `013_post_sync.sql` → `20260911100410_post_sync_hardening.sql` → `014_engagement_user_pool.sql` → `015_expand_discussion_thread_quota.sql` → `016_add_moderator_role.sql`
+2. SQL Editor → Run `migrations/001` → `002` → (`003` nếu upgrade) → `004_ai_reply_drafts.sql` → `005_ai_discussion.sql` → `006_root_self_discussion.sql` → `007_posts_medals_count.sql` → `008_discussion_draft_queue.sql` → `009_reply_draft_queue.sql` → `010` (community) → `011_restrict_users_writes.sql` → `012_cross_user_engagement.sql` → `013_post_sync.sql` → `20260911100410_post_sync_hardening.sql` → `014_engagement_user_pool.sql` → `015_expand_discussion_thread_quota.sql` → `016_add_moderator_role.sql` → `20260917020158_identity_consent_enrollment.sql`
 3. Sửa `YOUR_TECHHUB_USERNAME` trong `002` → Run
 4. Điền `NVIDIA_CONFIG.apiKey` trong `config.js` (lấy tại https://build.nvidia.com/settings/api-keys)
 5. Reload extension

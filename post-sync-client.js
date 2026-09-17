@@ -185,6 +185,9 @@
   function getUserSyncStatus(username) {
     return postSyncAdmin("getUserSyncStatus", { username });
   }
+  function listActiveUsernames() {
+    return postSyncAdmin("listActiveUsernames", {});
+  }
 
   // User action: danh sách bài đã verify (có lọc theo username nếu có).
   function getMySyncedPosts({ limit = 50, offset = 0, username = null, days = 30 } = {}) {
@@ -212,6 +215,7 @@
     listPostHints,
     listNewPosts,
     getUserSyncStatus,
+    listActiveUsernames,
     getMySyncedPosts,
     listJobs,
     listRuns,
