@@ -403,6 +403,69 @@
     }
   }
 
+  function myDiscussionDraftKey() {
+    const username = identityState?.username;
+    const techhubId = Number($("myDiscussionPostId")?.value);
+    return username && Number.isInteger(techhubId) && techhubId > 0
+      ? `my-angel:discussion-draft:${username}:${techhubId}`
+      : null;
+  }
+
+  function saveMyDiscussionDraft() {
+    const key = myDiscussionDraftKey();
+    if (!key) return;
+    try {
+      localStorage.setItem(key, String($("myDiscussionJsonInput")?.value || ""));
+    } catch (_) {
+      showAdminMsg($("myDiscussionMessage"), "Không lưu được bản nháp trên thiết bị này.", "error");
+    }
+  }
+
+  function restoreMyDiscussionDraft() {
+    const key = myDiscussionDraftKey();
+    if (!key || !$("myDiscussionJsonInput")) return;
+    try {
+      $("myDiscussionJsonInput").value = localStorage.getItem(key) || "";
+    } catch (_) {
+      $("myDiscussionJsonInput").value = "";
+    }
+    if ($("myDiscussionPreview")) $("myDiscussionPreview").innerHTML = "";
+  }
+
+  function previewMyDiscussion() {
+    const list = $("myDiscussionPreview");
+    if (!list || !globalThis.DiscussionImport) return null;
+    const checked = globalThis.DiscussionImport.validateThreads(
+      String($("myDiscussionJsonInput")?.value || "")
+    );
+    const errors = checked.errors.map((item) =>
+      `<div class="msg error">${esc(item.error)}</div>`
+    ).join("");
+    const cards = checked.threads.map((thread, index) => `
+      <div class="thread-card">
+        <div class="thread-head"><strong>Chuỗi ${index + 1}: ${esc(thread.name)}</strong></div>
+        ${thread.turns.map((turn, turnIndex) => `
+          <div class="turn-row">
+            <span class="turn-actor turn-${turn.actor}">${turn.actor}</span>
+            <div class="turn-content">
+              <span class="turn-meta">${turn.actor === "A" ? "Thành viên" : "Tác giả"} · lượt ${turnIndex + 1}</span>
+              <span>${esc(turn.content)}</span>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+    `).join("");
+    list.innerHTML = errors + cards;
+    showAdminMsg(
+      $("myDiscussionMessage"),
+      checked.errors.length
+        ? `${checked.errors.length} lỗi; sửa JSON rồi xem trước lại.`
+        : `${checked.threads.length} chuỗi, tối đa ${checked.threads.reduce((sum, thread) => sum + thread.turns.length, 0)} comment/reply; phụ thuộc thành viên online.`,
+      checked.errors.length ? "error" : "muted"
+    );
+    return checked;
+  }
+
   async function submitMyDiscussion() {
     const techhubId = Number($("myDiscussionPostId")?.value);
     const raw = String($("myDiscussionJsonInput")?.value || "");
@@ -411,7 +474,7 @@
     try {
       if (!Number.isInteger(techhubId) || techhubId <= 0) throw new Error("Chọn bài của bạn.");
       if (!globalThis.DiscussionImport) throw new Error("Thiếu bộ kiểm tra JSON.");
-      const checked = globalThis.DiscussionImport.validateThreads(raw);
+      const checked = previewMyDiscussion();
       if (checked.errors.length || !checked.threads.length) {
         throw new Error(checked.errors[0]?.error || "JSON chưa có chuỗi hợp lệ.");
       }
@@ -428,6 +491,11 @@
         "success"
       );
       if ($("myDiscussionJsonInput")) $("myDiscussionJsonInput").value = "";
+      const key = myDiscussionDraftKey();
+      if (key) {
+        try { localStorage.removeItem(key); } catch (_) { /* Draft stays on this device. */ }
+      }
+      if ($("myDiscussionPreview")) $("myDiscussionPreview").innerHTML = "";
       await loadEngagementState();
     } catch (error) {
       showAdminMsg($("myDiscussionMessage"), `Lỗi: ${error.message}`, "error");
@@ -1175,6 +1243,18 @@
     }
     if ($("copyMyDiscussionPromptBtn")) {
       $("copyMyDiscussionPromptBtn").addEventListener("click", copyMyDiscussionPrompt);
+    }
+    if ($("myDiscussionPostId")) {
+      $("myDiscussionPostId").addEventListener("change", restoreMyDiscussionDraft);
+    }
+    if ($("myDiscussionJsonInput")) {
+      $("myDiscussionJsonInput").addEventListener("input", () => {
+        saveMyDiscussionDraft();
+        if ($("myDiscussionPreview")) $("myDiscussionPreview").innerHTML = "";
+      });
+    }
+    if ($("previewMyDiscussionBtn")) {
+      $("previewMyDiscussionBtn").addEventListener("click", previewMyDiscussion);
     }
     if ($("submitMyDiscussionBtn")) {
       $("submitMyDiscussionBtn").addEventListener("click", submitMyDiscussion);

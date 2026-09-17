@@ -333,6 +333,10 @@
                     placeholder='Dán JSON từ ChatGPT/Gemini tại đây. Mỗi chuỗi gồm 2 hoặc 3 lượt A/B.'
                   ></textarea>
                   <div class="card-actions">
+                    <button id="previewMyDiscussionBtn" class="btn btn-secondary" type="button">Xem trước hội thoại</button>
+                  </div>
+                  <div id="myDiscussionPreview" class="thread-preview-list" aria-live="polite"></div>
+                  <div class="card-actions">
                     <button id="submitMyDiscussionBtn" class="btn btn-primary" type="button">Tạo thảo luận</button>
                   </div>
                   <div id="myDiscussionMessage" class="msg hidden"></div>
