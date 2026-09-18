@@ -5,8 +5,11 @@ CREATE TABLE public.discussion_script_assignments (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   draft_id BIGINT NOT NULL REFERENCES public.discussion_script_drafts(id) ON DELETE CASCADE,
   revision_id BIGINT NOT NULL REFERENCES public.discussion_script_revisions(id) ON DELETE CASCADE,
+  techhub_id BIGINT NOT NULL REFERENCES public.posts(techhub_id) ON DELETE CASCADE,
   author_username VARCHAR(100) NOT NULL REFERENCES public.users(username),
   visitor_username VARCHAR(100) NOT NULL REFERENCES public.users(username),
+  author_reserved_actions INTEGER NOT NULL CHECK (author_reserved_actions > 0),
+  visitor_reserved_actions INTEGER NOT NULL CHECK (visitor_reserved_actions > 0),
   status TEXT NOT NULL DEFAULT 'awaiting_approval'
     CHECK (status IN ('awaiting_approval','ready','running','completed','rejected','expired','blocked','cancelled')),
   expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '24 hours'),
@@ -52,6 +55,9 @@ CREATE TABLE public.engagement_task_receipts (
 
 CREATE INDEX idx_script_assignments_user_status
   ON public.discussion_script_assignments(visitor_username, status, expires_at);
+CREATE UNIQUE INDEX uq_script_assignment_active_pair_post
+  ON public.discussion_script_assignments(techhub_id, author_username, visitor_username)
+  WHERE status IN ('awaiting_approval','ready','running');
 CREATE INDEX idx_script_approvals_user_decision
   ON public.discussion_script_approvals(username, decision, created_at DESC);
 

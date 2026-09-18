@@ -2788,7 +2788,7 @@ async function handleGetOwnDiscussionDraft(rest: Rest, auth: Auth, body: Record<
 
 async function handleSubmitDiscussionDraft(rest: Rest, auth: Auth, body: Record<string, unknown>) {
   const { device } = requireDevice(auth);
-  await requireEngagementConsent(rest, device);
+  const authorConsent = await requireEngagementConsent(rest, device);
   const techhubId = toPositiveInt(body.techhubId);
   if (!techhubId) throw new HttpError("ID bài không hợp lệ.", 400, "DRAFT_INVALID");
   const drafts = await rest.getJson<Array<{ id: number; current_revision: number }>>(
@@ -2798,13 +2798,37 @@ async function handleSubmitDiscussionDraft(rest: Rest, auth: Auth, body: Record<
   );
   const draft = firstRow(drafts);
   if (!draft?.current_revision) throw new HttpError("Chưa có draft để gửi duyệt.", 404, "DRAFT_NOT_FOUND");
-  const revisions = await rest.getJson<Array<{ id: number; content_hash: string }>>(
+  const revisions = await rest.getJson<Array<{ id: number; content_hash: string; threads: Array<{ turns?: Array<{ actor?: string }> }> }>>(
     "discussion_script_revisions",
     { draft_id: `eq.${draft.id}`, revision_number: `eq.${draft.current_revision}`,
-      select: "id,content_hash", limit: "1" }
+      select: "id,content_hash,threads", limit: "1" }
   );
   const revision = firstRow(revisions);
   if (!revision) throw new HttpError("Không tìm thấy revision hiện tại.", 404, "DRAFT_NOT_FOUND");
+  const authorReserved = (revision.threads || []).reduce((sum, thread) =>
+    sum + (thread.turns || []).filter((turn) => String(turn.actor).toUpperCase() === "B").length, 0);
+  const visitorReserved = (revision.threads || []).reduce((sum, thread) =>
+    sum + (thread.turns || []).filter((turn) => String(turn.actor).toUpperCase() === "A").length, 0);
+  if (!authorReserved || !visitorReserved) throw new HttpError("Revision thiếu lượt A/B hợp lệ.", 400, "DRAFT_INVALID");
+  const authorPref = await getOrCreatePreferences(rest, device.username);
+  const [authorTasks, authorAssignments] = await Promise.all([
+    rest.getJson<Array<{ id: number }>>("engagement_tasks", {
+      actor_username: `eq.${device.username}`, created_at: `gte.${startOfTodayVnIso()}`,
+      status: "neq.cancelled", select: "id", limit: "1000",
+    }),
+    rest.getJson<Array<{ author_username: string; visitor_username: string; author_reserved_actions: number; visitor_reserved_actions: number }>>(
+      "discussion_script_assignments", {
+        or: `(author_username.eq.${device.username},visitor_username.eq.${device.username})`,
+        status: "in.(awaiting_approval,ready,running)",
+        select: "author_username,visitor_username,author_reserved_actions,visitor_reserved_actions", limit: "1000",
+      }),
+  ]);
+  const authorUsed = (authorTasks?.length || 0) + (authorAssignments || []).reduce((sum, row) =>
+    sum + (row.author_username === device.username ? Number(row.author_reserved_actions || 0) : Number(row.visitor_reserved_actions || 0)), 0);
+  const authorCap = Math.min(authorConsent.daily_action_limit, authorPref.daily_contribution_cap || authorConsent.daily_action_limit);
+  if (authorUsed + authorReserved > authorCap) {
+    throw new HttpError("Draft vượt quota hành động còn lại của bạn hôm nay.", 409, "QUOTA_EXCEEDED");
+  }
   const existing = await rest.getJson<Array<{ id: number; status: string; visitor_username: string }>>(
     "discussion_script_assignments",
     { revision_id: `eq.${revision.id}`, select: "id,status,visitor_username", limit: "1" }
@@ -2820,10 +2844,11 @@ async function handleSubmitDiscussionDraft(rest: Rest, auth: Auth, body: Record<
   const names = [...new Set((devices || []).map((row) => row.username).filter(Boolean))];
   if (!names.length) throw new HttpError("Chưa có thành viên phù hợp đang online.", 409, "NO_ELIGIBLE_ACTOR");
   const requiredVersion = await currentConsentVersion(rest);
-  const [consents, posts, users] = await Promise.all([
-    rest.getJson<Array<{ username: string }>>("user_consents", {
+  const todayStart = startOfTodayVnIso();
+  const [consents, posts, users, todayTasks, reservations, activePairs] = await Promise.all([
+    rest.getJson<Array<{ username: string; daily_action_limit: number }>>("user_consents", {
       username: `in.(${names.join(",")})`, consent_version: `eq.${requiredVersion}`,
-      engagement_enabled: "eq.true", paused_at: "is.null", select: "username", limit: "100",
+      engagement_enabled: "eq.true", paused_at: "is.null", select: "username,daily_action_limit", limit: "100",
     }),
     rest.getJson<Array<{ username: string }>>("posts", {
       username: `in.(${names.join(",")})`, status: "eq.open", verification_status: "eq.verified",
@@ -2832,16 +2857,41 @@ async function handleSubmitDiscussionDraft(rest: Rest, auth: Auth, body: Record<
     rest.getJson<Array<{ username: string }>>("users", {
       username: `in.(${names.join(",")})`, is_locked: "eq.false", select: "username", limit: "100",
     }),
+    rest.getJson<Array<{ actor_username: string }>>("engagement_tasks", {
+      actor_username: `in.(${names.join(",")})`, created_at: `gte.${todayStart}`,
+      status: "neq.cancelled", select: "actor_username", limit: "10000",
+    }),
+    rest.getJson<Array<{ visitor_username: string; visitor_reserved_actions: number }>>("discussion_script_assignments", {
+      visitor_username: `in.(${names.join(",")})`, status: "in.(awaiting_approval,ready,running)",
+      select: "visitor_username,visitor_reserved_actions", limit: "1000",
+    }),
+    rest.getJson<Array<{ visitor_username: string }>>("discussion_script_assignments", {
+      techhub_id: `eq.${techhubId}`, author_username: `eq.${device.username}`,
+      status: "in.(awaiting_approval,ready,running)", select: "visitor_username", limit: "100",
+    }),
   ]);
-  const consented = new Set((consents || []).map((row) => row.username));
+  const consentByUser = new Map((consents || []).map((row) => [row.username, row]));
   const withPosts = new Set((posts || []).map((row) => row.username));
   const active = new Set((users || []).map((row) => row.username));
-  const visitor = names.find((name) => consented.has(name) && withPosts.has(name) && active.has(name));
+  const paired = new Set((activePairs || []).map((row) => row.visitor_username));
+  const used = new Map<string, number>();
+  for (const row of todayTasks || []) used.set(row.actor_username, (used.get(row.actor_username) || 0) + 1);
+  for (const row of reservations || []) used.set(row.visitor_username,
+    (used.get(row.visitor_username) || 0) + Number(row.visitor_reserved_actions || 0));
+  let visitor: string | undefined;
+  for (const name of names) {
+    if (!consentByUser.has(name) || !withPosts.has(name) || !active.has(name) || paired.has(name)) continue;
+    const pref = await getOrCreatePreferences(rest, name);
+    const cap = Math.min(consentByUser.get(name)?.daily_action_limit || 1, pref.daily_contribution_cap || 1);
+    if ((used.get(name) || 0) + visitorReserved <= cap) { visitor = name; break; }
+  }
   if (!visitor) throw new HttpError("Chưa có thành viên phù hợp đang online.", 409, "NO_ELIGIBLE_ACTOR");
 
   const assignments = await rest.postJson<Array<{ id: number }>>("discussion_script_assignments", {
-    draft_id: draft.id, revision_id: revision.id, author_username: device.username,
-    visitor_username: visitor, status: "awaiting_approval",
+    draft_id: draft.id, revision_id: revision.id, techhub_id: techhubId,
+    author_username: device.username, visitor_username: visitor,
+    author_reserved_actions: authorReserved, visitor_reserved_actions: visitorReserved,
+    status: "awaiting_approval",
   });
   const assignment = firstRow(assignments);
   if (!assignment) throw new HttpError("Không tạo được yêu cầu duyệt.", 500);

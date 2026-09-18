@@ -16,8 +16,10 @@ WITH draft AS (
   FROM draft RETURNING id, draft_id
 ), assignment AS (
   INSERT INTO public.discussion_script_assignments
-    (draft_id, revision_id, author_username, visitor_username)
-  SELECT draft_id, id, 'r3_author', 'r3_visitor' FROM revision RETURNING id, revision_id
+    (draft_id, revision_id, techhub_id, author_username, visitor_username,
+     author_reserved_actions, visitor_reserved_actions)
+  SELECT draft_id, id, 987654322, 'r3_author', 'r3_visitor', 1, 2
+  FROM revision RETURNING id, revision_id
 )
 INSERT INTO public.discussion_script_approvals(assignment_id, revision_id, username, actor_role, decision)
 SELECT id, revision_id, 'r3_author', 'author', 'approved' FROM assignment
