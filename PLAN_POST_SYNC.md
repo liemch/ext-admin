@@ -49,6 +49,11 @@ supabase/functions/post-sync-api/index.ts
 
 Không tiếp tục đưa logic sync vào `engagement-api`. `post-sync-api` quản lý hint, sync job, lease, run history và quyền admin. Việc gọi TechHub vẫn chạy trong extension leader vì cookie/CSRF chỉ có trên máy admin.
 
+> Cập nhật 18/09/2026 (R5): Edge Function thứ năm `publishing-api` (kho bài AI,
+> revision bất biến, lịch đăng) cũng theo đúng pattern này — server không nhận
+> cookie/CSRF TechHub, extension là nơi thực thi. Xem
+> `PLAN_PRODUCT_9_10.md` mục R5–R6.
+
 ### 2.2 Tạo migration mới
 
 Tạo `supabase/migrations/013_post_sync.sql`. Không sửa migration 012 đã chạy.

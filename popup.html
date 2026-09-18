@@ -83,6 +83,22 @@
             <span class="nav-label">Người dùng</span>
           </button>
 
+          <button
+            class="nav-item admin-only"
+            type="button"
+            data-panel="publishing"
+            data-title="Kho bài"
+            data-subtitle="Kho bài AI, duyệt revision, phân bài và lịch tuần"
+          >
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true">
+              <path
+                d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"
+                fill="currentColor"
+              />
+            </svg>
+            <span class="nav-label">Kho bài</span>
+          </button>
+
           <span class="nav-group moderator-only">Tự động hóa</span>
           <button
             class="nav-item admin-only"
@@ -351,6 +367,24 @@
                 <div id="myDiscussionApprovalsList" class="thread-preview-list">
                   <div class="empty">Chưa có yêu cầu duyệt.</div>
                 </div>
+              </div>
+
+
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Bài sắp đăng của tôi</h2>
+                    <p>Xem đúng bản sắp đăng bằng tài khoản của bạn; Chấp nhận / Từ chối từng bản</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="myPublishingRefreshBtn" class="btn btn-secondary" type="button">Làm mới</button>
+                  </div>
+                </div>
+                <div id="myPublishingNotice" class="msg muted hidden"></div>
+                <div id="myPublishingList" class="schedule-list">
+                  <div class="empty">Chưa có bài nào được phân cho bạn.</div>
+                </div>
+                <div id="myPublishingMessage" class="msg hidden"></div>
               </div>
 
               <div class="card">
@@ -968,6 +1002,208 @@
                 <div class="list-label">Thiết bị đã đăng ký</div>
                 <div id="devicesList" class="schedule-list">
                   <div class="empty">Chưa có dữ liệu.</div>
+                </div>
+              </div>
+            </section>
+
+
+            <section class="panel hidden admin-only" data-panel="publishing">
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Nhập kho bài</h2>
+                    <p>Tạo prompt kho bài, dán JSON từ ChatGPT/Gemini rồi kiểm tra trước khi nhập</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="contentPromptCopyBtn" class="btn btn-secondary" type="button">
+                      Copy prompt
+                    </button>
+                    <button id="contentValidateBtn" class="btn btn-secondary" type="button">
+                      Kiểm tra
+                    </button>
+                    <button id="contentImportBtn" class="btn btn-primary" type="button">
+                      Nhập kho
+                    </button>
+                  </div>
+                </div>
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="contentPromptTopic">Chủ đề</label>
+                      <span>Nội dung chính của loạt bài, vd: cải tiến quy trình hàng ngày</span>
+                    </div>
+                    <input id="contentPromptTopic" type="text" placeholder="vd: cải tiến quy trình hàng ngày" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="contentPromptAudience">Đối tượng</label>
+                      <span>Ai sẽ đọc bài, vd: anh em phòng kỹ thuật</span>
+                    </div>
+                    <input id="contentPromptAudience" type="text" placeholder="vd: anh em phòng kỹ thuật" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="contentPromptCount">Số bài cần tạo</label>
+                      <span>Tối đa 20 bài mỗi batch (giới hạn pilot)</span>
+                    </div>
+                    <input id="contentPromptCount" type="number" min="1" max="20" value="5" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="contentPromptStructure">Cấu trúc mong muốn</label>
+                      <span>Mô tả bố cục mỗi bài; AI bám theo khi viết</span>
+                    </div>
+                    <input id="contentPromptStructure" type="text" placeholder="vd: vấn đề → cách làm → kết quả, 3–5 đoạn" />
+                  </div>
+                </div>
+                <textarea
+                  id="contentBatchJson"
+                  class="code-input"
+                  rows="8"
+                  spellcheck="false"
+                  placeholder='[{"title":"...","body":"markdown...","description":"...","preset":"Cải tiến mỗi ngày"}]'
+                ></textarea>
+                <div class="card-actions">
+                  <label class="btn btn-secondary" for="contentBatchFile">Chọn file JSON…</label>
+                  <input id="contentBatchFile" type="file" accept=".json,application/json" class="hidden" />
+                </div>
+                <div id="contentBatchMessage" class="msg hidden"></div>
+                <div id="contentBatchErrors" class="issue-list"></div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Kho bài</h2>
+                    <p>Duyệt tạo revision bất biến; bài đã duyệt mới được phân lịch</p>
+                  </div>
+                  <div class="card-actions">
+                    <select id="contentStatusFilter" aria-label="Lọc kho theo trạng thái">
+                      <option value="">Tất cả trạng thái</option>
+                      <option value="draft">draft</option>
+                      <option value="review">review</option>
+                      <option value="approved">approved</option>
+                      <option value="rejected">rejected</option>
+                      <option value="archived">archived</option>
+                    </select>
+                    <button id="contentRefreshBtn" class="btn btn-secondary" type="button">Làm mới</button>
+                  </div>
+                </div>
+                <div id="contentLibraryList" class="schedule-list">
+                  <div class="empty">Bấm Làm mới để tải kho bài.</div>
+                </div>
+                <div id="contentEditorBox" class="content-editor hidden">
+                  <div class="list-label">Biên tập bản nháp</div>
+                  <div class="field-list">
+                    <div class="field">
+                      <div class="field-text">
+                        <label for="contentEditTitle">Tiêu đề</label>
+                        <span>Tối đa 200 ký tự</span>
+                      </div>
+                      <input id="contentEditTitle" type="text" maxlength="200" />
+                    </div>
+                    <div class="field">
+                      <div class="field-text">
+                        <label for="contentEditDescription">Mô tả ngắn</label>
+                        <span>Tối đa 500 ký tự</span>
+                      </div>
+                      <input id="contentEditDescription" type="text" maxlength="500" />
+                    </div>
+                    <div class="field">
+                      <div class="field-text">
+                        <label for="contentEditPreset">Preset</label>
+                        <span>Chuyên mục và terms sẽ dùng khi đăng (mặc định "Cải tiến mỗi ngày")</span>
+                      </div>
+                      <select id="contentEditPreset"></select>
+                    </div>
+                    <div class="field">
+                      <div class="field-text">
+                        <label for="contentEditMainImage">Ảnh chính (URL, tùy chọn)</label>
+                        <span>Bỏ trống nếu không có ảnh</span>
+                      </div>
+                      <input id="contentEditMainImage" type="text" placeholder="https://…" />
+                    </div>
+                    <div class="field">
+                      <div class="field-text">
+                        <label for="contentEditBody">Nội dung (Markdown)</label>
+                        <span>Sửa draft không đổi bản đã duyệt đang chờ đăng</span>
+                      </div>
+                      <textarea id="contentEditBody" class="code-input" rows="10" spellcheck="false"></textarea>
+                    </div>
+                  </div>
+                  <div class="card-actions">
+                    <button id="contentEditPreviewBtn" class="btn btn-secondary" type="button">Xem trước</button>
+                    <button id="contentEditSaveBtn" class="btn btn-primary" type="button">Lưu nháp</button>
+                    <button id="contentEditCloseBtn" class="btn btn-secondary" type="button">Đóng</button>
+                  </div>
+                  <div id="contentEditWarnings" class="msg err hidden"></div>
+                  <div id="contentEditPreview" class="content-preview hidden"></div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Phân bài và lịch tuần</h2>
+                    <p>Chọn bài đã duyệt, user và giờ đăng; pilot tối đa 1 bài/user/ngày</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="scheduleRefreshBtn" class="btn btn-secondary" type="button">Làm mới lịch</button>
+                  </div>
+                </div>
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="scheduleContentSelect">Bài đã duyệt</label>
+                      <span>Chỉ bài approved và chưa có lịch còn hiệu lực</span>
+                    </div>
+                    <select id="scheduleContentSelect">
+                      <option value="">Chọn một bài…</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="scheduleTargetUsername">User đăng</label>
+                      <span>Bài sẽ đăng bằng tài khoản TechHub của user này</span>
+                    </div>
+                    <input id="scheduleTargetUsername" type="text" placeholder="username" spellcheck="false" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="scheduleAtInput">Giờ đăng</label>
+                      <span>Giờ địa phương (Asia/Ho_Chi_Minh); nằm trong giờ yên lặng sẽ bị chặn</span>
+                    </div>
+                    <input id="scheduleAtInput" type="datetime-local" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="scheduleLatePolicy">Xử lý khi trễ</label>
+                      <span>Pilot mặc định manual_review — admin quyết định</span>
+                    </div>
+                    <select id="scheduleLatePolicy">
+                      <option value="manual_review">Chờ admin xử lý</option>
+                      <option value="publish_within_window">Đăng trong cửa sổ trễ</option>
+                      <option value="skip_when_late">Bỏ qua khi trễ</option>
+                    </select>
+                  </div>
+                  <div class="card-actions">
+                    <button id="scheduleCreateBtn" class="btn btn-primary" type="button">Phân bài</button>
+                  </div>
+                </div>
+                <div id="scheduleMessage" class="msg hidden"></div>
+                <div class="list-label">Lịch tuần</div>
+                <div class="card-actions">
+                  <input id="scheduleUserFilter" type="text" placeholder="Lọc theo user…" spellcheck="false" />
+                  <select id="scheduleStatusFilter" aria-label="Lọc lịch theo trạng thái">
+                    <option value="active">Đang chạy</option>
+                    <option value="paused">Tạm dừng</option>
+                    <option value="">Tất cả</option>
+                    <option value="cancelled">Đã hủy</option>
+                    <option value="completed">Hoàn tất</option>
+                  </select>
+                </div>
+                <div id="schedulesList" class="schedule-list">
+                  <div class="empty">Bấm Làm mới lịch để tải.</div>
                 </div>
               </div>
             </section>
@@ -1669,5 +1905,6 @@
     <script src="discussion-import.js"></script>
     <script src="popup.js"></script>
     <script src="engagement-ui.js"></script>
+    <script src="publishing-ui.js"></script>
   </body>
 </html>

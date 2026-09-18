@@ -107,6 +107,9 @@ bash scripts/setup-supabase.sh
 13. `supabase/migrations/20260918120000_quick_campaign_presets_ultra_refund.sql` —
     chiến dịch nhanh: preset An toàn/Cân bằng do server quản và RPC hoàn Ultra
     idempotent khi yêu cầu hết hạn/hủy chưa từng mở turn đầu
+14. `supabase/migrations/20260918130000_content_library_scheduling.sql` —
+    kho bài AI: preset, content item chống trùng bằng hash, revision bất biến,
+    phê duyệt của user đích và lịch đăng (một revision một lịch, chặn giờ yên lặng)
 
 Chi tiết bảng / kiểm tra: xem [`supabase/README.md`](supabase/README.md).
 
@@ -151,6 +154,8 @@ Phân quyền theo bảng `users`:
 | **Hẹn xóa bài** | Chọn 1–5 bài + thời gian dùng chung; Xóa ngay yêu cầu đúng một bài |
 | **Tương tác** (mọi user) | Tạo chuỗi cho bài của mình, xem đóng góp/nhận lại và chọn bài dùng Ultra |
 | **Tương tác** (admin) | Chiến dịch nhanh (nhóm user, bài đích, số chuỗi/bài, khung giờ, preset; xem trước capacity và lỗi kèm hành động sửa), điều phối pool/user, copy prompt + nhập JSON 2–3 lượt, Push comment, hủy yêu cầu Ultra và hoàn lượt, xử lý lỗi/lease |
+| **Bài sắp đăng của tôi** (mọi user) | Xem đúng bản AI sắp đăng bằng tài khoản mình (nội dung, giờ địa phương), Chấp nhận / Từ chối từng bản |
+| **Kho bài** (admin) | Copy prompt kho bài, nhập batch JSON (kiểm tra trước, lỗi hiện từng item không bỏ âm thầm), biên tập/duyệt tạo revision bất biến, phân bài cho user, lịch tuần Đổi giờ/Tạm dừng/Hủy |
 
 Chi tiết kiến trúc và phân phối task: xem [`PLAN_CROSS_USER_ENGAGEMENT.md`](PLAN_CROSS_USER_ENGAGEMENT.md).
 
@@ -170,6 +175,8 @@ ext-admin/
 ├── engagement-client.js   # Gọi engagement-api (device token + admin token)
 ├── engagement-worker.js   # Worker hàng đợi: claim → vote/comment/reply → báo kết quả
 ├── engagement-ui.js       # Panel Tương tác (user + admin)
+├── publishing-client.js   # Gọi publishing-api (device token + admin token)
+├── publishing-ui.js       # Panel Kho bài (admin) + Bài sắp đăng của tôi (user)
 ├── discussion-import.js   # Validate kịch bản thảo luận JSON (dùng chung UI + test)
 ├── icons/angel.png
 ├── privacy_policy.html

@@ -2585,3 +2585,44 @@ body.view-tab .content {
 .advanced-details > .card-actions {
   margin: 10px 0;
 }
+
+/* ---- R5: kho bài + bài sắp đăng của tôi ---- */
+.content-editor {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.content-preview {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  max-height: 320px;
+  overflow-y: auto;
+}
+.content-preview-inner h1,
+.content-preview-inner h2,
+.content-preview-inner h3,
+.content-preview-inner h4 {
+  margin: 10px 0 6px;
+}
+.content-preview-inner p {
+  margin: 0 0 8px;
+}
+.content-preview-inner code {
+  background: var(--surface-3);
+  padding: 1px 5px;
+  border-radius: 6px;
+}
+.content-preview-inner blockquote {
+  border-left: 3px solid var(--line);
+  margin: 6px 0;
+  padding-left: 10px;
+  color: var(--text-dim);
+}
+.content-preview-inner a {
+  color: var(--accent);
+}

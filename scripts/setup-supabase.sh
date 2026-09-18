@@ -6,7 +6,7 @@
 #    1. Đăng nhập + link project (lấy ref tự động từ config.js nếu có)
 #    2. Sinh PROXY_TOKEN (cho nvidia-proxy) và ADMIN_TOKEN (cho admin-api + engagement-api)
 #    3. Set secrets: NVIDIA_API_KEY (key MỚI), PROXY_TOKEN, ADMIN_TOKEN
-#    4. Deploy 4 edge functions: nvidia-proxy, admin-api, engagement-api, post-sync-api
+#    4. Deploy 5 edge functions: nvidia-proxy, admin-api, engagement-api, post-sync-api, publishing-api
 #    5. Áp migration 011 (chặn anon tự cấp is_admin / xóa user),
 #       012 (hàng đợi tương tác giữa các user),
 #       013 (đồng bộ bài viết — hints/feed/reconcile),
@@ -16,8 +16,9 @@
 #       20260917020158 (device enrollment + consent versioned),
 #       20260917025828 (discussion script drafts + immutable revisions)
 #       20260918043557 (actor approvals + execution receipts)
-#       20260918120000 (chiến dịch nhanh preset + hoàn Ultra idempotent)
-#    6. Test 4 function bằng curl
+#       20260918120000 (chiến dịch nhanh preset + hoàn Ultra idempotent),
+#       20260918130000 (kho bài AI + revision bất biến + lịch đăng)
+#    6. Test 5 function bằng curl
 #    7. In sẵn 2 khối config.js: một cho máy admin, một cho user thường
 #
 #  Yêu cầu: Supabase CLI
@@ -105,7 +106,8 @@ supabase functions deploy nvidia-proxy   --no-verify-jwt
 supabase functions deploy admin-api     --no-verify-jwt
 supabase functions deploy engagement-api --no-verify-jwt
 supabase functions deploy post-sync-api --no-verify-jwt
-ok "Đã deploy nvidia-proxy + admin-api + engagement-api + post-sync-api"
+supabase functions deploy publishing-api --no-verify-jwt
+ok "Đã deploy nvidia-proxy + admin-api + engagement-api + post-sync-api + publishing-api"
 
 # ---------- 7. Migration 011 + 012 ----------
 step "Áp migration 011 (chặn anon sửa is_admin / xóa user)"
@@ -142,6 +144,8 @@ step "Áp migration approval/receipt cho chuỗi thảo luận"
 apply_migration "supabase/migrations/20260918043557_engagement_task_receipts.sql"
 step "Áp migration chiến dịch nhanh + hoàn Ultra (R4)"
 apply_migration "supabase/migrations/20260918120000_quick_campaign_presets_ultra_refund.sql"
+step "Áp migration R5 (kho bài + lịch)"
+apply_migration "supabase/migrations/20260918130000_content_library_scheduling.sql"
 
 # ---------- 8. Test ----------
 BASE="https://${PROJECT_REF}.supabase.co/functions/v1"
@@ -159,6 +163,9 @@ if command -v curl >/dev/null 2>&1; then
   CODE4="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/post-sync-api" \
     -H 'Content-Type: application/json' -d '{"action":"getStatus"}')"
   info "post-sync-api không token  → HTTP $CODE4 (mong đợi 401)"
+  CODE5="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/publishing-api" \
+    -H 'Content-Type: application/json' -d '{"action":"listContentPresets"}')"
+  info "publishing-api không token → HTTP $CODE5 (mong đợi 401)"
   info "admin-api có ADMIN_TOKEN → kết quả (cắt 120 ký tự đầu):"
   curl -s -X POST "$BASE/admin-api" \
     -H "Authorization: Bearer $ADMIN_TOKEN" \
@@ -190,6 +197,13 @@ const ENGAGEMENT_API_CONFIG = {
 // User thường KHÔNG điền adminToken.
 const POST_SYNC_API_CONFIG = {
   url: "$BASE/post-sync-api",
+  adminToken: "$ADMIN_TOKEN",
+};
+
+// Kho bài AI + duyệt revision + phân lịch (R5). Thiết bị user dùng đúng
+// device token đã enrollment ở engagement-api, không đăng ký riêng.
+const PUBLISHING_API_CONFIG = {
+  url: "$BASE/publishing-api",
   adminToken: "$ADMIN_TOKEN",
 };
 
@@ -226,6 +240,13 @@ const ENGAGEMENT_API_CONFIG = {
 // KHÔNG điền adminToken (chỉ máy admin làm leader).
 const POST_SYNC_API_CONFIG = {
   url: "$BASE/post-sync-api",
+  adminToken: "",
+};
+
+// Kho bài + "Bài sắp đăng của tôi" — máy user chỉ cần url (dùng device token
+// đã enrollment); KHÔNG điền adminToken (chỉ máy admin nhập kho/duyệt/phân lịch).
+const PUBLISHING_API_CONFIG = {
+  url: "$BASE/publishing-api",
   adminToken: "",
 };
 

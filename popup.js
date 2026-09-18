@@ -161,6 +161,7 @@ const ADMIN_ONLY_PANELS = new Set([
   "community",
   "external-discussion",
   "users",
+  "publishing",
 ]);
 
 const MODERATOR_PANELS = new Set(["comment", "delete"]);

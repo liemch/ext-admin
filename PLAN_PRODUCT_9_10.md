@@ -1385,6 +1385,30 @@ deploy. Không đánh dấu xong chỉ vì đã có UI hoặc test kiểm tra ch
   user approval, phân bài và lịch tuần.
 - Nghiệm thu: hai admin reserve cùng revision chỉ một người thành công;
   sửa draft không đổi bài đã duyệt đang chờ đăng; nhập batch lặp không nhân đôi kho.
+- Trạng thái 18/09/2026: **đã hoàn tất implementation và test local; chờ áp
+  migration lên dev, chạy `scripts/test-r5-content-scheduling.sql` và demo Demo B
+  (kho 5 bài cho 5 ngày, bỏ phần tự đăng thuộc R6) trước khi đánh dấu nghiệm
+  thu**. Đã có: Edge Function `publishing-api` (thứ năm, server không nhận
+  cookie/CSRF TechHub) với 19 action — admin: preset (seed "Cải tiến mỗi ngày"
+  community 35, terms 178/368/274, markdown — không hardcode worker), tạo draft
+  chống trùng bằng `content_hash` UNIQUE, import batch all-or-nothing ≤20 bài
+  ≤1MB (dry-run Kiểm tra, lỗi hiện từng item/field, không bỏ âm thầm), sửa draft
+  (bài đã duyệt bị khóa CONTENT_LOCKED), duyệt tạo revision bất biến (UNIQUE
+  item+số revision, gắn `current_revision_id`), phân lịch chỉ nhận bài approved
+  (APPROVAL_REQUIRED), chặn giờ trong quá khứ và giờ yên lặng của user đích
+  TRƯỚC KHI LƯU (QUIET_HOURS_CONFLICT, đọc `user_consents.quiet_hours`), trần
+  pilot ≤1 lịch/user/ngày (settings), lịch tuần Đổi giờ/Tạm dừng/Tiếp tục/Hủy;
+  user: "Bài sắp đăng của tôi" (full preview bản revision + giờ địa phương +
+  tài khoản đăng, chỉ user đích Chấp nhận/Từ chối — SCHEDULE_NOT_OWNED nếu lệch
+  username), dùng device token enrollment chung engagement. Bằng chứng: migration
+  `20260918130000_content_library_scheduling.sql` (5 bảng + RLS + partial unique
+  `(content_revision_id)` và `(content_item_id, target_username)` WHERE còn hiệu
+  lực — hai admin reserve đua nhau thì một người thắng, hủy xong mới phân lại);
+  126 test publishing pass (`node scripts/test-publishing.mjs`); test DB
+  `scripts/test-r5-content-scheduling.sql`. Kho hết bài thì dừng và báo
+  dashboard, không tự sinh bài lấp lịch. Cần deploy `publishing-api` sau khi áp
+  migration. Thực thi đăng bài (publishing_jobs/runs/worker, late policy
+  runtime) thuộc R6.
 
 ### R6 — Publish execution và phục hồi
 

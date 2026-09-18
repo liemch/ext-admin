@@ -1,4 +1,4 @@
-importScripts('config.js', 'supabase-client.js', 'nvidia-client.js', 'engagement-client.js', 'engagement-worker.js', 'post-sync-client.js', 'post-sync-worker.js');
+importScripts('config.js', 'supabase-client.js', 'nvidia-client.js', 'engagement-client.js', 'engagement-worker.js', 'post-sync-client.js', 'post-sync-worker.js', 'publishing-client.js');
 
 // Background Service Worker - Lắng nghe và bắt headers từ TechHub API
 
@@ -583,6 +583,23 @@ const ADMIN_ONLY_ACTIONS = new Set([
   "engagementPreviewQuickCampaign",
   "engagementLaunchQuickCampaign",
   "buildEngagementDiscussionPrompt",
+  // Publishing admin (kho bài + phân lịch, chỉ máy admin).
+  "publishingListPresets",
+  "publishingSavePreset",
+  "publishingCreateDraft",
+  "publishingImportBatch",
+  "publishingUpdateDraft",
+  "publishingApproveContent",
+  "publishingRejectContent",
+  "publishingArchiveContent",
+  "publishingListLibrary",
+  "publishingGetContentItem",
+  "publishingScheduleContent",
+  "publishingUpdateSchedule",
+  "publishingPauseSchedule",
+  "publishingResumeSchedule",
+  "publishingCancelSchedule",
+  "publishingListSchedules",
   // Post-sync admin (chỉ máy admin/leader).
   "postSyncGetStatus",
   "postSyncCheckSession",
@@ -1189,6 +1206,70 @@ function handlePopupMessage(request, sendResponse) {
     EngagementClient.engagementAdmin("launchQuickCampaign", request.payload || {})
       .then((result) => sendResponse({ success: true, ...result }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  // ---- Publishing (R5): kho bài + lịch đăng ----
+  // Action admin đã qua ensureActionAllowed (ADMIN_ONLY_ACTIONS).
+  const PUBLISHING_ADMIN_ACTIONS = new Set([
+    "publishingListPresets",
+    "publishingSavePreset",
+    "publishingCreateDraft",
+    "publishingImportBatch",
+    "publishingUpdateDraft",
+    "publishingApproveContent",
+    "publishingRejectContent",
+    "publishingArchiveContent",
+    "publishingListLibrary",
+    "publishingGetContentItem",
+    "publishingScheduleContent",
+    "publishingUpdateSchedule",
+    "publishingPauseSchedule",
+    "publishingResumeSchedule",
+    "publishingCancelSchedule",
+    "publishingListSchedules",
+  ]);
+  const PUBLISHING_ACTION_MAP = {
+    publishingListPresets: "listContentPresets",
+    publishingSavePreset: "saveContentPreset",
+    publishingCreateDraft: "createContentDraft",
+    publishingImportBatch: "importContentBatch",
+    publishingUpdateDraft: "updateContentDraft",
+    publishingApproveContent: "approveContent",
+    publishingRejectContent: "rejectContent",
+    publishingArchiveContent: "archiveContent",
+    publishingListLibrary: "listContentLibrary",
+    publishingGetContentItem: "getContentItem",
+    publishingScheduleContent: "scheduleContent",
+    publishingUpdateSchedule: "updateSchedule",
+    publishingPauseSchedule: "pauseSchedule",
+    publishingResumeSchedule: "resumeSchedule",
+    publishingCancelSchedule: "cancelSchedule",
+    publishingListSchedules: "listSchedules",
+  };
+  if (PUBLISHING_ADMIN_ACTIONS.has(request.action)) {
+    const apiAction = PUBLISHING_ACTION_MAP[request.action];
+    PublishingClient.publishingAdmin(apiAction, request.payload || {})
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code }));
+    return true;
+  }
+
+  // User thường: xem lịch đăng của mình và Chấp nhận / Từ chối bản sắp đăng.
+  if (request.action === "publishingGetMyStatus") {
+    PublishingClient.publishingUser("getMyPublishingStatus", {})
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code }));
+    return true;
+  }
+
+  if (request.action === "publishingDecideApproval") {
+    PublishingClient.publishingUser("decideContentApproval", {
+      scheduleId: request.scheduleId,
+      decision: request.decision,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code }));
     return true;
   }
 

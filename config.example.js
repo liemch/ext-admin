@@ -84,6 +84,19 @@ const POST_SYNC_API_CONFIG = {
   adminToken: "",
 };
 
+// Publishing API — edge function kho bài AI + duyệt revision + phân lịch đăng
+// (R5). Xem: supabase/functions/publishing-api/index.ts
+//
+// - Mọi máy đều điền `url`: user dùng để xem "Bài sắp đăng của tôi" và
+//   Chấp nhận / Từ chối bản sắp đăng. Thiết bị dùng đúng device token đã
+//   enrollment ở engagement-api (không đăng ký thiết bị riêng).
+// - `adminToken` CHỈ điền trên máy quản trị viên (giống
+//   ENGAGEMENT_API_CONFIG.adminToken) để nhập kho, duyệt và phân lịch.
+const PUBLISHING_API_CONFIG = {
+  url: "https://xxxxx.supabase.co/functions/v1/publishing-api",
+  adminToken: "",
+};
+
 // Xuất config để sử dụng trong các file khác
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
@@ -92,5 +105,6 @@ if (typeof module !== "undefined" && module.exports) {
     NVIDIA_CONFIG,
     ENGAGEMENT_API_CONFIG,
     POST_SYNC_API_CONFIG,
+    PUBLISHING_API_CONFIG,
   };
 }
