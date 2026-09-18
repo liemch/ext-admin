@@ -2590,6 +2590,10 @@ async function handleRedeemUltra(rest: Rest, auth: Auth, body: Record<string, un
       techhubId,
       discussions,
       reward: firstRow(result as Array<Record<string, unknown>>),
+      // Ưu tiên xếp hàng không đảm bảo số comment hay thời gian hoàn thành
+      // (PLAN_PRODUCT_9_10 mục 18.5); nếu không ghép được người trước khi hết
+      // hạn, lượt Ultra được hoàn đúng một lần.
+      note: "Ultra chỉ đổi ưu tiên xếp hàng theo thứ tự quota; không đảm bảo số comment hoặc thời gian hoàn thành.",
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -3003,16 +3007,909 @@ async function handlePushComments(rest: Rest, auth: Auth, body: Record<string, u
 
 async function handleListBoosts(rest: Rest, auth: Auth, body: Record<string, unknown>) {
   requireAdmin(auth);
+  // Đối soát boost hết hạn trước khi list: hoàn Ultra đúng một lần cho yêu
+  // cầu chưa từng mở turn đầu (R4, PLAN_PRODUCT_9_10 mục 18.5).
+  await settleExpiredBoosts(rest);
   const status = ["active", "completed", "cancelled", "expired"].includes(String(body.status || ""))
     ? String(body.status)
     : "active";
   const boosts = await rest.getJson<Array<Record<string, unknown>>>("engagement_boost_requests", {
     status: `eq.${status}`,
-    select: "id,techhub_id,owner_username,source,requested_discussions,status,created_by,expires_at,created_at,updated_at",
+    select: "id,techhub_id,owner_username,source,requested_discussions,status,created_by,expires_at,created_at,updated_at,refunded_at,refund_reason",
     order: "created_at.desc",
     limit: String(clampPreference(body.limit, 100, 1, 500)),
   });
   return json({ ok: true, boosts: boosts || [] });
+}
+
+/** Quét boost active đã hết hạn: đánh dấu expired và hoàn Ultra idempotent. */
+async function settleExpiredBoosts(rest: Rest): Promise<void> {
+  try {
+    await rest.rpc("settle_engagement_boosts", {});
+  } catch (error) {
+    console.error("[engagement-api] settle_engagement_boosts failed:", error);
+  }
+}
+
+async function handleCancelBoost(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  requireAdmin(auth);
+  const boostId = toPositiveInt(body.boostId);
+  if (!boostId) throw new HttpError("boostId không hợp lệ.", 400);
+  const reason = String(body.reason || "").trim().slice(0, 140) || "admin_cancelled";
+  const result = await rest.rpc<Array<Record<string, unknown>>>("settle_engagement_boosts", {
+    p_boost_id: boostId,
+    p_cancel_reason: reason,
+  });
+  const rows = Array.isArray(result) ? result : [];
+  if (rows.length === 0) {
+    throw new HttpError(
+      `Boost #${boostId} không còn active (đã xử lý hoặc đã hoàn credit).`,
+      409
+    );
+  }
+  return json({ ok: true, settled: rows });
+}
+
+// ---------------------------------------------------------------------------
+// Chiến dịch nhanh (R4) — năm trường cấu hình + hai preset MVP + preview
+// capacity. Tham chiếu PLAN_PRODUCT_9_10.md mục 5.2, 5.3, 17.2, 21 (R4).
+// Màn hình cơ bản chỉ có: nhóm user, bài đích, số chuỗi/bài, khung giờ, preset.
+// Trần kỹ thuật (hành động/user/ngày, chuỗi/bài/ngày, khoảng cách tối thiểu)
+// do server quản qua settings; client tự khai giá trị lớn hơn sẽ bị chặn.
+// ---------------------------------------------------------------------------
+
+type QuickPresetName = "safe" | "balanced";
+
+type QuickPresetParams = {
+  name: QuickPresetName;
+  label: string;
+  maxActionsPerUserDaily: number;
+  maxThreadsPerPostDaily: number;
+  minActionGapMinutes: number;
+  batchThreadLimit: number;
+};
+
+async function resolveQuickPreset(
+  rest: Rest,
+  presetName: string
+): Promise<QuickPresetParams> {
+  if (presetName !== "safe" && presetName !== "balanced") {
+    throw new HttpError(
+      "Preset phải là 'safe' (An toàn) hoặc 'balanced' (Cân bằng).",
+      400,
+      "PRESET_REQUIRED"
+    );
+  }
+  const [
+    safeActions,
+    safeThreads,
+    balancedActions,
+    balancedThreads,
+    minGap,
+    batchLimit,
+  ] = await Promise.all([
+    readSetting(rest, "engagement_preset_safe_daily_actions"),
+    readSetting(rest, "engagement_preset_safe_threads_per_post"),
+    readSetting(rest, "engagement_preset_balanced_daily_actions"),
+    readSetting(rest, "engagement_preset_balanced_threads_per_post"),
+    readSetting(rest, "engagement_preset_min_action_gap_minutes"),
+    readSetting(rest, "engagement_preset_max_threads_per_batch"),
+  ]);
+  if (presetName === "safe") {
+    return {
+      name: "safe",
+      label: "An toàn",
+      maxActionsPerUserDaily: clampPreference(safeActions, 2, 1, 20),
+      maxThreadsPerPostDaily: clampPreference(safeThreads, 1, 1, 10),
+      minActionGapMinutes: clampPreference(minGap, 10, 1, 1440),
+      batchThreadLimit: clampPreference(batchLimit, 50, 1, 50),
+    };
+  }
+  return {
+    name: "balanced",
+    label: "Cân bằng",
+    maxActionsPerUserDaily: clampPreference(balancedActions, 5, 1, 20),
+    maxThreadsPerPostDaily: clampPreference(balancedThreads, 3, 1, 10),
+    minActionGapMinutes: clampPreference(minGap, 10, 1, 1440),
+    batchThreadLimit: clampPreference(batchLimit, 50, 1, 50),
+  };
+}
+
+type QuickCampaignInput = {
+  name: string;
+  preset: QuickPresetName;
+  groupUsernames: string[];
+  techhubId: number | null;
+  threadsPerPost: number;
+  windowStartAt: Date;
+  windowMinutes: number;
+};
+
+function parseQuickCampaignInput(
+  body: Record<string, unknown>,
+  preset: QuickPresetParams
+): QuickCampaignInput {
+  const group = Array.isArray(body.groupUsernames)
+    ? body.groupUsernames.map(String)
+    : String(body.groupUsernames || "");
+  const groupUsernames = [
+    ...new Set(
+      group
+        .flatMap((item) => String(item).split(","))
+        .map((name) => name.trim())
+        .filter(Boolean)
+        .map((name) => name.slice(0, 100))
+    ),
+  ].slice(0, 100);
+  const techhubId = toPositiveInt(body.techhubId);
+  const threadsPerPost = Math.min(
+    preset.maxThreadsPerPostDaily,
+    Math.max(1, Math.floor(Number(body.threadsPerPost) || preset.maxThreadsPerPostDaily))
+  );
+  const windowMinutes = Math.min(
+    720,
+    Math.max(30, Math.floor(Number(body.windowMinutes) || 120))
+  );
+  const startRaw = String(body.windowStartAt || "").trim();
+  const parsedStart = startRaw ? new Date(startRaw) : null;
+  const windowStartAt =
+    parsedStart && Number.isFinite(parsedStart.getTime()) ? parsedStart : new Date();
+  const stamp = new Date();
+  const name =
+    String(body.name || "").trim().slice(0, 200) ||
+    `quick-${preset.name}-${stamp.toISOString().slice(0, 16).replace(/[-:T]/g, "")}`;
+  return {
+    name,
+    preset: preset.name,
+    groupUsernames,
+    techhubId,
+    threadsPerPost,
+    windowStartAt,
+    windowMinutes,
+  };
+}
+
+type QuickIssue = {
+  code: string;
+  message: string;
+  action: string;
+};
+
+type QuickPlannedThread = {
+  index: number;
+  name: string;
+  techhubId: number;
+  postTitle: string | null;
+  author: string;
+  visitor: string | null;
+  visitorTurns: number;
+  authorTurns: number;
+  scheduledAt: string | null;
+  schedulable: boolean;
+  reasonCode: string | null;
+};
+
+const QUICK_ISSUE_HINTS: Record<string, { message: string; action: string }> = {
+  NO_ELIGIBLE_POST: {
+    message: "Không có bài hợp lệ (open + verified, tác giả còn hoạt động) trong phạm vi chọn.",
+    action: "Đồng bộ bài qua post-sync hoặc bớt lọc nhóm user rồi thử lại.",
+  },
+  POST_NOT_ELIGIBLE: {
+    message: "Bài đích chưa đủ điều kiện (chưa verified, đã đóng hoặc không tồn tại).",
+    action: "Bấm Đồng bộ bài trong post-sync rồi xem lại preview.",
+  },
+  NO_ELIGIBLE_ACTOR: {
+    message: "Chưa đủ hai tài khoản: cần tác giả và một thành viên khác cùng online, đã bật tham gia.",
+    action: "Draft vẫn được lưu khi chạy; đợi thành viên online hoặc mở rộng nhóm user.",
+  },
+  QUOTA_EXCEEDED: {
+    message: "Thành viên đủ điều kiện đã dùng hết quota hành động hôm nay.",
+    action: "Giảm số chuỗi, đổi preset An toàn hoặc chạy lại vào ngày mai.",
+  },
+  THREAD_CAP_PER_POST: {
+    message: "Bài đã đạt giới hạn chuỗi mới trong hôm nay theo preset.",
+    action: "Chọn bài khác, bớt số chuỗi/bài hoặc chạy lại vào ngày mai.",
+  },
+  THREAD_ALREADY_ACTIVE: {
+    message: "Cặp user này đã có chuỗi đang chạy trên bài trong hôm nay.",
+    action: "Bỏ qua chuỗi trùng; hệ thống giữ một chuỗi active cho mỗi cặp/bài.",
+  },
+  WINDOW_FULL: {
+    message: "Khung giờ không đủ chỗ cho thêm hành động do khoảng cách tối thiểu.",
+    action: "Mở rộng khung giờ hoặc giảm số chuỗi rồi chạy lại.",
+  },
+  VISITOR_NOT_ELIGIBLE: {
+    message: "Visitor khai trong JSON chưa đủ điều kiện (không online, trùng tác giả hoặc hết quota).",
+    action: "Bỏ trường visitor để server tự ghép, hoặc đổi tên user khác.",
+  },
+  THREADS_REQUIRED: {
+    message: "Chưa có nội dung: chiến dịch nhanh cần JSON chuỗi từ copy prompt.",
+    action: "Bấm Copy prompt, tạo JSON bằng ChatGPT/Gemini rồi dán vào ô nội dung.",
+  },
+};
+
+/**
+ * Bộ tính capacity dùng chung cho preview và launch. CHỈ ĐỌC, không ghi:
+ * preview trả về đúng kế hoạch này mà không tạo campaign/thread/task ảo
+ * (mục 17.2: không tạo task giả khi thiếu người).
+ */
+async function buildQuickCampaignPlan(
+  rest: Rest,
+  input: QuickCampaignInput,
+  preset: QuickPresetParams,
+  rawThreads: unknown[] | null
+) {
+  const issues: QuickIssue[] = [];
+  const threadErrors: Array<{ index: number; name: string; error: string; action: string }> = [];
+  const now = new Date();
+
+  // 1. Bài hợp lệ.
+  let posts: PostRow[] = [];
+  if (input.techhubId) {
+    const post = await getPostByTechhubId(rest, input.techhubId);
+    posts = post ? [post] : [];
+  } else {
+    const cutoff = new Date(now.getTime() - 60 * 24 * 3600 * 1000);
+    posts = await rest.getJson<PostRow[]>("posts", {
+      status: "eq.open",
+      verification_status: "eq.verified",
+      last_verified_at: "not.is.null",
+      published_at: `gte.${cutoff.toISOString()}`,
+      select:
+        "techhub_id,techhub_uuid,username,title,status,published_at,created_at,community_slug,verification_status,last_verified_at",
+      order: "created_at.desc",
+      limit: "200",
+    });
+    posts = posts || [];
+  }
+  const activeUsers = await getActiveUsernames(rest);
+  if (input.groupUsernames.length > 0) {
+    const groupSet = new Set(input.groupUsernames.map((name) => name.toLowerCase()));
+    posts = posts.filter((post) => groupSet.has(String(post.username || "").toLowerCase()));
+  }
+  posts = posts.filter(
+    (post) =>
+      !!post.techhub_uuid &&
+      !!post.username &&
+      activeUsers.has(post.username) &&
+      String(post.status || "").toLowerCase() === "open" &&
+      String(post.verification_status || "").toLowerCase() === "verified"
+  );
+
+  // Boost active chỉ đổi thứ tự ưu tiên, KHÔNG tăng quota (R4: bài ưu tiên
+  // vẫn chịu quota).
+  const activeBoosts = await rest.getJson<
+    Array<{ techhub_id: number; requested_discussions: number }>
+  >("engagement_boost_requests", {
+    status: "eq.active",
+    expires_at: `gt.${now.toISOString()}`,
+    select: "techhub_id,requested_discussions",
+    order: "created_at.desc",
+    limit: "500",
+  });
+  const boostedPosts = new Set(
+    (activeBoosts || []).map((boost) => Number(boost.techhub_id))
+  );
+  posts.sort((a, b) => {
+    const boosted = Number(boostedPosts.has(b.techhub_id)) - Number(boostedPosts.has(a.techhub_id));
+    if (boosted !== 0) return boosted;
+    return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+  });
+
+  if (posts.length === 0) {
+    issues.push({ code: "NO_ELIGIBLE_POST", ...QUICK_ISSUE_HINTS.NO_ELIGIBLE_POST });
+  }
+
+  // 2. Thành viên đủ điều kiện: device approved online 30 phút + consent
+  //    hợp lệ + pool bật + không khóa (giữ nguyên tiêu chí ghép của R3).
+  const sinceIso = new Date(now.getTime() - 30 * 60 * 1000).toISOString();
+  const [seenDevices, activeThreadRows, todayTaskRows, recentTaskRows] = await Promise.all([
+    rest.getJson<Array<{ username: string }>>("engagement_devices", {
+      revoked: "eq.false",
+      enrollment_status: "eq.approved",
+      last_seen_at: `gte.${sinceIso}`,
+      select: "username",
+      limit: "5000",
+    }),
+    rest.getJson<
+      Array<{ techhub_id: number; author_username: string; visitor_username: string; created_at: string }>
+    >("discussion_threads", {
+      created_at: `gte.${startOfTodayVnIso()}`,
+      status: "neq.cancelled",
+      select: "techhub_id,author_username,visitor_username,created_at",
+      limit: "10000",
+    }),
+    rest.getJson<
+      Array<{ actor_username: string; target_username: string | null; scheduled_at: string | null }>
+    >("engagement_tasks", {
+      created_at: `gte.${startOfTodayVnIso()}`,
+      status: "neq.cancelled",
+      select: "actor_username,target_username,scheduled_at",
+      limit: "10000",
+    }),
+    rest.getJson<
+      Array<{ actor_username: string; target_username: string | null; created_at: string }>
+    >("engagement_tasks", {
+      created_at: `gte.${new Date(now.getTime() - 7 * 24 * 3600 * 1000).toISOString()}`,
+      select: "actor_username,target_username,created_at",
+      limit: "10000",
+    }),
+  ]);
+  const onlineNames = [
+    ...new Set((seenDevices || []).map((row) => row.username).filter(Boolean)),
+  ];
+  const groupLower = new Set(input.groupUsernames.map((name) => name.toLowerCase()));
+  const requiredConsentVersion = await currentConsentVersion(rest);
+  const [prefRows, consentRows] = await Promise.all([
+    onlineNames.length
+      ? rest.getJson<Array<{ username: string }>>("engagement_preferences", {
+          username: `in.(${onlineNames.join(",")})`,
+          enabled: "eq.true",
+          select: "username",
+          limit: "5000",
+        })
+      : [],
+    onlineNames.length
+      ? rest.getJson<Array<{ username: string }>>("user_consents", {
+          username: `in.(${onlineNames.join(",")})`,
+          consent_version: `eq.${requiredConsentVersion}`,
+          engagement_enabled: "eq.true",
+          paused_at: "is.null",
+          select: "username",
+          limit: "5000",
+        })
+      : [],
+  ]);
+  const enabledSet = new Set((prefRows || []).map((row) => row.username));
+  const consentedSet = new Set((consentRows || []).map((row) => row.username));
+  const actors = onlineNames.filter(
+    (name) =>
+      activeUsers.has(name) &&
+      enabledSet.has(name) &&
+      consentedSet.has(name) &&
+      (groupLower.size === 0 || groupLower.has(name.toLowerCase()))
+  );
+
+  // 3. Quota hôm nay theo preset (một hành động = một comment/reply;
+  //    chuỗi 3 turn = 2 hành động của A + 1 của B).
+  const actionsToday = new Map<string, number>();
+  const lastSlotByActor = new Map<string, number>();
+  for (const task of todayTaskRows || []) {
+    if (!task.actor_username) continue;
+    actionsToday.set(task.actor_username, (actionsToday.get(task.actor_username) || 0) + 1);
+    const slot = task.scheduled_at ? new Date(task.scheduled_at).getTime() : 0;
+    if (Number.isFinite(slot)) {
+      lastSlotByActor.set(
+        task.actor_username,
+        Math.max(lastSlotByActor.get(task.actor_username) || 0, slot)
+      );
+    }
+  }
+  const pairCount7d = new Map<string, number>();
+  for (const task of recentTaskRows || []) {
+    if (!task.actor_username || !task.target_username) continue;
+    const key = `${task.actor_username}:${task.target_username}`;
+    pairCount7d.set(key, (pairCount7d.get(key) || 0) + 1);
+  }
+  const threadsTodayByPost = new Map<number, number>();
+  const activePairsToday = new Set<string>();
+  for (const thread of activeThreadRows || []) {
+    threadsTodayByPost.set(
+      thread.techhub_id,
+      (threadsTodayByPost.get(thread.techhub_id) || 0) + 1
+    );
+    activePairsToday.add(
+      `${thread.techhub_id}:${thread.visitor_username}:${thread.author_username}`
+    );
+  }
+
+  const remainingActions = new Map<string, number>();
+  for (const actor of actors) {
+    remainingActions.set(actor, preset.maxActionsPerUserDaily - (actionsToday.get(actor) || 0));
+  }
+  const remainingThreads = new Map<number, number>();
+  for (const post of posts) {
+    remainingThreads.set(
+      post.techhub_id,
+      preset.maxThreadsPerPostDaily - (threadsTodayByPost.get(post.techhub_id) || 0)
+    );
+  }
+
+  // 4. Nội dung: map JSON thread -> bài đích (chỉ đường copy prompt, mục 0.3).
+  type PlanSource = {
+    index: number;
+    name: string;
+    techhubId: number | null;
+    visitor: string | null;
+    turns: Array<{ actor: string; content: string }>;
+  };
+  const sources: PlanSource[] = [];
+  if (rawThreads && rawThreads.length > 0) {
+    for (let i = 0; i < rawThreads.length; i++) {
+      try {
+        const thread = parseThreadIndex(rawThreads[i], i);
+        sources.push({
+          index: i,
+          name: thread.name,
+          techhubId: thread.targetTechhubId,
+          visitor:
+            thread.visitor && thread.visitor.toLowerCase() !== "auto" ? thread.visitor : null,
+          turns: thread.turns,
+        });
+      } catch (error) {
+        threadErrors.push({
+          index: i,
+          name: `thread-${i + 1}`,
+          error: error instanceof Error ? error.message : String(error),
+          action: "Sửa JSON rồi kiểm tra lại; các thread đúng vẫn chạy.",
+        });
+      }
+    }
+  } else {
+    // Preview chưa cần nội dung: dựng đủ số slot theo posts × threadsPerPost.
+    let index = 0;
+    for (const post of posts) {
+      const slots = Math.max(0, Math.min(input.threadsPerPost, remainingThreads.get(post.techhub_id) || 0));
+      for (let i = 0; i < slots; i++) {
+        sources.push({
+          index: index++,
+          name: `chuoi-${index}`,
+          techhubId: post.techhub_id,
+          visitor: null,
+          turns: [],
+        });
+      }
+    }
+  }
+
+  // 5. Ghép visitor + xếp lịch trong khung giờ.
+  const windowStartMs = Math.max(input.windowStartAt.getTime(), now.getTime());
+  const windowEndMs = windowStartMs + input.windowMinutes * 60 * 1000;
+  const minGapMs = preset.minActionGapMinutes * 60 * 1000;
+  const postById = new Map(posts.map((post) => [post.techhub_id, post]));
+  const roundRobinPostIds = posts.map((post) => post.techhub_id);
+  let roundRobinCursor = 0;
+  const pairUsageToday = new Map<string, number>();
+  const plannedThreads: QuickPlannedThread[] = [];
+
+  for (const source of sources) {
+    let techhubId = source.techhubId;
+    if (!techhubId) {
+      // Chưa khai bài đích: phân phối vòng tròn vào bài còn slot.
+      for (let i = 0; i < roundRobinPostIds.length; i++) {
+        const candidate = roundRobinPostIds[(roundRobinCursor + i) % roundRobinPostIds.length];
+        if ((remainingThreads.get(candidate) || 0) > 0) {
+          techhubId = candidate;
+          roundRobinCursor = (roundRobinCursor + i + 1) % roundRobinPostIds.length;
+          break;
+        }
+      }
+    }
+    const post = techhubId ? postById.get(techhubId) : undefined;
+    if (!post || !post.username) {
+      const hint = techhubId && !postById.has(techhubId)
+        ? QUICK_ISSUE_HINTS.POST_NOT_ELIGIBLE
+        : QUICK_ISSUE_HINTS.THREAD_CAP_PER_POST;
+      threadErrors.push({
+        index: source.index,
+        name: source.name,
+        error: techhubId
+          ? `Bài #${techhubId} không hợp lệ hoặc đã đủ chuỗi hôm nay.`
+          : "Không còn bài nào có slot chuỗi trống.",
+        action: hint.action,
+      });
+      continue;
+    }
+    const author = post.username;
+    const turnTotal = source.turns.length || 3;
+    const visitorTurns = Math.ceil(turnTotal / 2);
+    const authorTurns = Math.floor(turnTotal / 2);
+
+    const candidates = actors
+      .filter((actor) => actor !== author)
+      .filter((actor) => (remainingActions.get(actor) || 0) >= visitorTurns)
+      .filter((actor) => (remainingActions.get(author) || 0) >= authorTurns)
+      .filter((actor) => !activePairsToday.has(`${post.techhub_id}:${actor}:${author}`))
+      .sort(
+        (a, b) =>
+          (pairUsageToday.get(`${a}:${author}`) || 0) - (pairUsageToday.get(`${b}:${author}`) || 0) ||
+          (pairCount7d.get(`${a}:${author}`) || 0) - (pairCount7d.get(`${b}:${author}`) || 0) ||
+          (actionsToday.get(a) || 0) - (actionsToday.get(b) || 0) ||
+          (a < b ? -1 : a > b ? 1 : 0)
+      );
+
+    let visitor = source.visitor && candidates.includes(source.visitor)
+      ? source.visitor
+      : null;
+    if (source.visitor && !visitor) {
+      threadErrors.push({
+        index: source.index,
+        name: source.name,
+        error: `Visitor @${source.visitor} không đủ điều kiện cho bài #${post.techhub_id}.`,
+        action: QUICK_ISSUE_HINTS.VISITOR_NOT_ELIGIBLE.action,
+      });
+      continue;
+    }
+    if (!visitor) visitor = candidates[0] || null;
+
+    if (!visitor) {
+      // Không ghép được: chờ, không tạo task giả (17.2).
+      const authorEligible = actors.includes(author);
+      const others = actors.filter((actor) => actor !== author);
+      const reason =
+        !authorEligible || others.length === 0
+          ? "NO_ELIGIBLE_ACTOR"
+          : (remainingActions.get(author) || 0) < authorTurns ||
+              others.every((actor) => (remainingActions.get(actor) || 0) < visitorTurns)
+            ? "QUOTA_EXCEEDED"
+            : others.every((actor) =>
+                activePairsToday.has(`${post.techhub_id}:${actor}:${author}`)
+              )
+              ? "THREAD_ALREADY_ACTIVE"
+              : "NO_ELIGIBLE_ACTOR";
+      plannedThreads.push({
+        index: source.index,
+        name: source.name,
+        techhubId: post.techhub_id,
+        postTitle: post.title || null,
+        author,
+        visitor: null,
+        visitorTurns,
+        authorTurns,
+        scheduledAt: null,
+        schedulable: false,
+        reasonCode: reason,
+      });
+      continue;
+    }
+
+    // Xếp lịch: cùng user giữ khoảng cách tối thiểu, nằm trong khung giờ.
+    const slotMs = Math.max(
+      windowStartMs,
+      (lastSlotByActor.get(visitor) || 0) + minGapMs,
+      (lastSlotByActor.get(author) || 0) + minGapMs
+    );
+    if (slotMs > windowEndMs) {
+      plannedThreads.push({
+        index: source.index,
+        name: source.name,
+        techhubId: post.techhub_id,
+        postTitle: post.title || null,
+        author,
+        visitor,
+        visitorTurns,
+        authorTurns,
+        scheduledAt: null,
+        schedulable: false,
+        reasonCode: "WINDOW_FULL",
+      });
+      continue;
+    }
+
+    remainingActions.set(visitor, (remainingActions.get(visitor) || 0) - visitorTurns);
+    remainingActions.set(author, (remainingActions.get(author) || 0) - authorTurns);
+    remainingThreads.set(post.techhub_id, (remainingThreads.get(post.techhub_id) || 0) - 1);
+    pairUsageToday.set(`${visitor}:${author}`, (pairUsageToday.get(`${visitor}:${author}`) || 0) + 1);
+    lastSlotByActor.set(visitor, slotMs);
+    lastSlotByActor.set(author, slotMs);
+    plannedThreads.push({
+      index: source.index,
+      name: source.name,
+      techhubId: post.techhub_id,
+      postTitle: post.title || null,
+      author,
+      visitor,
+      visitorTurns,
+      authorTurns,
+      scheduledAt: new Date(slotMs).toISOString(),
+      schedulable: true,
+      reasonCode: null,
+    });
+  }
+
+  // 6. Gộp lỗi thành danh sách "lỗi có hành động sửa" (R4).
+  const waitingReasons = new Set(
+    plannedThreads.filter((item) => !item.schedulable).map((item) => item.reasonCode || "")
+  );
+  for (const code of waitingReasons) {
+    if (code && QUICK_ISSUE_HINTS[code]) {
+      issues.push({ code, ...QUICK_ISSUE_HINTS[code] });
+    }
+  }
+  if (threadErrors.length > 0) {
+    issues.push({
+      code: "THREAD_CONTENT_INVALID",
+      message: `${threadErrors.length} chuỗi trong JSON không dùng được.`,
+      action: "Xem chi tiết từng chuỗi dưới đây, sửa JSON rồi kiểm tra lại.",
+    });
+  }
+
+  return {
+    preset: {
+      name: preset.name,
+      label: preset.label,
+      maxActionsPerUserDaily: preset.maxActionsPerUserDaily,
+      maxThreadsPerPostDaily: preset.maxThreadsPerPostDaily,
+      minActionGapMinutes: preset.minActionGapMinutes,
+    },
+    window: {
+      startAt: new Date(windowStartMs).toISOString(),
+      endAt: new Date(windowEndMs).toISOString(),
+      minutes: input.windowMinutes,
+    },
+    eligiblePosts: posts.slice(0, 50).map((post) => ({
+      techhubId: post.techhub_id,
+      title: post.title || null,
+      author: post.username,
+      boosted: boostedPosts.has(post.techhub_id),
+      threadsToday: threadsTodayByPost.get(post.techhub_id) || 0,
+      remainingThreads: Math.max(0, remainingThreads.get(post.techhub_id) || 0),
+    })),
+    eligibleActors: actors.map((actor) => ({
+      username: actor,
+      actionsToday: actionsToday.get(actor) || 0,
+      remainingActions: Math.max(0, remainingActions.get(actor) || 0),
+    })),
+    plannedThreads,
+    threadErrors,
+    issues,
+    summary: {
+      posts: posts.length,
+      actors: actors.length,
+      threadsRequested: plannedThreads.length,
+      threadsNow: plannedThreads.filter((item) => item.schedulable).length,
+      threadsWaiting: plannedThreads.filter((item) => !item.schedulable).length,
+    },
+  };
+}
+
+async function handleQuickCampaign(
+  rest: Rest,
+  auth: Auth,
+  body: Record<string, unknown>,
+  options: { dryRun: boolean }
+) {
+  requireAdmin(auth);
+  if (await isKillSwitchOn(rest)) {
+    throw new HttpError("Hệ thống đang tạm dừng.", 403, "ENGAGEMENT_PAUSED");
+  }
+  const preset = await resolveQuickPreset(rest, String(body.preset || ""));
+  const input = parseQuickCampaignInput(body, preset);
+
+  let rawThreads: unknown[] | null = null;
+  if (Array.isArray(body.threads)) {
+    rawThreads = body.threads;
+    if (rawThreads.length === 0 && !options.dryRun) {
+      throw new HttpError(
+        "Cần JSON chuỗi để khởi chạy. " + QUICK_ISSUE_HINTS.THREADS_REQUIRED.action,
+        400,
+        "THREADS_REQUIRED"
+      );
+    }
+    if (rawThreads.length > preset.batchThreadLimit) {
+      throw new HttpError(
+        `Tối đa ${preset.batchThreadLimit} chuỗi mỗi batch.`,
+        400,
+        "QUOTA_EXCEEDED"
+      );
+    }
+  } else if (!options.dryRun) {
+    throw new HttpError(
+      "Cần JSON chuỗi để khởi chạy. " + QUICK_ISSUE_HINTS.THREADS_REQUIRED.action,
+      400,
+      "THREADS_REQUIRED"
+    );
+  }
+
+  const plan = await buildQuickCampaignPlan(rest, input, preset, rawThreads);
+
+  if (options.dryRun) {
+    return json({
+      ok: true,
+      dryRun: true,
+      campaignName: input.name,
+      ...plan,
+    });
+  }
+
+  // ---- Launch: chỉ tạo campaign + thread xếp được; chuỗi chờ được lưu lại
+  // trong campaign (draft) chứ không tạo task ảo.
+  const nowIso = new Date().toISOString();
+  const schedulable = plan.plannedThreads.filter((item) => item.schedulable);
+  const waiting = plan.plannedThreads.filter((item) => !item.schedulable);
+  const threadErrorsSafe: Array<{ index: number; name: string; error: string; action: string }> = [];
+  if (schedulable.length === 0) {
+    throw new HttpError(
+      "Không có chuỗi nào xếp được ngay. " +
+        (plan.issues[0]?.action || "Xem lại preview trước khi chạy."),
+      409,
+      plan.issues[0]?.code || "NO_ELIGIBLE_ACTOR"
+    );
+  }
+  const rawThreadByIndex = new Map<number, unknown>();
+  (rawThreads || []).forEach((thread, index) => rawThreadByIndex.set(index, thread));
+
+  const createdCampaigns = await rest.postJson<Array<{ id: number }>>(
+    "engagement_campaigns",
+    {
+      name: input.name,
+      description: `Chiến dịch nhanh preset ${preset.label}`,
+      status: "active",
+      actions: ["comment", "reply"],
+      votes_per_post: 0,
+      comments_per_post: 0,
+      max_tasks_per_actor_daily: preset.maxActionsPerUserDaily,
+      max_per_pair_daily: 1,
+      cooldown_minutes: preset.minActionGapMinutes,
+      jitter_minutes: 0,
+      post_scope: {
+        quick: true,
+        usernames: input.groupUsernames,
+        techhubId: input.techhubId,
+      },
+      schedule: {
+        quick: true,
+        windowStartAt: new Date(
+          Math.max(input.windowStartAt.getTime(), Date.now())
+        ).toISOString(),
+        windowMinutes: input.windowMinutes,
+        pendingDraft: waiting.map((item) => rawThreadByIndex.get(item.index) ?? null),
+      },
+      ai_assist: false,
+      comment_source: "thread",
+      preset: preset.name,
+      created_by: String(body.createdBy || "admin").slice(0, 100),
+      started_at: nowIso,
+    }
+  );
+  const campaign = firstRow(createdCampaigns);
+  if (!campaign) throw new HttpError("Không tạo được campaign.", 500);
+
+  const imported: Array<{ threadId: number; name: string; techhubId: number; visitor: string; scheduledAt: string }> = [];
+  for (const item of schedulable) {
+    const raw = rawThreadByIndex.get(item.index);
+    let thread: NormalizedThread | null = null;
+    try {
+      thread = parseThreadIndex(raw, item.index);
+    } catch {
+      thread = null;
+    }
+    // Không tạo thread với nội dung rỗng/không đọc được; báo lỗi theo từng
+    // chuỗi thay vì tạo task giả.
+    if (!thread || !thread.turns.length) {
+      threadErrorsSafe.push({
+        index: item.index,
+        name: item.name,
+        error: "Nội dung chuỗi không đọc được khi khởi chạy.",
+        action: "Kiểm tra lại JSON rồi chạy lại phần chuỗi còn thiếu.",
+      });
+      continue;
+    }
+    const turns = thread.turns;
+    const post = await getPostByTechhubId(rest, item.techhubId);
+    const createdThreads = await rest.postJson<Array<{ id: number }>>("discussion_threads", {
+      name: item.name,
+      campaign_id: campaign.id,
+      techhub_id: item.techhubId,
+      techhub_uuid: post?.techhub_uuid ?? null,
+      author_username: item.author,
+      visitor_username: item.visitor || item.author,
+      actor_a_username: item.visitor,
+      actor_b_username: item.author,
+      status: "active",
+      current_turn_index: 1,
+      total_turns: turns.length,
+      created_by: "admin",
+    });
+    const threadRow = firstRow(createdThreads);
+    if (!threadRow) continue;
+    let prevTurnId: number | null = null;
+    let firstTurn: { id: number; turn_index: number; actor_username: string; content: string } | null = null;
+    let turnIndex = 0;
+    for (const turn of turns) {
+      turnIndex += 1;
+      const actorUsername = turn.actor === "A" ? item.visitor || item.author : item.author;
+      const createdTurns = await rest.postJson<Array<{ id: number }>>("discussion_turns", {
+        thread_id: threadRow.id,
+        turn_index: turnIndex,
+        actor_key: turn.actor,
+        actor_username: actorUsername,
+        content: turn.content || "",
+        status: "pending",
+        depends_on_turn_id: prevTurnId,
+      });
+      const turnRow = firstRow(createdTurns);
+      if (!turnRow) break;
+      if (turnIndex === 1) {
+        firstTurn = {
+          id: turnRow.id,
+          turn_index: 1,
+          actor_username: actorUsername,
+          content: turn.content || "",
+        };
+      }
+      prevTurnId = turnRow.id;
+    }
+    if (!firstTurn) continue;
+    const delayMinutes = Math.max(
+      0,
+      (new Date(item.scheduledAt || nowIso).getTime() - Date.now()) / 60000
+    );
+    await queueDiscussionTurn(
+      rest,
+      {
+        id: threadRow.id,
+        techhub_id: item.techhubId,
+        techhub_uuid: post?.techhub_uuid ?? null,
+        campaign_id: campaign.id,
+        author_username: item.author,
+      },
+      firstTurn,
+      { delayMinutes }
+    );
+    imported.push({
+      threadId: threadRow.id,
+      name: item.name,
+      techhubId: item.techhubId,
+      visitor: item.visitor || "",
+      scheduledAt: item.scheduledAt || nowIso,
+    });
+  }
+
+  // Boost đã đủ số chuỗi thực tế thì hoàn tất (giữ logic import cũ).
+  const importedPostIds = [...new Set(imported.map((item) => item.techhubId))];
+  for (const techhubId of importedPostIds) {
+    const boosts = await rest.getJson<
+      Array<{ id: number; requested_discussions: number; created_at: string }>
+    >("engagement_boost_requests", {
+      techhub_id: `eq.${techhubId}`,
+      status: "eq.active",
+      select: "id,requested_discussions,created_at",
+      order: "created_at.asc",
+      limit: "100",
+    });
+    for (const boost of boosts || []) {
+      const threads = await rest.getJson<Array<{ id: number }>>("discussion_threads", {
+        techhub_id: `eq.${techhubId}`,
+        created_at: `gte.${boost.created_at}`,
+        select: "id",
+        limit: String(Math.max(1, Number(boost.requested_discussions) || 1)),
+      });
+      if ((threads || []).length < Number(boost.requested_discussions)) continue;
+      await rest.patch("engagement_boost_requests", { id: `eq.${boost.id}` }, {
+        status: "completed",
+        updated_at: new Date().toISOString(),
+      });
+    }
+  }
+
+  await logEvent(rest, {
+    campaign_id: campaign.id,
+    event: "quick_campaign_launched",
+    detail: {
+      preset: preset.name,
+      threads: imported.length,
+      waiting: waiting.length,
+      posts: plan.summary.posts,
+      actors: plan.summary.actors,
+      window_minutes: input.windowMinutes,
+    },
+  });
+
+  return json({
+    ok: true,
+    campaignId: campaign.id,
+    preset: plan.preset,
+    imported,
+    waiting,
+    threadErrors: [...plan.threadErrors, ...threadErrorsSafe],
+    issues: plan.issues,
+    summary: {
+      ...plan.summary,
+      threadsNow: imported.length,
+    },
+    pendingDraftSaved: waiting.length > 0,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -4082,9 +4979,11 @@ async function handleListTasks(
 
 async function handleGetOpsStats(rest: Rest, auth: Auth) {
   requireAdmin(auth);
+  // Đối soát boost hết hạn để tổng quan không hiển thị yêu cầu đã chết.
+  await settleExpiredBoosts(rest);
   const since24h = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
   const since7d = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
-  const [tasks7d, events24h, stuck, sessionTasks, devices] = await Promise.all([
+  const [tasks7d, events24h, stuck, sessionTasks, devices, boostRefunds] = await Promise.all([
     rest.getJson<TaskRow[]>("engagement_tasks", {
       created_at: `gte.${since7d}`,
       select: "id,actor_username,action,status,last_http_status,created_at,completed_at",
@@ -4114,6 +5013,16 @@ async function handleGetOpsStats(rest: Rest, auth: Auth) {
       order: "last_seen_at.desc",
       limit: "100",
     }),
+    rest.getJson<Array<{ id: number; event: string; detail: unknown; created_at: string }>>(
+      "engagement_events",
+      {
+        event: "eq.ultra_refunded",
+        created_at: `gte.${since7d}`,
+        select: "id,event,detail,created_at",
+        order: "created_at.desc",
+        limit: "100",
+      }
+    ),
   ]);
 
   const byStatus: Record<string, number> = {};
@@ -4150,6 +5059,7 @@ async function handleGetOpsStats(rest: Rest, auth: Auth) {
     stuckClaimed: stuck || [],
     sessionRequired: sessionTasks || [],
     devices: devices || [],
+    ultraRefunds7d: boostRefunds || [],
   });
 }
 
@@ -4470,6 +5380,12 @@ Deno.serve(async (req) => {
         return await handlePushComments(rest, auth, body);
       case "listBoosts":
         return await handleListBoosts(rest, auth, body);
+      case "cancelBoost":
+        return await handleCancelBoost(rest, auth, body);
+      case "previewQuickCampaign":
+        return await handleQuickCampaign(rest, auth, body, { dryRun: true });
+      case "launchQuickCampaign":
+        return await handleQuickCampaign(rest, auth, body, { dryRun: false });
       case "revokeDevice":
         return await handleRevokeDevice(rest, auth, body);
       case "createEnrollmentInvitation":

@@ -586,19 +586,106 @@
                 <div id="engSettingsMessage" class="msg hidden"></div>
               </div>
 
-              <div class="card admin-only hidden">
+              <div class="card admin-only">
                 <div class="card-head">
                   <div>
-                    <h2>Tạo campaign</h2>
-                    <p>Sinh task vote/comment, chia đều giữa các actor và tác giả</p>
+                    <h2>Chiến dịch nhanh</h2>
+                    <p>Năm lựa chọn: nhóm user, bài đích, số chuỗi/bài, khung giờ và preset vận hành</p>
                   </div>
+                  <div class="card-actions">
+                    <button id="quickCopyPromptBtn" class="btn btn-secondary" type="button">
+                      Copy prompt
+                    </button>
+                    <button id="quickPreviewBtn" class="btn btn-secondary" type="button">
+                      Xem trước
+                    </button>
+                    <button id="quickLaunchBtn" class="btn btn-primary" type="button">
+                      Khởi chạy
+                    </button>
+                  </div>
+                </div>
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="quickGroupUsernames">Nhóm user</label>
+                      <span>Cách nhau bằng dấu phẩy; bỏ trống = mọi thành viên đủ điều kiện</span>
+                    </div>
+                    <input id="quickGroupUsernames" type="text" placeholder="vd: user_a, user_b" spellcheck="false" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="quickTargetPostId">Bài đích</label>
+                      <span>ID TechHub của một bài; bỏ trống = tự chọn bài theo nhóm phía trên</span>
+                    </div>
+                    <input id="quickTargetPostId" type="number" min="1" placeholder="vd: 4010" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="quickThreadsPerPost">Số chuỗi / bài</label>
+                      <span>Mỗi chuỗi 2–3 lượt; mỗi lượt là một hành động của user tương ứng</span>
+                    </div>
+                    <input id="quickThreadsPerPost" type="number" min="1" max="3" value="3" />
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label>Khung giờ</label>
+                      <span>Bắt đầu + độ dài cửa sổ; hành động của cùng user giữ khoảng cách tối thiểu</span>
+                    </div>
+                    <div class="inline-inputs">
+                      <input id="quickWindowStart" type="datetime-local" aria-label="Giờ bắt đầu" />
+                      <span>·</span>
+                      <input id="quickWindowMinutes" type="number" min="30" max="720" value="120" aria-label="Độ dài khung giờ (phút)" />
+                      <span>phút</span>
+                    </div>
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="quickPreset">Preset vận hành</label>
+                      <span>An toàn: 2 hành động/user/ngày, 1 chuỗi/bài/ngày · Cân bằng: 5 hành động, 3 chuỗi/bài/ngày</span>
+                    </div>
+                    <select id="quickPreset">
+                      <option value="safe">An toàn (pilot)</option>
+                      <option value="balanced" selected>Cân bằng</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="quickThreadJson">Nội dung chuỗi (JSON)</label>
+                      <span>Copy prompt sang ChatGPT/Gemini rồi dán JSON; để visitor trống/auto để server tự ghép người</span>
+                    </div>
+                    <textarea
+                      id="quickThreadJson"
+                      class="code-input"
+                      rows="6"
+                      spellcheck="false"
+                      placeholder='[{"name":"chuoi-1","targetTechhubId":4010,"turns":[{"actor":"A","content":"..."},{"actor":"B","content":"..."},{"actor":"A","content":"..."}]}]'
+                    ></textarea>
+                  </div>
+                </div>
+                <div id="quickMessage" class="msg hidden"></div>
+                <div id="quickPreviewBox" class="quick-preview hidden"></div>
+              </div>
+
+              <div class="card admin-only">
+                <div class="card-head">
+                  <div>
+                    <h2>Tạo campaign (nâng cao)</h2>
+                    <p>Sinh task vote/comment, chia đều giữa các actor và tác giả — chỉ dùng khi cần kiểm tra từng thông số</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="refreshCampaignsBtn" class="btn btn-secondary" type="button">
+                      Làm mới campaign
+                    </button>
+                  </div>
+                </div>
+                <details class="advanced-details">
+                  <summary>Mở form cấu hình chi tiết (mặc định đóng)</summary>
                   <div class="card-actions">
                     <button id="planCampaignBtn" class="btn btn-primary" type="button">
                       Tạo campaign
                     </button>
                   </div>
-                </div>
-                <div class="field-list">
+                  <div class="field-list">
                   <div class="field">
                     <div class="field-text">
                       <label for="campaignName">Tên campaign</label>
@@ -685,14 +772,10 @@
                   </div>
                 </div>
                 <div id="campaignMessage" class="msg hidden"></div>
+                </details>
                 <div class="list-label">Campaign gần đây</div>
                 <div id="campaignsList" class="schedule-list">
                   <div class="empty">Bấm Làm mới campaign để tải.</div>
-                </div>
-                <div class="card-actions">
-                  <button id="refreshCampaignsBtn" class="btn btn-secondary" type="button">
-                    Làm mới campaign
-                  </button>
                 </div>
               </div>
 

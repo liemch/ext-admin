@@ -1360,6 +1360,23 @@ deploy. Không đánh dấu xong chỉ vì đã có UI hoặc test kiểm tra ch
   ledger hoàn Ultra cho yêu cầu chưa bắt đầu đủ điều kiện.
 - Nghiệm thu: admin hoàn thành chiến dịch trong 2 phút; bài ưu tiên vẫn chịu quota;
   retry reward/refund không thay đổi số dư lần hai.
+- Trạng thái 18/09/2026: **đã hoàn tất implementation và test local; chờ áp
+  migration lên dev, chạy `scripts/test-r4-ultra-refund.sql` và demo tạo chiến
+  dịch trong 2 phút trước khi đánh dấu nghiệm thu**. Đã có: màn hình Chiến dịch
+  nhanh đúng năm trường (nhóm user, bài đích, số chuỗi/bài, khung giờ, preset);
+  preset An toàn/Cân bằng đọc trần từ settings server và chặn giá trị client tự
+  khai; action `previewQuickCampaign` dry-run trả về bài hợp lệ, thành viên đủ
+  điều kiện, chuỗi xếp ngay/chờ kèm reason code và hành động sửa (có case
+  "Chưa đủ hai tài khoản"); `launchQuickCampaign` tự ghép visitor theo quota/
+  cặp/giờ, lưu chuỗi chờ vào campaign (không tạo task giả), boost chỉ đổi thứ tự
+  ưu tiên mà vẫn chịu quota; RPC `settle_engagement_boosts` hoàn 1 lượt Ultra
+  đúng một lần (guard `status='active'` + `refunded_at`) cho yêu cầu hết hạn/hủy
+  chưa từng mở turn đầu, kèm ledger sự kiện `ultra_refunded` duy nhất; admin có
+  action `cancelBoost` (Hủy & hoàn) và listBoosts/getOpsStats tự đối soát hết
+  hạn. Bằng chứng: migration
+  `20260918120000_quick_campaign_presets_ultra_refund.sql`; 441 test engagement
+  pass (71 test R4 mới); test DB `scripts/test-r4-ultra-refund.sql`. Cần deploy
+  `engagement-api` sau khi áp migration.
 
 ### R5 — Kho bài, revision và phân lịch
 
@@ -1461,8 +1478,9 @@ không được bù bằng nhiều tính năng hay số comment cao.
 Checklist bàn giao mỗi release: commit/branch, file/contract thay đổi, test và
 demo đã chạy, migration/function cần deploy theo đúng thứ tự, feature flag,
 metric theo dõi, rollback và phần chưa kiểm chứng. Trong lần rà soát plan này
-R1–R3 đã có implementation và test local trên branch `product-9-10`; R0 create
-API được hoãn đến lúc chạy extension. R4–R9 chưa triển khai và chưa có ticket nào
+R1–R4 đã có implementation và test local trên branch `product-9-10`; R0 create
+API được hoãn đến lúc chạy extension. R5–R9 chưa triển khai và chưa có ticket nào
 được xác minh production. Trước demo R3 phải áp lần lượt migration
 `20260917020158`, `20260917025828`, `20260918043557`, deploy `engagement-api`
-và `post-sync-api`, sau đó reload extension trên hai browser profile.
+và `post-sync-api`, sau đó reload extension trên hai browser profile. Trước demo
+R4 áp thêm migration `20260918120000` và deploy lại `engagement-api`.

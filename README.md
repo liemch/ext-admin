@@ -104,6 +104,9 @@ bash scripts/setup-supabase.sh
 10. `supabase/migrations/014_engagement_user_pool.sql` — policy admin, pool, điểm và Ultra
 11. `supabase/migrations/015_expand_discussion_thread_quota.sql` — mở quota chuỗi thảo luận lên 50
 12. `supabase/migrations/016_add_moderator_role.sql` — thêm quyền moderator và khóa anon ghi cột đặc quyền
+13. `supabase/migrations/20260918120000_quick_campaign_presets_ultra_refund.sql` —
+    chiến dịch nhanh: preset An toàn/Cân bằng do server quản và RPC hoàn Ultra
+    idempotent khi yêu cầu hết hạn/hủy chưa từng mở turn đầu
 
 Chi tiết bảng / kiểm tra: xem [`supabase/README.md`](supabase/README.md).
 
@@ -147,7 +150,7 @@ Phân quyền theo bảng `users`:
 | **Auto comment** | Chọn tối đa 5 bài → nhập số cmt mỗi bài → chạy ngay hoặc hẹn giờ |
 | **Hẹn xóa bài** | Chọn 1–5 bài + thời gian dùng chung; Xóa ngay yêu cầu đúng một bài |
 | **Tương tác** (mọi user) | Tạo chuỗi cho bài của mình, xem đóng góp/nhận lại và chọn bài dùng Ultra |
-| **Tương tác** (admin) | Điều phối pool/user, copy prompt + nhập JSON 2–3 lượt, Push comment, xử lý lỗi/lease |
+| **Tương tác** (admin) | Chiến dịch nhanh (nhóm user, bài đích, số chuỗi/bài, khung giờ, preset; xem trước capacity và lỗi kèm hành động sửa), điều phối pool/user, copy prompt + nhập JSON 2–3 lượt, Push comment, hủy yêu cầu Ultra và hoàn lượt, xử lý lỗi/lease |
 
 Chi tiết kiến trúc và phân phối task: xem [`PLAN_CROSS_USER_ENGAGEMENT.md`](PLAN_CROSS_USER_ENGAGEMENT.md).
 

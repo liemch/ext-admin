@@ -371,7 +371,9 @@
       globalThis.setPostsUltraCredits?.(response.reward?.ultra_credits ?? 0);
       showAdminMsg(
         $("postsMessage"),
-        `Đã dùng Ultra cho bài #${techhubId}; hệ thống sẽ ưu tiên ${response.discussions} chuỗi.`,
+        `Đã dùng Ultra cho bài #${techhubId}; hệ thống sẽ ưu tiên ${response.discussions} chuỗi. ` +
+          "Ultra chỉ đổi thứ tự ưu tiên, không đảm bảo số comment hoặc thời gian hoàn thành; " +
+          "nếu không ghép được người trước khi hết hạn, lượt Ultra được hoàn đúng một lần.",
         "success"
       );
       await loadEngagementState();
@@ -736,9 +738,199 @@
     }
   }
 
+  // ---------------------------------------- R4: chiến dịch nhanh + hoàn Ultra
+
+  const QUICK_REASON_TEXT = {
+    NO_ELIGIBLE_ACTOR: "Chưa đủ hai tài khoản",
+    QUOTA_EXCEEDED: "Hết quota hành động hôm nay",
+    THREAD_CAP_PER_POST: "Bài đã đủ chuỗi hôm nay",
+    THREAD_ALREADY_ACTIVE: "Cặp user đã có chuỗi đang chạy",
+    WINDOW_FULL: "Khung giờ không đủ chỗ",
+    VISITOR_NOT_ELIGIBLE: "Visitor không đủ điều kiện",
+    POST_NOT_ELIGIBLE: "Bài chưa đủ điều kiện",
+    NO_ELIGIBLE_POST: "Không có bài hợp lệ",
+  };
+
+  function quickCampaignPayload() {
+    const group = String($("quickGroupUsernames")?.value || "")
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean);
+    const targetPost = Number($("quickTargetPostId")?.value);
+    return {
+      preset: String($("quickPreset")?.value || "balanced"),
+      groupUsernames: group,
+      techhubId: Number.isInteger(targetPost) && targetPost > 0 ? targetPost : null,
+      threadsPerPost: Number($("quickThreadsPerPost")?.value) || 3,
+      windowStartAt: $("quickWindowStart")?.value ? new Date($("quickWindowStart").value).toISOString() : new Date().toISOString(),
+      windowMinutes: Number($("quickWindowMinutes")?.value) || 120,
+      threads: parseQuickThreadsJson(),
+    };
+  }
+
+  function parseQuickThreadsJson() {
+    const raw = String($("quickThreadJson")?.value || "").trim();
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function renderQuickPreview(preview) {
+    const box = $("quickPreviewBox");
+    if (!box) return;
+    box.classList.remove("hidden");
+    const summary = preview.summary || {};
+    const chips = [
+      `Preset: ${esc(preview.preset?.label || "")}`,
+      `Bài hợp lệ: ${summary.posts ?? 0}`,
+      `Thành viên đủ điều kiện: ${summary.actors ?? 0}`,
+      `Xếp ngay: ${summary.threadsNow ?? 0}`,
+      `Chờ: ${summary.threadsWaiting ?? 0}`,
+    ].map((chip) => `<span class="chip">${chip}</span>`).join("");
+    const issues = (preview.issues || []).map((issue) => `
+      <div class="issue-item">
+        <div class="issue-main">
+          <strong>${esc(QUICK_REASON_TEXT[issue.code] || issue.code)}:</strong> ${esc(issue.message)}
+        </div>
+        <div class="issue-action">→ ${esc(issue.action)}</div>
+      </div>
+    `).join("");
+    const threads = (preview.plannedThreads || []).map((item) => `
+      <div class="issue-item">
+        <div class="issue-main">
+          ${item.schedulable
+            ? `✓ <strong>#${esc(item.techhubId)}</strong> ${esc(item.postTitle || "")} · @${esc(item.visitor)} → @${esc(item.author)} · ${esc(new Date(item.scheduledAt).toLocaleString("vi-VN"))}`
+            : `⏳ <strong>#${esc(item.techhubId)}</strong> ${esc(item.postTitle || "")} · @${esc(item.author)} — ${esc(QUICK_REASON_TEXT[item.reasonCode] || item.reasonCode || "Chờ")}`}
+        </div>
+      </div>
+    `).join("");
+    const errors = (preview.threadErrors || []).map((item) => `
+      <div class="issue-item">
+        <div class="issue-main">✗ [${esc(item.name)}] ${esc(item.error)}</div>
+        <div class="issue-action">→ ${esc(item.action)}</div>
+      </div>
+    `).join("");
+    box.innerHTML = `
+      <div class="chip-row">${chips}</div>
+      ${issues ? `<div class="issue-list">${issues}</div>` : ""}
+      ${threads ? `<div class="issue-list">${threads}</div>` : ""}
+      ${errors ? `<div class="issue-list">${errors}</div>` : ""}
+      ${!issues && !threads && !errors ? '<div class="empty">Chưa có dữ liệu preview.</div>' : ""}
+    `;
+  }
+
+  async function previewQuickCampaign() {
+    try {
+      const payload = quickCampaignPayload();
+      if (payload.threads === null && String($("quickThreadJson")?.value || "").trim()) {
+        throw new Error("JSON chuỗi không hợp lệ. Sửa rồi thử lại.");
+      }
+      const response = await sendMessage({ action: "engagementPreviewQuickCampaign", payload });
+      if (!response?.success) throw new Error(response?.error || "Không xem trước được.");
+      renderQuickPreview(response);
+      showAdminMsg(
+        $("quickMessage"),
+        `Preview: ${response.summary?.threadsNow ?? 0} chuỗi xếp ngay, ${response.summary?.threadsWaiting ?? 0} chuỗi chờ. Kiểm tra trước khi bấm Khởi chạy.`,
+        "success"
+      );
+    } catch (error) {
+      showAdminMsg($("quickMessage"), `Lỗi: ${error.message}`, "error");
+    }
+  }
+
+  async function launchQuickCampaign() {
+    const payload = quickCampaignPayload();
+    if (payload.threads === null && String($("quickThreadJson")?.value || "").trim()) {
+      showAdminMsg($("quickMessage"), "JSON chuỗi không hợp lệ. Sửa rồi thử lại.", "error");
+      return;
+    }
+    if (!payload.threads || payload.threads.length === 0) {
+      showAdminMsg(
+        $("quickMessage"),
+        "Chưa có nội dung: bấm Copy prompt, tạo JSON bằng ChatGPT/Gemini rồi dán vào ô nội dung.",
+        "error"
+      );
+      return;
+    }
+    const ok = window.confirm(
+      `Khởi chạy chiến dịch nhanh preset ${payload.preset}? ` +
+        `${payload.threads.length} chuỗi sẽ được ghép người và xếp lịch tự động.`
+    );
+    if (!ok) return;
+    try {
+      const response = await sendMessage({ action: "engagementLaunchQuickCampaign", payload });
+      if (!response?.success) throw new Error(response?.error || "Khởi chạy thất bại.");
+      renderQuickPreview(response);
+      const waitingCount = response.waiting?.length || 0;
+      let message =
+        `Đã tạo campaign #${response.campaignId}: ${response.imported?.length ?? 0} chuỗi xếp lịch`;
+      if (waitingCount > 0) {
+        message += `, ${waitingCount} chuỗi chờ được lưu trong campaign (không tạo task ảo)`;
+      }
+      showAdminMsg($("quickMessage"), `${message}.`, "success");
+      await refreshCampaigns();
+    } catch (error) {
+      showAdminMsg($("quickMessage"), `Lỗi: ${error.message}`, "error");
+    }
+  }
+
+  async function copyQuickPrompt() {
+    try {
+      const targetPost = Number($("quickTargetPostId")?.value);
+      const count = Math.min(50, Math.max(1, Number($("quickThreadsPerPost")?.value) || 3));
+      if (!Number.isInteger(targetPost) || targetPost <= 0) {
+        throw new Error("Nhập ID bài đích trước khi copy prompt (chiến dịch nhanh cần bài cụ thể).");
+      }
+      const response = await sendMessage({
+        action: "buildEngagementDiscussionPrompt",
+        techhubId: targetPost,
+        visitor: "auto",
+        count,
+      });
+      if (!response?.success) throw new Error(response?.error || "Không tạo được prompt.");
+      await navigator.clipboard.writeText(response.prompt);
+      showAdminMsg(
+        $("quickMessage"),
+        "Đã copy prompt. Dán vào ChatGPT/Gemini rồi đưa JSON kết quả vào ô nội dung; visitor để tự động để server ghép người.",
+        "success"
+      );
+    } catch (error) {
+      showAdminMsg($("quickMessage"), `Không copy được prompt: ${error.message}`, "error");
+    }
+  }
+
+  async function cancelBoostRequest(boostId) {
+    if (!Number.isInteger(boostId) || boostId <= 0) return;
+    const ok = window.confirm(
+      `Hủy yêu cầu Ultra #${boostId}? Nếu chưa có chuỗi nào bắt đầu, 1 lượt Ultra sẽ được hoàn cho user.`
+    );
+    if (!ok) return;
+    try {
+      const response = await sendMessage({
+        action: "engagementCancelBoost",
+        boostId,
+        reason: "admin_cancelled",
+      });
+      if (!response?.success) throw new Error(response?.error || "Không hủy được yêu cầu.");
+      const settled = Array.isArray(response.settled) ? response.settled[0] : null;
+      showAdminMsg(
+        $("threadImportMessage"),
+        settled?.refunded
+          ? `Đã hủy yêu cầu #${boostId} và hoàn 1 lượt Ultra cho @${settled.owner_username}.`
+          : `Đã hủy yêu cầu #${boostId} (không hoàn lượt vì đã có chuỗi bắt đầu hoặc không phải Ultra).`,
+        "success"
+      );
+      await refreshBoosts();
+    } catch (error) {
+      showAdminMsg($("threadImportMessage"), `Lỗi hủy yêu cầu: ${error.message}`, "error");
+    }
+  }
+
   async function refreshBoosts() {
-    const list = $("boostRequestsList");
-    if (!list) return;
     list.innerHTML = '<div class="empty">Đang tải…</div>';
     try {
       const response = await sendMessage({ action: "engagementListBoosts", status: "active" });
@@ -754,8 +946,14 @@
             <strong>#${esc(boost.techhub_id)} · @${esc(boost.owner_username)}</strong>
             <span class="badge ${boost.source === "ultra" ? "ok" : "info"}">${esc(boost.source)}</span>
             <span class="schedule-meta">${esc(boost.requested_discussions)} chuỗi · ${esc(fmtAgo(boost.created_at))}</span>
+            ${boost.refunded_at ? '<span class="badge ok">đã hoàn 1 lượt Ultra</span>' : ""}
           </div>
-          <button class="mini-btn" data-prepare-boost="${esc(boost.techhub_id)}|${esc(boost.requested_discussions)}" type="button">Chuẩn bị nội dung</button>
+          <div class="schedule-actions">
+            <button class="mini-btn" data-prepare-boost="${esc(boost.techhub_id)}|${esc(boost.requested_discussions)}" type="button">Chuẩn bị nội dung</button>
+            ${boost.source === "ultra"
+              ? `<button class="mini-btn danger" data-boost-cancel="${esc(boost.id)}" type="button" title="Hủy và hoàn 1 lượt Ultra nếu chưa có chuỗi nào bắt đầu">Hủy &amp; hoàn</button>`
+              : ""}
+          </div>
         </div>
       `).join("");
     } catch (error) {
@@ -1417,6 +1615,11 @@
     if ($("boostRequestsList")) {
       $("boostRequestsList").addEventListener("click", async (event) => {
         const button = event.target.closest("[data-prepare-boost]");
+        const cancelButton = event.target.closest("[data-boost-cancel]");
+        if (cancelButton) {
+          await cancelBoostRequest(Number(cancelButton.dataset.boostCancel));
+          return;
+        }
         if (!button) return;
         const [techhubId, count] = String(button.dataset.prepareBoost || "").split("|");
         if ($("threadDefaultPostId")) $("threadDefaultPostId").value = techhubId;
@@ -1426,6 +1629,15 @@
     }
     if ($("planCampaignBtn")) {
       $("planCampaignBtn").addEventListener("click", planCampaign);
+    }
+    if ($("quickPreviewBtn")) {
+      $("quickPreviewBtn").addEventListener("click", previewQuickCampaign);
+    }
+    if ($("quickLaunchBtn")) {
+      $("quickLaunchBtn").addEventListener("click", launchQuickCampaign);
+    }
+    if ($("quickCopyPromptBtn")) {
+      $("quickCopyPromptBtn").addEventListener("click", copyQuickPrompt);
     }
     if ($("refreshCampaignsBtn")) {
       $("refreshCampaignsBtn").addEventListener("click", refreshCampaigns);

@@ -650,6 +650,219 @@ assert(ui.includes("Chờ thành viên khác"), "UI nói rõ khi pool chưa đ�
 assert(!html.includes('id="engagementUltraPostId"'), "đã bỏ ô nhập ID Ultra khỏi Tương tác chéo");
 assert(!html.includes('id="redeemEngagementUltraBtn"'), "đã bỏ nút Ultra khỏi Tương tác chéo");
 
+// --------------------------------------- 7b. R4: chiến dịch nhanh + hoàn Ultra
+section("R4 chiến dịch nhanh và hoàn Ultra");
+
+const r4Migration = read("supabase/migrations/20260918120000_quick_campaign_presets_ultra_refund.sql");
+// Hai preset MVP do server quản (mục 17.2): An toàn 2 hành động + 1 chuỗi,
+// Cân bằng 5 hành động + 3 chuỗi, khoảng cách tối thiểu 10 phút.
+for (const key of [
+  "engagement_preset_safe_daily_actions",
+  "engagement_preset_safe_threads_per_post",
+  "engagement_preset_balanced_daily_actions",
+  "engagement_preset_balanced_threads_per_post",
+  "engagement_preset_min_action_gap_minutes",
+  "engagement_preset_max_threads_per_batch",
+]) {
+  assert(r4Migration.includes(`'${key}'`), `R4 settings có ${key}`);
+}
+assert(
+  r4Migration.includes("preset IS NULL OR preset IN ('safe', 'balanced')"),
+  "R4 campaign ghi preset đã dùng"
+);
+assert(
+  r4Migration.includes("ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ"),
+  "R4 boost có mốc hoàn credit"
+);
+assert(
+  r4Migration.includes("WHERE b.id = r.id AND b.status = 'active'"),
+  "R4 hoàn Ultra chỉ thắng một lần chuyển trạng thái (idempotent)"
+);
+assert(
+  r4Migration.includes("GET DIAGNOSTICS v_updated = ROW_COUNT") &&
+    r4Migration.includes("CONTINUE;  -- RACE"),
+  "R4 xử lý race: batch khác đã xử lý thì không hoàn lần hai"
+);
+assert(
+  (r4Migration.match(/'ultra_refunded'/g) || []).length === 1,
+  "R4 ghi đúng một ledger sự kiện ultra_refunded mỗi lần hoàn"
+);
+assert(
+  r4Migration.includes("r.source = 'ultra' AND v_started = 0 AND r.refunded_at IS NULL"),
+  "R4 chỉ hoàn khi Ultra chưa từng mở turn đầu và chưa hoàn"
+);
+assert(
+  r4Migration.includes("JOIN public.discussion_turns dt") &&
+    r4Migration.includes("dt.turn_index = 1"),
+  "R4 đếm 'đã bắt đầu' theo turn đầu thật sự"
+);
+assert(
+  r4Migration.includes(
+    "REVOKE ALL ON FUNCTION public.settle_engagement_boosts(BIGINT, TEXT) FROM anon, authenticated"
+  ),
+  "R4 anon/authenticated không gọi được RPC hoàn Ultra"
+);
+
+// API contract: preview dry-run, launch, cancel boost.
+assert(edge.includes('case "previewQuickCampaign"'), "R4 có action preview capacity");
+assert(edge.includes('case "launchQuickCampaign"'), "R4 có action khởi chạy chiến dịch nhanh");
+assert(edge.includes('case "cancelBoost"'), "R4 có action admin hủy boost");
+assert(
+  edge.includes("dryRun: true") && edge.includes("return json({\n      ok: true,\n      dryRun: true,"),
+  "R4 preview là dry-run, không tạo campaign/thread/task"
+);
+assert(
+  edge.includes("const plan = await buildQuickCampaignPlan(rest, input, preset, rawThreads);") &&
+    edge.indexOf("async function buildQuickCampaignPlan") <
+      edge.indexOf("async function handleQuickCampaign"),
+  "R4 preview và launch dùng chung bộ tính capacity"
+);
+for (const code of ["PRESET_REQUIRED", "THREADS_REQUIRED", "NO_ELIGIBLE_ACTOR", "QUOTA_EXCEEDED"]) {
+  assert(edge.includes(`"${code}"`), `R4 dùng error code ổn định ${code}`);
+}
+assert(
+  edge.includes("Chưa đủ hai tài khoản"),
+  "R4 preview nói đúng 'Chưa đủ hai tài khoản' khi thiếu người (17.2)"
+);
+for (const issueKey of ["NO_ELIGIBLE_ACTOR", "QUOTA_EXCEEDED", "THREAD_CAP_PER_POST", "WINDOW_FULL"]) {
+  assert(
+    edge.includes(`${issueKey}: {`) && edge.includes("action:"),
+    `R4 lỗi ${issueKey} kèm hành động sửa`
+  );
+}
+assert(
+  edge.includes("boostedPosts") && edge.includes("remainingThreads.get(post.techhub_id)"),
+  "R4 boost chỉ đổi thứ tự ưu tiên, bài ưu tiên vẫn chịu quota"
+);
+assert(
+  edge.includes("pendingDraft: waiting.map"),
+  "R4 lưu draft chuỗi chờ trong campaign, không tạo task giả"
+);
+assert(
+  edge.includes("preset: preset.name") && edge.includes("max_tasks_per_actor_daily: preset.maxActionsPerUserDaily"),
+  "R4 campaign sinh ra mang preset và trần của preset"
+);
+assert(
+  edge.includes("clampPreference(safeActions, 2, 1, 20)") &&
+    edge.includes("clampPreference(balancedActions, 5, 1, 20)") &&
+    edge.includes("clampPreference(minGap, 10, 1, 1440)"),
+  "R4 trần preset đọc từ settings server, không tin client"
+);
+// Đối soát hoàn Ultra chạy khi admin xem danh sách/ops.
+assert(
+  (edge.match(/await settleExpiredBoosts\(rest\);/g) || []).length >= 2,
+  "R4 listBoosts và getOpsStats đều đối soát boost hết hạn"
+);
+assert(
+  edge.includes("không đảm bảo số comment hoặc thời gian hoàn thành"),
+  "R4 redeemUltra giải thích ưu tiên không đảm bảo kết quả (18.5)"
+);
+assert(
+  edge.includes("refunded_at,refund_reason"),
+  "R4 listBoosts trả về trạng thái đã hoàn cho UI"
+);
+assert(
+  edge.includes("ultraRefunds7d"),
+  "R4 ops stats có ledger hoàn Ultra 7 ngày"
+);
+
+// Background + UI + HTML contract.
+assert(
+  background.includes('"engagementPreviewQuickCampaign"') &&
+    background.includes('"engagementLaunchQuickCampaign"') &&
+    background.includes('"engagementCancelBoost"'),
+  "R4 background allowlist có đủ ba action mới"
+);
+assert(
+  background.includes('request.action === "engagementPreviewQuickCampaign"') &&
+    background.includes('request.action === "engagementLaunchQuickCampaign"') &&
+    background.includes('request.action === "engagementCancelBoost"'),
+  "R4 background nối message sang engagement-api"
+);
+// Năm trường cấu hình đúng như mục 17.2.
+for (const id of [
+  "quickGroupUsernames",
+  "quickTargetPostId",
+  "quickThreadsPerPost",
+  "quickWindowStart",
+  "quickWindowMinutes",
+  "quickPreset",
+  "quickThreadJson",
+  "quickPreviewBtn",
+  "quickLaunchBtn",
+  "quickCopyPromptBtn",
+  "quickMessage",
+  "quickPreviewBox",
+]) {
+  assert(html.includes(`id="${id}"`), `R4 popup có ${id}`);
+}
+assert(
+  html.includes('<h2>Chiến dịch nhanh</h2>') &&
+    html.includes('<h2>Tạo campaign (nâng cao)</h2>'),
+  "R4 màn hình cơ bản là chiến dịch nhanh; campaign cũ chuyển thành nâng cao (5.2)"
+);
+assert(
+  !/<div class="card admin-only hidden">\s*<div class="card-head">\s*<div>\s*<h2>Chiến dịch nhanh<\/h2>/.test(html),
+  "R4 card chiến dịch nhanh hiển thị cho admin (không bị ẩn như campaign cũ)"
+);
+assert(
+  (html.match(/<h2>Chiến dịch nhanh<\/h2>/g) || []).length === 1 &&
+    html.includes('<details class="advanced-details">') &&
+    html.includes('Mở form cấu hình chi tiết (mặc định đóng)'),
+  "R4 form 13 thông số kỹ thuật nằm trong khối Nâng cao mặc định đóng (5.2)"
+);
+assert(
+  (html.match(/id="refreshCampaignsBtn"/g) || []).length === 1,
+  "R4 không còn id trùng sau khi gộp nút làm mới campaign"
+);
+assert(
+  html.includes("An toàn: 2 hành động/user/ngày, 1 chuỗi/bài/ngày · Cân bằng: 5 hành động, 3 chuỗi/bài/ngày"),
+  "R4 preset hiển thị đúng đơn vị hành động (17.2)"
+);
+assert(
+  ui.includes("action: \"engagementPreviewQuickCampaign\"") &&
+    ui.includes("action: \"engagementLaunchQuickCampaign\""),
+  "R4 UI gọi preview/launch qua background"
+);
+assert(
+  ui.includes("QUICK_REASON_TEXT") && ui.includes("Chưa đủ hai tài khoản"),
+  "R4 UI dịch trạng thái chờ sang tiếng Việt dễ hiểu"
+);
+assert(
+  ui.includes("issue-action") && ui.includes("issue.action"),
+  "R4 preview hiển thị lỗi kèm hành động sửa"
+);
+assert(
+  ui.includes("không tạo task ảo"),
+  "R4 launch nói rõ chuỗi chờ không tạo task ảo"
+);
+assert(
+  ui.includes("data-boost-cancel=") && ui.includes("action: \"engagementCancelBoost\""),
+  "R4 UI có nút Hủy & hoàn cho yêu cầu Ultra đang chờ"
+);
+assert(
+  ui.includes("đã hoàn 1 lượt Ultra"),
+  "R4 UI hiển thị badge đã hoàn credit"
+);
+assert(
+  ui.includes("không đảm bảo số comment hoặc thời gian hoàn thành"),
+  "R4 UI giải thích Ultra không đảm bảo kết quả (18.5)"
+);
+assert(
+  read("scripts/setup-supabase.sh").includes("20260918120000_quick_campaign_presets_ultra_refund.sql"),
+  "R4 setup script áp migration mới"
+);
+const r4SqlTest = read("scripts/test-r4-ultra-refund.sql");
+assert(
+  r4SqlTest.includes("settle_engagement_boosts(NULL, NULL)") &&
+    r4SqlTest.includes("must not change balance a second time"),
+  "R4 có kịch bản DB đối soát hoàn một lần (retry không đổi số dư)"
+);
+assert(
+  r4SqlTest.includes("must not be refunded"),
+  "R4 có kịch bản boost đã mở turn đầu thì không hoàn"
+);
+
 // ------------------------------------------------- 8. Hẹn xóa nhiều bài
 section("Hẹn xóa nhiều bài");
 assert(

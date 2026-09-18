@@ -2521,3 +2521,67 @@ body.view-tab .content {
 .my-post-title a { color: var(--text); text-decoration: none; }
 .my-post-title a:hover { text-decoration: underline; }
 .my-post-meta { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+/* ---- R4: Chiến dịch nhanh (preview capacity + lỗi có hành động) ---- */
+.quick-preview {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: var(--accent-soft);
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+.issue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.issue-item {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  font-size: 12.5px;
+}
+.issue-main {
+  color: var(--text);
+  word-break: break-word;
+}
+.issue-action {
+  margin-top: 4px;
+  color: var(--text-dim);
+}
+
+/* ---- R4: khối "Nâng cao" mặc định đóng (mục 5.2) ---- */
+.advanced-details {
+  margin-top: 4px;
+}
+.advanced-details > summary {
+  cursor: pointer;
+  padding: 8px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  user-select: none;
+}
+.advanced-details[open] > summary {
+  border-style: solid;
+  color: var(--text);
+}
+.advanced-details > .card-actions {
+  margin: 10px 0;
+}

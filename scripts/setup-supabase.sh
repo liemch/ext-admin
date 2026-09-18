@@ -16,6 +16,7 @@
 #       20260917020158 (device enrollment + consent versioned),
 #       20260917025828 (discussion script drafts + immutable revisions)
 #       20260918043557 (actor approvals + execution receipts)
+#       20260918120000 (chiến dịch nhanh preset + hoàn Ultra idempotent)
 #    6. Test 4 function bằng curl
 #    7. In sẵn 2 khối config.js: một cho máy admin, một cho user thường
 #
@@ -139,6 +140,8 @@ step "Áp migration discussion draft/revision"
 apply_migration "supabase/migrations/20260917025828_discussion_script_drafts.sql"
 step "Áp migration approval/receipt cho chuỗi thảo luận"
 apply_migration "supabase/migrations/20260918043557_engagement_task_receipts.sql"
+step "Áp migration chiến dịch nhanh + hoàn Ultra (R4)"
+apply_migration "supabase/migrations/20260918120000_quick_campaign_presets_ultra_refund.sql"
 
 # ---------- 8. Test ----------
 BASE="https://${PROJECT_REF}.supabase.co/functions/v1"

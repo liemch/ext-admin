@@ -579,6 +579,9 @@ const ADMIN_ONLY_ACTIONS = new Set([
   "engagementSetUserPolicy",
   "engagementPushComments",
   "engagementListBoosts",
+  "engagementCancelBoost",
+  "engagementPreviewQuickCampaign",
+  "engagementLaunchQuickCampaign",
   "buildEngagementDiscussionPrompt",
   // Post-sync admin (chỉ máy admin/leader).
   "postSyncGetStatus",
@@ -1156,6 +1159,34 @@ function handlePopupMessage(request, sendResponse) {
       status: request.status || "active",
       limit: request.limit || 100,
     })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  // R4: hủy Push/Ultra đang chờ; hoàn lượt Ultra đúng một lần nếu chưa có
+  // chuỗi nào mở turn đầu (đối soát qua settle_engagement_boosts).
+  if (request.action === "engagementCancelBoost") {
+    EngagementClient.engagementAdmin("cancelBoost", {
+      boostId: request.boostId,
+      reason: request.reason,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  // R4: chiến dịch nhanh — năm trường cấu hình + preset; preview là dry-run
+  // nên không tạo campaign/thread/task.
+  if (request.action === "engagementPreviewQuickCampaign") {
+    EngagementClient.engagementAdmin("previewQuickCampaign", request.payload || {})
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementLaunchQuickCampaign") {
+    EngagementClient.engagementAdmin("launchQuickCampaign", request.payload || {})
       .then((result) => sendResponse({ success: true, ...result }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
     return true;
