@@ -225,6 +225,10 @@
     return callEngagementApi("beginTaskExecution", { taskId });
   }
 
+  function engagementRecordTaskReceipt(taskId, receipt = {}) {
+    return callEngagementApi("recordTaskReceipt", { taskId, ...receipt });
+  }
+
   async function engagementRequestEnrollment(username) {
     const device = await ensureEngagementDevice(username);
     return callEngagementApi("requestEnrollment", {
@@ -291,6 +295,18 @@
     return callEngagementApi("getOwnDiscussionDraft", { techhubId });
   }
 
+  function engagementSubmitDiscussionDraft(techhubId) {
+    return callEngagementApi("submitDiscussionDraft", { techhubId });
+  }
+
+  function engagementListOwnDiscussionApprovals() {
+    return callEngagementApi("listOwnDiscussionApprovals", {});
+  }
+
+  function engagementDecideDiscussionApproval(approvalId, decision) {
+    return callEngagementApi("decideDiscussionApproval", { approvalId, decision });
+  }
+
   // ---- Admin API (ADMIN_TOKEN, chỉ máy admin) ----
 
   function engagementAdmin(action, payload = {}) {
@@ -314,6 +330,7 @@
     engagementDisconnectDevice,
     engagementClaimTask,
     engagementBeginTaskExecution,
+    engagementRecordTaskReceipt,
     engagementCompleteTask,
     engagementFailTask,
     engagementReleaseMyClaims,
@@ -323,6 +340,9 @@
     engagementSubmitOwnThreads,
     engagementSaveOwnDiscussionDraft,
     engagementGetOwnDiscussionDraft,
+    engagementSubmitDiscussionDraft,
+    engagementListOwnDiscussionApprovals,
+    engagementDecideDiscussionApproval,
     engagementAdmin,
   };
 })(typeof window !== "undefined" ? window : globalThis);

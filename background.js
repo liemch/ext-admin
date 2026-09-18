@@ -888,6 +888,30 @@ function handlePopupMessage(request, sendResponse) {
     return true;
   }
 
+  if (request.action === "submitMyDiscussionDraft") {
+    EngagementWorker.ensureEngagementUserAllowed()
+      .then(() => EngagementClient.engagementSubmitDiscussionDraft(request.techhubId))
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code || null }));
+    return true;
+  }
+
+  if (request.action === "listMyDiscussionApprovals") {
+    EngagementWorker.ensureEngagementUserAllowed()
+      .then(() => EngagementClient.engagementListOwnDiscussionApprovals())
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code || null }));
+    return true;
+  }
+
+  if (request.action === "decideMyDiscussionApproval") {
+    EngagementWorker.ensureEngagementUserAllowed()
+      .then(() => EngagementClient.engagementDecideDiscussionApproval(request.approvalId, request.decision))
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code || null }));
+    return true;
+  }
+
   if (request.action === "buildEngagementDiscussionPrompt") {
     (async () => {
       const techhubId = normalizeTechhubId(request.techhubId);

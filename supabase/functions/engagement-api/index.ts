@@ -1047,6 +1047,20 @@ async function advanceThreadAfterTurn(
       event: "completed",
       detail: { turns: thread.total_turns },
     });
+    const sources = await rest.getJson<Array<{ source_revision_id: number | null }>>("discussion_threads", {
+      id: `eq.${threadId}`, select: "source_revision_id", limit: "1",
+    });
+    const sourceRevisionId = firstRow(sources)?.source_revision_id;
+    if (sourceRevisionId) {
+      const remaining = await rest.getJson<Array<{ id: number }>>("discussion_threads", {
+        source_revision_id: `eq.${sourceRevisionId}`, status: "neq.completed", select: "id", limit: "1",
+      });
+      if (!remaining?.length) {
+        await rest.patch("discussion_script_assignments", { revision_id: `eq.${sourceRevisionId}` }, {
+          status: "completed", updated_at: new Date().toISOString(),
+        });
+      }
+    }
     return { queuedTurnId: null, queuedTaskId: null, deferred: false };
   }
 
@@ -1970,7 +1984,62 @@ async function handleBeginTaskExecution(
   if (task.action === "reply" && !task.parent_techhub_comment_id) {
     throw new HttpError("Chưa có comment cha để reply.", 409, "PARENT_MISSING");
   }
+  const receipts = await rest.getJson<Array<{ state: string; techhub_result_id: number | null; http_status: number | null }>>(
+    "engagement_task_receipts", { task_id: `eq.${task.id}`,
+      select: "state,techhub_result_id,http_status", limit: "1" });
+  const receipt = firstRow(receipts);
+  if (receipt?.state === "posted" && (receipt.techhub_result_id || task.action === "vote")) {
+    return json({ ok: true, taskId, resumeCompletion: true,
+      techhubResultId: receipt.techhub_result_id, httpStatus: receipt.http_status });
+  }
+  if (receipt?.state === "ambiguous") {
+    throw new HttpError("Request trước chưa xác định kết quả; cần đối soát.", 409, "RESULT_AMBIGUOUS");
+  }
+  if (receipt?.state === "completed") {
+    return json({ ok: true, taskId, alreadyCompleted: true });
+  }
+  await rest.post("engagement_task_receipts", {
+    task_id: task.id, actor_username: device.username, device_id: device.device_id,
+    idempotency_key: task.idempotency_key, state: "begun", updated_at: new Date().toISOString(),
+  }, "resolution=merge-duplicates");
+  if (task.discussion_turn_id) {
+    const turns = await rest.getJson<Array<{ thread_id: number }>>("discussion_turns", {
+      id: `eq.${task.discussion_turn_id}`, select: "thread_id", limit: "1",
+    });
+    const turn = firstRow(turns);
+    if (turn) {
+      const threads = await rest.getJson<Array<{ source_revision_id: number | null }>>("discussion_threads", {
+        id: `eq.${turn.thread_id}`, select: "source_revision_id", limit: "1",
+      });
+      const revisionId = firstRow(threads)?.source_revision_id;
+      if (revisionId) await rest.patch("discussion_script_assignments", { revision_id: `eq.${revisionId}`, status: "eq.ready" }, {
+        status: "running", updated_at: new Date().toISOString(),
+      });
+    }
+  }
   return json({ ok: true, taskId, serverTime: new Date().toISOString() });
+}
+
+async function handleRecordTaskReceipt(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  const { device } = requireDevice(auth);
+  const taskId = toPositiveInt(body.taskId);
+  if (!taskId) throw new HttpError("taskId không hợp lệ.", 400);
+  const task = await loadOwnedTask(rest, device, taskId);
+  const techhubResultId = toPositiveInt(body.techhubResultId);
+  const content = String(body.content || task.content || "");
+  const receiptState = techhubResultId || task.action === "vote" ? "posted" : "ambiguous";
+  await rest.post("engagement_task_receipts", {
+    task_id: task.id, actor_username: device.username, device_id: device.device_id,
+    idempotency_key: task.idempotency_key,
+    state: receiptState,
+    techhub_result_id: techhubResultId,
+    content_hash: content ? await sha256Hex(content) : null,
+    http_status: typeof body.httpStatus === "number" ? body.httpStatus : null,
+    detail: body.detail || null,
+    posted_at: techhubResultId ? new Date().toISOString() : null,
+    updated_at: new Date().toISOString(),
+  }, "resolution=merge-duplicates");
+  return json({ ok: true, taskId, state: receiptState });
 }
 
 async function handleCompleteTask(
@@ -2054,6 +2123,10 @@ async function handleCompleteTask(
       updated_at: nowIso,
     }
   );
+  await rest.patch("engagement_task_receipts", { task_id: `eq.${taskId}` }, {
+    state: "completed", techhub_result_id: techhubResultId,
+    completed_at: nowIso, updated_at: nowIso,
+  });
 
   // Ghi interaction để các job khác dedup (bỏ qua nếu đã có).
   const interactionType =
@@ -2713,6 +2786,139 @@ async function handleGetOwnDiscussionDraft(rest: Rest, auth: Auth, body: Record<
   } });
 }
 
+async function handleSubmitDiscussionDraft(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  const { device } = requireDevice(auth);
+  await requireEngagementConsent(rest, device);
+  const techhubId = toPositiveInt(body.techhubId);
+  if (!techhubId) throw new HttpError("ID bài không hợp lệ.", 400, "DRAFT_INVALID");
+  const drafts = await rest.getJson<Array<{ id: number; current_revision: number }>>(
+    "discussion_script_drafts",
+    { owner_username: `eq.${device.username}`, techhub_id: `eq.${techhubId}`,
+      status: "eq.draft", select: "id,current_revision", limit: "1" }
+  );
+  const draft = firstRow(drafts);
+  if (!draft?.current_revision) throw new HttpError("Chưa có draft để gửi duyệt.", 404, "DRAFT_NOT_FOUND");
+  const revisions = await rest.getJson<Array<{ id: number; content_hash: string }>>(
+    "discussion_script_revisions",
+    { draft_id: `eq.${draft.id}`, revision_number: `eq.${draft.current_revision}`,
+      select: "id,content_hash", limit: "1" }
+  );
+  const revision = firstRow(revisions);
+  if (!revision) throw new HttpError("Không tìm thấy revision hiện tại.", 404, "DRAFT_NOT_FOUND");
+  const existing = await rest.getJson<Array<{ id: number; status: string; visitor_username: string }>>(
+    "discussion_script_assignments",
+    { revision_id: `eq.${revision.id}`, select: "id,status,visitor_username", limit: "1" }
+  );
+  const old = firstRow(existing);
+  if (old) return json({ ok: true, assignmentId: old.id, status: old.status, visitor: old.visitor_username, duplicate: true });
+
+  const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const devices = await rest.getJson<Array<{ username: string }>>("engagement_devices", {
+    username: `neq.${device.username}`, revoked: "eq.false", enrollment_status: "eq.approved",
+    last_seen_at: `gte.${cutoff}`, select: "username", order: "last_seen_at.desc", limit: "100",
+  });
+  const names = [...new Set((devices || []).map((row) => row.username).filter(Boolean))];
+  if (!names.length) throw new HttpError("Chưa có thành viên phù hợp đang online.", 409, "NO_ELIGIBLE_ACTOR");
+  const requiredVersion = await currentConsentVersion(rest);
+  const [consents, posts, users] = await Promise.all([
+    rest.getJson<Array<{ username: string }>>("user_consents", {
+      username: `in.(${names.join(",")})`, consent_version: `eq.${requiredVersion}`,
+      engagement_enabled: "eq.true", paused_at: "is.null", select: "username", limit: "100",
+    }),
+    rest.getJson<Array<{ username: string }>>("posts", {
+      username: `in.(${names.join(",")})`, status: "eq.open", verification_status: "eq.verified",
+      select: "username", limit: "1000",
+    }),
+    rest.getJson<Array<{ username: string }>>("users", {
+      username: `in.(${names.join(",")})`, is_locked: "eq.false", select: "username", limit: "100",
+    }),
+  ]);
+  const consented = new Set((consents || []).map((row) => row.username));
+  const withPosts = new Set((posts || []).map((row) => row.username));
+  const active = new Set((users || []).map((row) => row.username));
+  const visitor = names.find((name) => consented.has(name) && withPosts.has(name) && active.has(name));
+  if (!visitor) throw new HttpError("Chưa có thành viên phù hợp đang online.", 409, "NO_ELIGIBLE_ACTOR");
+
+  const assignments = await rest.postJson<Array<{ id: number }>>("discussion_script_assignments", {
+    draft_id: draft.id, revision_id: revision.id, author_username: device.username,
+    visitor_username: visitor, status: "awaiting_approval",
+  });
+  const assignment = firstRow(assignments);
+  if (!assignment) throw new HttpError("Không tạo được yêu cầu duyệt.", 500);
+  await rest.post("discussion_script_approvals", [
+    { assignment_id: assignment.id, revision_id: revision.id, username: device.username,
+      actor_role: "author", decision: "approved", decided_at: new Date().toISOString() },
+    { assignment_id: assignment.id, revision_id: revision.id, username: visitor,
+      actor_role: "visitor", decision: "pending" },
+  ]);
+  await rest.patch("discussion_script_drafts", { id: `eq.${draft.id}` }, { status: "submitted", updated_at: new Date().toISOString() });
+  return json({ ok: true, assignmentId: assignment.id, status: "awaiting_approval", visitor });
+}
+
+async function handleListOwnDiscussionApprovals(rest: Rest, auth: Auth) {
+  const { device } = requireDevice(auth);
+  const approvals = await rest.getJson<Array<{ id: number; assignment_id: number; revision_id: number; actor_role: string; decision: string; created_at: string }>>(
+    "discussion_script_approvals",
+    { username: `eq.${device.username}`, select: "id,assignment_id,revision_id,actor_role,decision,created_at",
+      order: "created_at.desc", limit: "20" }
+  );
+  const result = [];
+  for (const approval of approvals || []) {
+    const assignments = await rest.getJson<Array<{ id: number; draft_id: number; author_username: string; visitor_username: string; status: string; expires_at: string }>>(
+      "discussion_script_assignments", { id: `eq.${approval.assignment_id}`, select: "*", limit: "1" });
+    const assignment = firstRow(assignments);
+    if (!assignment) continue;
+    const revisions = await rest.getJson<Array<{ threads: unknown[]; revision_number: number }>>(
+      "discussion_script_revisions", { id: `eq.${approval.revision_id}`, select: "threads,revision_number", limit: "1" });
+    const drafts = await rest.getJson<Array<{ techhub_id: number }>>(
+      "discussion_script_drafts", { id: `eq.${assignment.draft_id}`, select: "techhub_id", limit: "1" });
+    result.push({ ...approval, ...assignment, revision: firstRow(revisions)?.revision_number,
+      threads: firstRow(revisions)?.threads || [], techhubId: firstRow(drafts)?.techhub_id });
+  }
+  return json({ ok: true, approvals: result });
+}
+
+async function handleDecideDiscussionApproval(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  const { device } = requireDevice(auth);
+  const approvalId = toPositiveInt(body.approvalId);
+  const decision = body.decision === "approved" ? "approved" : body.decision === "rejected" ? "rejected" : null;
+  if (!approvalId || !decision) throw new HttpError("Quyết định không hợp lệ.", 400);
+  const approvals = await rest.getJson<Array<{ id: number; assignment_id: number; revision_id: number; decision: string }>>(
+    "discussion_script_approvals", { id: `eq.${approvalId}`, username: `eq.${device.username}`, select: "*", limit: "1" });
+  const approval = firstRow(approvals);
+  if (!approval) throw new HttpError("Yêu cầu duyệt không thuộc bạn.", 403, "APPROVAL_DENIED");
+  if (approval.decision !== "pending") return json({ ok: true, duplicate: true, decision: approval.decision });
+  const assignments = await rest.getJson<Array<{ id: number; draft_id: number; status: string; expires_at: string; visitor_username: string }>>(
+    "discussion_script_assignments", { id: `eq.${approval.assignment_id}`, select: "*", limit: "1" });
+  const assignment = firstRow(assignments);
+  if (!assignment || assignment.status !== "awaiting_approval") throw new HttpError("Yêu cầu không còn chờ duyệt.", 409);
+  if (new Date(assignment.expires_at).getTime() <= Date.now()) {
+    await rest.patch("discussion_script_assignments", { id: `eq.${assignment.id}` }, { status: "expired", updated_at: new Date().toISOString() });
+    throw new HttpError("Yêu cầu duyệt đã hết hạn.", 409, "APPROVAL_EXPIRED");
+  }
+  await rest.patch("discussion_script_approvals", { id: `eq.${approval.id}` }, { decision, decided_at: new Date().toISOString() });
+  if (decision === "rejected") {
+    await rest.patch("discussion_script_assignments", { id: `eq.${assignment.id}` }, { status: "rejected", updated_at: new Date().toISOString() });
+    return json({ ok: true, decision, status: "rejected" });
+  }
+  const pending = await rest.getJson<Array<{ id: number }>>("discussion_script_approvals", {
+    assignment_id: `eq.${assignment.id}`, decision: "neq.approved", select: "id", limit: "1",
+  });
+  if (pending?.length) return json({ ok: true, decision, status: "awaiting_approval" });
+  const revisions = await rest.getJson<Array<{ threads: unknown[] }>>("discussion_script_revisions", {
+    id: `eq.${approval.revision_id}`, select: "threads", limit: "1" });
+  const drafts = await rest.getJson<Array<{ techhub_id: number }>>("discussion_script_drafts", {
+    id: `eq.${assignment.draft_id}`, select: "techhub_id", limit: "1" });
+  const activated = await handleImportThreads(rest, { kind: "admin" }, {
+    threads: firstRow(revisions)?.threads || [],
+    defaults: { techhubId: firstRow(drafts)?.techhub_id, visitor: assignment.visitor_username },
+    sourceRevisionId: approval.revision_id,
+    createdBy: `revision:${approval.revision_id}`,
+  });
+  await rest.patch("discussion_script_assignments", { id: `eq.${assignment.id}` }, { status: "ready", updated_at: new Date().toISOString() });
+  return activated;
+}
+
 async function handlePushComments(rest: Rest, auth: Auth, body: Record<string, unknown>) {
   requireAdmin(auth);
   const techhubId = toPositiveInt(body.techhubId);
@@ -3297,6 +3503,8 @@ async function handleImportThreads(
   const defaultTechhubId = toPositiveInt(defaults.techhubId);
   const defaultVisitor = toUsername(defaults.visitor);
   const campaignId = toPositiveInt(body.campaignId);
+  const sourceRevisionId = toPositiveInt(body.sourceRevisionId);
+  const createdBy = String(body.createdBy || "admin").slice(0, 100);
   const dryRun = body.dryRun === true;
 
   if (campaignId) {
@@ -3444,7 +3652,8 @@ async function handleImportThreads(
       status: "active",
       current_turn_index: 1,
       total_turns: item.turns.length,
-      created_by: "admin",
+      created_by: createdBy,
+      source_revision_id: sourceRevisionId,
     });
     const threadRow = firstRow(createdThreads);
     if (!threadRow) {
@@ -4148,10 +4357,18 @@ Deno.serve(async (req) => {
         return await handleSaveOwnDiscussionDraft(rest, auth, body);
       case "getOwnDiscussionDraft":
         return await handleGetOwnDiscussionDraft(rest, auth, body);
+      case "submitDiscussionDraft":
+        return await handleSubmitDiscussionDraft(rest, auth, body);
+      case "listOwnDiscussionApprovals":
+        return await handleListOwnDiscussionApprovals(rest, auth);
+      case "decideDiscussionApproval":
+        return await handleDecideDiscussionApproval(rest, auth, body);
       case "claimTask":
         return await handleClaimTask(rest, auth);
       case "beginTaskExecution":
         return await handleBeginTaskExecution(rest, auth, body);
+      case "recordTaskReceipt":
+        return await handleRecordTaskReceipt(rest, auth, body);
       case "completeTask":
         return await handleCompleteTask(rest, auth, body);
       case "failTask":

@@ -548,6 +548,66 @@
     }
   }
 
+  async function sendMyDiscussionForApproval() {
+    const techhubId = Number($("myDiscussionPostId")?.value);
+    const button = $("sendMyDiscussionApprovalBtn");
+    if (button) button.disabled = true;
+    try {
+      if (!Number.isInteger(techhubId) || techhubId <= 0) throw new Error("Chọn bài của bạn.");
+      const response = await sendMessage({ action: "submitMyDiscussionDraft", techhubId });
+      if (!response?.success) throw new Error(response?.error || "Không gửi được yêu cầu duyệt.");
+      showAdminMsg($("myDiscussionMessage"),
+        `Đã ghép thành viên và gửi revision hiện tại để duyệt. Trạng thái: ${response.status}.`, "success");
+      await loadMyDiscussionApprovals();
+    } catch (error) {
+      showAdminMsg($("myDiscussionMessage"), `Lỗi: ${error.message}`, "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function loadMyDiscussionApprovals() {
+    const list = $("myDiscussionApprovalsList");
+    if (!list) return;
+    try {
+      const response = await sendMessage({ action: "listMyDiscussionApprovals" });
+      if (!response?.success) throw new Error(response?.error || "Không tải được yêu cầu duyệt.");
+      const approvals = Array.isArray(response.approvals) ? response.approvals : [];
+      if (!approvals.length) {
+        list.innerHTML = '<div class="empty">Chưa có yêu cầu duyệt.</div>';
+        return;
+      }
+      list.innerHTML = approvals.map((item) => `
+        <div class="thread-card">
+          <div class="thread-head"><strong>Bài #${esc(item.techhubId)} · revision ${esc(item.revision)}</strong>${statusBadge(item.decision)}</div>
+          <span class="schedule-meta">Tác giả @${esc(item.author_username)} · Thành viên @${esc(item.visitor_username)} · hết hạn ${esc(fmtTime(item.expires_at))}</span>
+          ${(item.threads || []).map((thread, index) => `
+            <div class="turn-content"><strong>Chuỗi ${index + 1}</strong>${(thread.turns || []).map((turn) =>
+              `<span><b>${turn.actor === "A" ? "Thành viên" : "Tác giả"}:</b> ${esc(turn.content)}</span>`).join("")}</div>
+          `).join("")}
+          ${item.decision === "pending" ? `<div class="card-actions">
+            <button class="btn btn-primary" data-approval-id="${esc(item.id)}" data-decision="approved" type="button">Đồng ý</button>
+            <button class="btn btn-secondary" data-approval-id="${esc(item.id)}" data-decision="rejected" type="button">Từ chối</button>
+          </div>` : ""}
+        </div>`).join("");
+    } catch (error) {
+      list.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+    }
+  }
+
+  async function decideMyDiscussionApproval(approvalId, decision, button) {
+    if (button) button.disabled = true;
+    try {
+      const response = await sendMessage({ action: "decideMyDiscussionApproval", approvalId, decision });
+      if (!response?.success) throw new Error(response?.error || "Không cập nhật được quyết định.");
+      await Promise.all([loadMyDiscussionApprovals(), loadEngagementState()]);
+    } catch (error) {
+      showAdminMsg($("myDiscussionMessage"), `Lỗi duyệt: ${error.message}`, "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   async function runOnce() {
     const button = $("runEngagementOnceBtn");
     if (button) button.disabled = true;
@@ -1310,6 +1370,15 @@
     if ($("submitMyDiscussionBtn")) {
       $("submitMyDiscussionBtn").addEventListener("click", submitMyDiscussion);
     }
+    if ($("sendMyDiscussionApprovalBtn")) {
+      $("sendMyDiscussionApprovalBtn").addEventListener("click", sendMyDiscussionForApproval);
+    }
+    if ($("myDiscussionApprovalsList")) {
+      $("myDiscussionApprovalsList").addEventListener("click", (event) => {
+        const button = event.target.closest("[data-approval-id][data-decision]");
+        if (button) decideMyDiscussionApproval(Number(button.dataset.approvalId), button.dataset.decision, button);
+      });
+    }
     if ($("refreshEngagementBtn")) {
       $("refreshEngagementBtn").addEventListener("click", () => loadEngagementState());
     }
@@ -1475,6 +1544,7 @@
     await checkSession(false);
     await loadIdentityState();
     await loadEngagementState();
+    await loadMyDiscussionApprovals();
     await waitForInit();
     if (isAdminView()) {
       await Promise.all([

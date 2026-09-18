@@ -995,7 +995,21 @@
       lastTaskLabel = `#${task.techhubId} ${task.action}`;
       try {
         await ensureEngagementUserAllowed();
-        await EngagementClient.engagementBeginTaskExecution(task.id);
+        const execution = await EngagementClient.engagementBeginTaskExecution(task.id);
+        if (execution?.resumeCompletion) {
+          await EngagementClient.engagementCompleteTask(task.id, {
+            techhubResultId: execution.techhubResultId,
+            content: task.content || null,
+            httpStatus: execution.httpStatus || 200,
+            resultDetail: { recoveredFromReceipt: true },
+          });
+          succeeded += 1;
+          continue;
+        }
+        if (execution?.alreadyCompleted) {
+          succeeded += 1;
+          continue;
+        }
       } catch (error) {
         await saveEngagementStatus({
           lastRunAt: startedAt,
@@ -1026,6 +1040,12 @@
       }
       if (result.ok) {
         try {
+          await EngagementClient.engagementRecordTaskReceipt(task.id, {
+            techhubResultId: result.commentId || null,
+            content: result.content || task.content || null,
+            httpStatus: result.httpStatus || 200,
+            detail: { outcome: result.outcome || "succeeded" },
+          });
           await EngagementClient.engagementCompleteTask(task.id, {
             techhubResultId: result.commentId || null,
             content: result.content || task.content || null,

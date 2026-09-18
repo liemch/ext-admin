@@ -478,12 +478,24 @@ assert(popup.includes('const verifiedPosts = cachedPosts.filter('), "R2 chỉ ch
 assert(html.includes('id="syncMyDiscussionPostsBtn"'), "R2 có lối đồng bộ khi bài chưa verified");
 
 section("R3 execution gate");
+const r3Migration = read("supabase/migrations/20260918043557_engagement_task_receipts.sql");
+for (const table of ["discussion_script_assignments", "discussion_script_approvals", "engagement_task_receipts"]) {
+  assert(r3Migration.includes(`CREATE TABLE public.${table}`), `R3 tạo bảng ${table}`);
+  assert(r3Migration.includes(`ALTER TABLE public.${table} ENABLE ROW LEVEL SECURITY`), `R3 bật RLS ${table}`);
+}
 assert(edge.includes('case "beginTaskExecution"'), "R3 có API kiểm quyền trước khi thực thi");
+assert(edge.includes('case "submitDiscussionDraft"') && edge.includes('case "decideDiscussionApproval"'),
+  "R3 có API ghép và duyệt revision");
 assert(edge.includes('"LEASE_STALE"') && edge.includes('"PARENT_MISSING"'),
   "R3 chặn lease cũ và reply thiếu parent");
 assert(clientSrc.includes('callEngagementApi("beginTaskExecution"'), "R3 client gọi execution gate");
 assert(read("engagement-worker.js").includes('await EngagementClient.engagementBeginTaskExecution(task.id)'),
   "R3 worker kiểm tra quyền ngay trước thao tác TechHub");
+assert(read("engagement-worker.js").includes("engagementRecordTaskReceipt(task.id"),
+  "R3 ghi receipt trước completeTask");
+assert(edge.includes("resumeCompletion: true") && read("engagement-worker.js").includes("recoveredFromReceipt"),
+  "R3 crash sau POST hoàn tất từ receipt mà không gửi lại");
+assert(html.includes('id="myDiscussionApprovalsList"'), "R3 UI có hộp duyệt cho user");
 
 // ------------------------------------------ 6b. moderator role + user grants
 section("Moderator role và quyền đăng ký user");

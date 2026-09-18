@@ -57,7 +57,7 @@ trên project đang hoạt động vì script sinh lại token.
 ## Setup project mới
 
 1. Tạo project Supabase → lấy URL + anon key
-2. SQL Editor → Run `migrations/001` → `002` → (`003` nếu upgrade) → `004_ai_reply_drafts.sql` → `005_ai_discussion.sql` → `006_root_self_discussion.sql` → `007_posts_medals_count.sql` → `008_discussion_draft_queue.sql` → `009_reply_draft_queue.sql` → `010` (community) → `011_restrict_users_writes.sql` → `012_cross_user_engagement.sql` → `013_post_sync.sql` → `20260911100410_post_sync_hardening.sql` → `014_engagement_user_pool.sql` → `015_expand_discussion_thread_quota.sql` → `016_add_moderator_role.sql` → `20260917020158_identity_consent_enrollment.sql` → `20260917025828_discussion_script_drafts.sql`
+2. SQL Editor → Run `migrations/001` → `002` → (`003` nếu upgrade) → `004_ai_reply_drafts.sql` → `005_ai_discussion.sql` → `006_root_self_discussion.sql` → `007_posts_medals_count.sql` → `008_discussion_draft_queue.sql` → `009_reply_draft_queue.sql` → `010` (community) → `011_restrict_users_writes.sql` → `012_cross_user_engagement.sql` → `013_post_sync.sql` → `20260911100410_post_sync_hardening.sql` → `014_engagement_user_pool.sql` → `015_expand_discussion_thread_quota.sql` → `016_add_moderator_role.sql` → `20260917020158_identity_consent_enrollment.sql` → `20260917025828_discussion_script_drafts.sql` → `20260918043557_engagement_task_receipts.sql`
 3. Sửa `YOUR_TECHHUB_USERNAME` trong `002` → Run
 4. Điền `NVIDIA_CONFIG.apiKey` trong `config.js` (lấy tại https://build.nvidia.com/settings/api-keys)
 5. Reload extension
