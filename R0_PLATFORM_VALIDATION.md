@@ -28,14 +28,12 @@ token, project ref hoặc dữ liệu bài thật.
 
 ## Chưa xác minh vì cần tạo dữ liệu TechHub thật
 
-Ngày 17/09/2026 user đã cho phép tạo một bài mẫu, sau đó cung cấp tiêu đề và
-nội dung cụ thể, yêu cầu không thêm dấu hiệu "test" vào bài. Phiên chạy hiện
-chưa có trình duyệt TechHub được kết nối nên chưa gửi POST. Khi có phiên, chỉ
-tạo một bài với đúng nội dung user cung cấp, sau đó đọc detail/list để ghi
-fixture đã ẩn dữ liệu nhạy cảm. Không chép nội dung bài vào repo.
+Ngày 17/09/2026 user quyết định hoãn phép thử tạo bài thật đến lúc chạy
+extension. Chưa gửi POST và chưa có fixture create/detail/list được xác minh.
+Nội dung bài user cung cấp không được chép vào repo.
 
-Auto publish vẫn phải giữ feature flag tắt cho tới khi một người được phép dùng
-tài khoản kiểm thử chạy spike thủ công và lưu fixture đã xóa dữ liệu nhạy cảm.
+Auto publish vẫn phải giữ feature flag tắt cho tới khi phép thử trên extension
+được thực hiện và fixture đã xóa dữ liệu nhạy cảm được lưu lại.
 Spike cần ghi lại:
 
 1. Header CSRF/cookie tối thiểu và status code.
