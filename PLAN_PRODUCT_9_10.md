@@ -1343,6 +1343,15 @@ deploy. Không đánh dấu xong chỉ vì đã có UI hoặc test kiểm tra ch
 - Nghiệm thu: hai tài khoản A/B trên hai browser profile chạy đúng ba turn;
   tắt máy A sau turn 1 rồi mở lại vẫn dùng A cho turn 3; không mất receipt khi
   complete lỗi; parent bị xóa thì blocked.
+- Trạng thái 18/09/2026: **đã hoàn tất implementation và test local; chờ demo
+  tích hợp hai browser profile sau deploy**. Đã có assignment giữ nguyên visitor
+  cho cả revision, approval riêng của tác giả/visitor, giữ quota trước khi duyệt,
+  trạng thái chờ/ready/running/completed, execution gate kiểm lại consent/lease/
+  bài verified/parent ngay trước POST và receipt bền vững để complete lỗi không
+  gửi lại POST đã xác định thành công. Bằng chứng: commit `3112de2`, `b8e1c63`,
+  `e7e7639`; test DB `scripts/test-r3-approval-receipts.sql`; 370 test engagement
+  và 165 test post-sync pass. Chưa đánh dấu nghiệm thu production cho tới khi chạy
+  đủ kịch bản A/B, offline-resume, parent bị xóa và crash sau POST trên extension.
 
 ### R4 — Admin cơ bản và điểm/Ultra
 
@@ -1452,4 +1461,8 @@ không được bù bằng nhiều tính năng hay số comment cao.
 Checklist bàn giao mỗi release: commit/branch, file/contract thay đổi, test và
 demo đã chạy, migration/function cần deploy theo đúng thứ tự, feature flag,
 metric theo dõi, rollback và phần chưa kiểm chứng. Trong lần rà soát plan này
-chỉ chỉnh tài liệu; chưa triển khai các ticket R0–R9 hoặc xác minh production.
+R1–R3 đã có implementation và test local trên branch `product-9-10`; R0 create
+API được hoãn đến lúc chạy extension. R4–R9 chưa triển khai và chưa có ticket nào
+được xác minh production. Trước demo R3 phải áp lần lượt migration
+`20260917020158`, `20260917025828`, `20260918043557`, deploy `engagement-api`
+và `post-sync-api`, sau đó reload extension trên hai browser profile.
