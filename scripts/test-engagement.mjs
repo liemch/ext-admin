@@ -474,6 +474,8 @@ assert(background.includes('request.action === "saveMyDiscussionDraft"'), "backg
 assert(ui.includes('action: "saveMyDiscussionDraft"'), "UI lưu draft thay vì queue ngay");
 assert(html.includes('id="myDiscussionPreview"'), "R2 có preview hội thoại");
 assert(ui.includes('data-my-remove=') && ui.includes('data-my-turn='), "R2 preview cho bỏ chuỗi và sửa từng lượt");
+assert(popup.includes('const verifiedPosts = cachedPosts.filter('), "R2 chỉ cho chọn bài đã verified");
+assert(html.includes('id="syncMyDiscussionPostsBtn"'), "R2 có lối đồng bộ khi bài chưa verified");
 
 // ------------------------------------------ 6b. moderator role + user grants
 section("Moderator role và quyền đăng ký user");

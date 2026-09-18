@@ -1291,6 +1291,9 @@
     if ($("myDiscussionPostId")) {
       $("myDiscussionPostId").addEventListener("change", restoreMyDiscussionDraft);
     }
+    if ($("syncMyDiscussionPostsBtn")) {
+      $("syncMyDiscussionPostsBtn").addEventListener("click", () => $("syncMyPostsBtn")?.click());
+    }
     if ($("myDiscussionJsonInput")) {
       $("myDiscussionJsonInput").addEventListener("input", () => {
         saveMyDiscussionDraft();

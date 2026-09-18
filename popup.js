@@ -1500,12 +1500,25 @@ function populateAiPostSelectors() {
   }
   if (elements.myDiscussionPostId) {
     const previous = elements.myDiscussionPostId.value;
-    elements.myDiscussionPostId.innerHTML = `<option value="">Chọn một bài…</option>${options}`;
-    elements.myDiscussionPostId.value = cachedPosts.some(
+    const verifiedPosts = cachedPosts.filter(
+      (post) => String(post.verification_status || "") === "verified"
+        && String(post.status || "").toLowerCase() === "open"
+    );
+    const discussionOptions = cachedPosts.map((post) => {
+      const verified = verifiedPosts.includes(post);
+      const label = `#${Number(post.techhub_id)} · ${escapeHtml(post.title || "(không tiêu đề)")}`;
+      return `<option value="${Number(post.techhub_id)}" ${verified ? "" : "disabled"}>${label}${verified ? "" : " · chưa xác minh/đã đóng"}</option>`;
+    }).join("");
+    elements.myDiscussionPostId.innerHTML = `<option value="">Chọn một bài đã xác minh…</option>${discussionOptions}`;
+    elements.myDiscussionPostId.value = verifiedPosts.some(
       (post) => String(post.techhub_id) === previous
     )
       ? previous
       : "";
+    const hint = document.getElementById("myDiscussionPostHint");
+    if (hint) hint.textContent = verifiedPosts.length
+      ? `Có ${verifiedPosts.length} bài đã xác minh để soạn thảo luận.`
+      : "Chưa có bài đã xác minh. Hãy đồng bộ bài rồi kiểm tra lại.";
   }
   renderPostPickers();
   updateScopeLabels();
