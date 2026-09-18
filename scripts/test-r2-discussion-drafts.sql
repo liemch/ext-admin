@@ -50,6 +50,10 @@ BEGIN
        'public.save_discussion_script_draft(text,bigint,jsonb,text,timestamptz)', 'EXECUTE') THEN
     RAISE EXCEPTION 'client roles can bypass draft ownership API';
   END IF;
+  DELETE FROM public.posts WHERE techhub_id = 987654321;
+  IF EXISTS (SELECT 1 FROM public.discussion_script_drafts WHERE id = v_first.draft_id) THEN
+    RAISE EXCEPTION 'draft remained after source post deletion';
+  END IF;
 END
 $$;
 

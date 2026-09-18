@@ -4,7 +4,7 @@ BEGIN;
 CREATE TABLE public.discussion_script_drafts (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   owner_username VARCHAR(100) NOT NULL REFERENCES public.users(username),
-  techhub_id BIGINT NOT NULL,
+  techhub_id BIGINT NOT NULL REFERENCES public.posts(techhub_id) ON DELETE CASCADE,
   current_revision INTEGER NOT NULL DEFAULT 0 CHECK (current_revision >= 0),
   status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'submitted', 'archived')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
