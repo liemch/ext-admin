@@ -50,6 +50,7 @@ const ENGAGEMENT_API_CONFIG = {
 | `submitOwnThreads` | device | Nhập JSON 2–3 turn cho bài verified của mình; server tự chọn visitor online |
 | `saveOwnDiscussionDraft` / `getOwnDiscussionDraft` | device approved | Lưu và đọc bản nháp 1–3 chuỗi cho bài verified thuộc chính mình; mỗi lần đổi nội dung tạo revision bất biến, chưa sinh task |
 | `claimTask` | device | Claim atomic 1 task (lease 5 phút, mỗi actor giữ 1 task) |
+| `beginTaskExecution` | device | Kiểm tra lại consent, lease, bài verified và parent trước khi worker gửi request TechHub |
 | `completeTask` | device | Ghi kết quả TechHub + interaction, mở turn kế tiếp |
 | `failTask` | device | Phân loại retry / vĩnh viễn / `session_required` |
 | `getPoolSettings` / `setPoolSettings` | admin | Đọc/sửa quota và cooldown chung |

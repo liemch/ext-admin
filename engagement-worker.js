@@ -993,6 +993,18 @@
       if (!claim?.task) break;
       const task = claim.task;
       lastTaskLabel = `#${task.techhubId} ${task.action}`;
+      try {
+        await ensureEngagementUserAllowed();
+        await EngagementClient.engagementBeginTaskExecution(task.id);
+      } catch (error) {
+        await saveEngagementStatus({
+          lastRunAt: startedAt,
+          lastOutcome: "paused",
+          lastMessage: `Chưa thực thi task #${task.id}: ${error.message}`,
+          lastError: error.message,
+        });
+        break;
+      }
       broadcast(
         `Đang thực hiện ${task.action} bài #${task.techhubId}${task.postTitle ? ` (${task.postTitle.slice(0, 60)})` : ""}…`,
         "info"

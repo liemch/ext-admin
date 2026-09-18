@@ -221,6 +221,10 @@
     return callEngagementApi("claimTask", {});
   }
 
+  function engagementBeginTaskExecution(taskId) {
+    return callEngagementApi("beginTaskExecution", { taskId });
+  }
+
   async function engagementRequestEnrollment(username) {
     const device = await ensureEngagementDevice(username);
     return callEngagementApi("requestEnrollment", {
@@ -309,6 +313,7 @@
     engagementUpdateConsent,
     engagementDisconnectDevice,
     engagementClaimTask,
+    engagementBeginTaskExecution,
     engagementCompleteTask,
     engagementFailTask,
     engagementReleaseMyClaims,

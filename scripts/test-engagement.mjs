@@ -477,6 +477,14 @@ assert(ui.includes('data-my-remove=') && ui.includes('data-my-turn='), "R2 previ
 assert(popup.includes('const verifiedPosts = cachedPosts.filter('), "R2 chỉ cho chọn bài đã verified");
 assert(html.includes('id="syncMyDiscussionPostsBtn"'), "R2 có lối đồng bộ khi bài chưa verified");
 
+section("R3 execution gate");
+assert(edge.includes('case "beginTaskExecution"'), "R3 có API kiểm quyền trước khi thực thi");
+assert(edge.includes('"LEASE_STALE"') && edge.includes('"PARENT_MISSING"'),
+  "R3 chặn lease cũ và reply thiếu parent");
+assert(clientSrc.includes('callEngagementApi("beginTaskExecution"'), "R3 client gọi execution gate");
+assert(read("engagement-worker.js").includes('await EngagementClient.engagementBeginTaskExecution(task.id)'),
+  "R3 worker kiểm tra quyền ngay trước thao tác TechHub");
+
 // ------------------------------------------ 6b. moderator role + user grants
 section("Moderator role và quyền đăng ký user");
 

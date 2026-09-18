@@ -1939,6 +1939,40 @@ async function loadOwnedTask(
   return task;
 }
 
+async function handleBeginTaskExecution(
+  rest: Rest,
+  auth: Auth,
+  body: Record<string, unknown>
+) {
+  const { device } = requireDevice(auth);
+  await requireEngagementConsent(rest, device);
+  await assertUserActive(rest, device.username);
+  if (await isKillSwitchOn(rest)) {
+    throw new HttpError("Hệ thống đang tạm dừng.", 403, "ENGAGEMENT_PAUSED");
+  }
+  const taskId = toPositiveInt(body.taskId);
+  if (!taskId) throw new HttpError("taskId không hợp lệ.", 400);
+  const task = await loadOwnedTask(rest, device, taskId);
+  if (task.status !== "claimed" || task.claimed_by_device !== device.device_id
+    || !task.lease_until || new Date(task.lease_until).getTime() <= Date.now()) {
+    throw new HttpError("Claim đã hết hạn hoặc không thuộc thiết bị này.", 409, "LEASE_STALE");
+  }
+  const posts = await rest.getJson<PostRow[]>("posts", {
+    techhub_id: `eq.${task.techhub_id}`,
+    status: "eq.open",
+    verification_status: "eq.verified",
+    select: "techhub_id,techhub_uuid,username,status,verification_status",
+    limit: "1",
+  });
+  if (!firstRow(posts)) {
+    throw new HttpError("Bài không còn verified hoặc đã đóng.", 409, "POST_NOT_VERIFIED");
+  }
+  if (task.action === "reply" && !task.parent_techhub_comment_id) {
+    throw new HttpError("Chưa có comment cha để reply.", 409, "PARENT_MISSING");
+  }
+  return json({ ok: true, taskId, serverTime: new Date().toISOString() });
+}
+
 async function handleCompleteTask(
   rest: Rest,
   auth: Auth,
@@ -4116,6 +4150,8 @@ Deno.serve(async (req) => {
         return await handleGetOwnDiscussionDraft(rest, auth, body);
       case "claimTask":
         return await handleClaimTask(rest, auth);
+      case "beginTaskExecution":
+        return await handleBeginTaskExecution(rest, auth, body);
       case "completeTask":
         return await handleCompleteTask(rest, auth, body);
       case "failTask":
