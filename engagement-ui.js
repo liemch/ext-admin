@@ -421,15 +421,33 @@
     }
   }
 
-  function restoreMyDiscussionDraft() {
+  async function restoreMyDiscussionDraft() {
     const key = myDiscussionDraftKey();
     if (!key || !$("myDiscussionJsonInput")) return;
+    let localDraft = "";
     try {
-      $("myDiscussionJsonInput").value = localStorage.getItem(key) || "";
+      localDraft = localStorage.getItem(key) || "";
     } catch (_) {
-      $("myDiscussionJsonInput").value = "";
+      localDraft = "";
     }
+    $("myDiscussionJsonInput").value = localDraft;
     if ($("myDiscussionPreview")) $("myDiscussionPreview").innerHTML = "";
+    if (localDraft) return;
+    try {
+      const response = await sendMessage({
+        action: "getMyDiscussionDraft",
+        techhubId: Number($("myDiscussionPostId")?.value),
+      });
+      if (!response?.success || !response.draft) return;
+      if (key !== myDiscussionDraftKey() || $("myDiscussionJsonInput").value) return;
+      $("myDiscussionJsonInput").value = JSON.stringify({
+        schemaVersion: 1, threads: response.draft.threads,
+      }, null, 2);
+      showAdminMsg($("myDiscussionMessage"),
+        `Đã tải bản nháp revision ${response.draft.revision}.`, "muted");
+    } catch (_) {
+      // Local input remains usable while the server is unavailable.
+    }
   }
 
   function previewMyDiscussion() {
@@ -441,15 +459,20 @@
     const errors = checked.errors.map((item) =>
       `<div class="msg error">${esc(item.error)}</div>`
     ).join("");
-    const cards = checked.threads.map((thread, index) => `
+    const cards = checked.errors.length ? "" : checked.threads.map((thread, index) => `
       <div class="thread-card">
-        <div class="thread-head"><strong>Chuỗi ${index + 1}: ${esc(thread.name)}</strong></div>
+        <div class="thread-head">
+          <strong>Chuỗi ${index + 1}: ${esc(thread.name)}</strong>
+          <button class="mini-btn" type="button" data-my-remove="${index}"
+            ${checked.threads.length === 1 ? "disabled" : ""}>Bỏ chuỗi</button>
+        </div>
         ${thread.turns.map((turn, turnIndex) => `
           <div class="turn-row">
             <span class="turn-actor turn-${turn.actor}">${turn.actor}</span>
             <div class="turn-content">
               <span class="turn-meta">${turn.actor === "A" ? "Thành viên" : "Tác giả"} · lượt ${turnIndex + 1}</span>
-              <span>${esc(turn.content)}</span>
+              <textarea class="thread-edit-input" data-my-turn="${index}:${turnIndex}"
+                aria-label="Nội dung chuỗi ${index + 1} lượt ${turnIndex + 1}">${esc(turn.content)}</textarea>
             </div>
           </div>
         `).join("")}
@@ -466,6 +489,34 @@
     return checked;
   }
 
+  function editMyDiscussionPreview(event) {
+    const remove = event.target.closest("[data-my-remove]");
+    const edit = event.target.closest("[data-my-turn]");
+    if (!remove && !edit) return;
+    const checked = globalThis.DiscussionImport?.validateThreads(
+      String($("myDiscussionJsonInput")?.value || "")
+    );
+    if (!checked || checked.errors.length) return;
+    const threads = checked.threads;
+    if (remove) {
+      if (threads.length <= 1) return;
+      threads.splice(Number(remove.dataset.myRemove), 1);
+    } else {
+      const [threadIndex, turnIndex] = String(edit.dataset.myTurn).split(":").map(Number);
+      if (!threads[threadIndex]?.turns[turnIndex]) return;
+      const content = String(edit.value || "").trim();
+      if (!content || content.length > 2000) {
+        showAdminMsg($("myDiscussionMessage"),
+          "Mỗi lượt cần từ 1 đến 2000 ký tự.", "error");
+        return;
+      }
+      threads[threadIndex].turns[turnIndex].content = content;
+    }
+    $("myDiscussionJsonInput").value = JSON.stringify({ schemaVersion: 1, threads }, null, 2);
+    saveMyDiscussionDraft();
+    if (remove) previewMyDiscussion();
+  }
+
   async function submitMyDiscussion() {
     const techhubId = Number($("myDiscussionPostId")?.value);
     const raw = String($("myDiscussionJsonInput")?.value || "");
@@ -479,24 +530,17 @@
         throw new Error(checked.errors[0]?.error || "JSON chưa có chuỗi hợp lệ.");
       }
       const response = await sendMessage({
-        action: "submitMyEngagementThreads",
+        action: "saveMyDiscussionDraft",
         techhubId,
         threads: checked.threads,
       });
-      if (!response?.success) throw new Error(response?.error || "Không gửi được chuỗi.");
-      const imported = Array.isArray(response.imported) ? response.imported.length : 0;
+      if (!response?.success) throw new Error(response?.error || "Không lưu được bản nháp.");
       showAdminMsg(
         $("myDiscussionMessage"),
-        `Đã đưa ${imported} chuỗi vào pool. Hệ thống đã tự chọn user khác đang online.`,
+        `Đã lưu ${checked.threads.length} chuỗi vào bản nháp revision ${response.revision}. Chưa tạo task; nội dung sẽ cần được duyệt trước khi chạy.`,
         "success"
       );
-      if ($("myDiscussionJsonInput")) $("myDiscussionJsonInput").value = "";
-      const key = myDiscussionDraftKey();
-      if (key) {
-        try { localStorage.removeItem(key); } catch (_) { /* Draft stays on this device. */ }
-      }
-      if ($("myDiscussionPreview")) $("myDiscussionPreview").innerHTML = "";
-      await loadEngagementState();
+      saveMyDiscussionDraft();
     } catch (error) {
       showAdminMsg($("myDiscussionMessage"), `Lỗi: ${error.message}`, "error");
     } finally {
@@ -1255,6 +1299,10 @@
     }
     if ($("previewMyDiscussionBtn")) {
       $("previewMyDiscussionBtn").addEventListener("click", previewMyDiscussion);
+    }
+    if ($("myDiscussionPreview")) {
+      $("myDiscussionPreview").addEventListener("click", editMyDiscussionPreview);
+      $("myDiscussionPreview").addEventListener("change", editMyDiscussionPreview);
     }
     if ($("submitMyDiscussionBtn")) {
       $("submitMyDiscussionBtn").addEventListener("click", submitMyDiscussion);

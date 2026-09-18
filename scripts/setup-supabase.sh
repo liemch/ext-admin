@@ -13,7 +13,8 @@
 #       20260911100410 (hardening quyền ghi + global leader lease + RPC atomic),
 #       014 (preferences + pool tương tác tự cân bằng),
 #       015 (mở rộng quota chuỗi), 016 (moderator + khóa cột đặc quyền),
-#       20260917020158 (device enrollment + consent versioned)
+#       20260917020158 (device enrollment + consent versioned),
+#       20260917025828 (discussion script drafts + immutable revisions)
 #    6. Test 4 function bằng curl
 #    7. In sẵn 2 khối config.js: một cho máy admin, một cho user thường
 #
@@ -133,6 +134,8 @@ step "Áp migration 016 (moderator + khóa cột đặc quyền users)"
 apply_migration "supabase/migrations/016_add_moderator_role.sql"
 step "Áp migration identity/consent (device enrollment + user opt-in)"
 apply_migration "supabase/migrations/20260917020158_identity_consent_enrollment.sql"
+step "Áp migration discussion draft/revision"
+apply_migration "supabase/migrations/20260917025828_discussion_script_drafts.sql"
 
 # ---------- 8. Test ----------
 BASE="https://${PROJECT_REF}.supabase.co/functions/v1"

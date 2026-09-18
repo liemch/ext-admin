@@ -2607,6 +2607,78 @@ async function handleSubmitOwnThreads(rest: Rest, auth: Auth, body: Record<strin
   });
 }
 
+async function handleSaveOwnDiscussionDraft(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  const { device } = requireDevice(auth);
+  await assertUserActive(rest, device.username);
+  const techhubId = toPositiveInt(body.techhubId);
+  if (!techhubId || !Array.isArray(body.threads) || body.threads.length < 1 || body.threads.length > 3) {
+    throw new HttpError("Chọn bài và nhập từ 1 đến 3 chuỗi hợp lệ.", 400, "DRAFT_INVALID");
+  }
+  const preferences = await getOrCreatePreferences(rest, device.username);
+  if (body.threads.length > preferences.discussions_per_post) {
+    throw new HttpError("Số chuỗi vượt trần admin cho bài này.", 409, "QUOTA_EXCEEDED");
+  }
+  const threads = body.threads.map((raw, index) => {
+    const parsed = parseThreadIndex(raw, index);
+    if ((parsed.targetTechhubId && parsed.targetTechhubId !== techhubId)
+      || parsed.visitor
+      || parsed.actors.A.toLowerCase() !== "visitor"
+      || parsed.actors.B.toLowerCase() !== "author") {
+      throw new HttpError(`thread[${index}]: bài đích hoặc actor không thuộc quyền tự chọn.`, 403, "DRAFT_SCOPE_DENIED");
+    }
+    return {
+      name: parsed.name.slice(0, 120),
+      actors: { A: "visitor", B: "author" },
+      turns: parsed.turns,
+    };
+  });
+  const contentHash = await sha256Hex(JSON.stringify(threads));
+  try {
+    const saved = await rest.rpc<Array<{ draft_id: number; revision_number: number; created: boolean }>>(
+      "save_discussion_script_draft",
+      {
+        p_owner_username: device.username,
+        p_techhub_id: techhubId,
+        p_threads: threads,
+        p_content_hash: contentHash,
+        p_now: new Date().toISOString(),
+      }
+    );
+    const row = firstRow(saved);
+    return json({ ok: true, draftId: row?.draft_id, revision: row?.revision_number,
+      created: row?.created === true, threads });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("POST_NOT_OWNED_OR_VERIFIED")) {
+      throw new HttpError("Bài không thuộc bạn hoặc chưa được xác minh.", 403, "POST_NOT_VERIFIED");
+    }
+    throw error;
+  }
+}
+
+async function handleGetOwnDiscussionDraft(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  const { device } = requireDevice(auth);
+  const techhubId = toPositiveInt(body.techhubId);
+  if (!techhubId) throw new HttpError("ID bài không hợp lệ.", 400, "DRAFT_INVALID");
+  const drafts = await rest.getJson<Array<{ id: number; current_revision: number; status: string }>>(
+    "discussion_script_drafts",
+    { owner_username: `eq.${device.username}`, techhub_id: `eq.${techhubId}`,
+      select: "id,current_revision,status", limit: "1" }
+  );
+  const draft = firstRow(drafts);
+  if (!draft) return json({ ok: true, draft: null });
+  const revisions = await rest.getJson<Array<{ threads: unknown[]; created_at: string }>>(
+    "discussion_script_revisions",
+    { draft_id: `eq.${draft.id}`, revision_number: `eq.${draft.current_revision}`,
+      select: "threads,created_at", limit: "1" }
+  );
+  const revision = firstRow(revisions);
+  return json({ ok: true, draft: {
+    id: draft.id, techhubId, revision: draft.current_revision,
+    status: draft.status, threads: revision?.threads || [], createdAt: revision?.created_at || null,
+  } });
+}
+
 async function handlePushComments(rest: Rest, auth: Auth, body: Record<string, unknown>) {
   requireAdmin(auth);
   const techhubId = toPositiveInt(body.techhubId);
@@ -4038,6 +4110,10 @@ Deno.serve(async (req) => {
         return await handleRedeemUltra(rest, auth, body);
       case "submitOwnThreads":
         return await handleSubmitOwnThreads(rest, auth, body);
+      case "saveOwnDiscussionDraft":
+        return await handleSaveOwnDiscussionDraft(rest, auth, body);
+      case "getOwnDiscussionDraft":
+        return await handleGetOwnDiscussionDraft(rest, auth, body);
       case "claimTask":
         return await handleClaimTask(rest, auth);
       case "completeTask":

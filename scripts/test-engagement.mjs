@@ -458,6 +458,23 @@ assert(edge.includes('case "getAccessContext"'), "role/lock được đọc qua 
 assert(background.includes('request.action === "getAccessContext"'), "popup lấy role qua background/API");
 assert(!popup.includes("supabase.findUserByUsername(username)"), "popup không đọc trực tiếp users để phân quyền");
 
+section("R2 discussion draft và revision");
+const draftMigration = read("supabase/migrations/20260917025828_discussion_script_drafts.sql");
+assert(draftMigration.includes("CREATE TABLE public.discussion_script_revisions"), "R2 lưu revision riêng");
+assert(draftMigration.includes("POST_NOT_OWNED_OR_VERIFIED"), "R2 chỉ lưu draft cho bài verified của chủ bài");
+assert(draftMigration.includes("ON CONFLICT (owner_username, techhub_id) DO UPDATE"), "R2 khóa draft theo owner và bài");
+assert(draftMigration.includes("REVOKE ALL ON public.discussion_script_revisions"), "client không đọc revision liên user trực tiếp");
+assert(edge.includes('case "saveOwnDiscussionDraft"'), "R2 có action lưu draft qua device token");
+assert(edge.includes('case "getOwnDiscussionDraft"'), "R2 có action đọc draft của chính mình");
+assert(edge.includes('actors: { A: "visitor", B: "author" }'), "actor được server chuẩn hóa");
+assert(edge.includes("DRAFT_SCOPE_DENIED"), "R2 từ chối actor hoặc bài tự khai sai quyền");
+assert(edge.includes("QUOTA_EXCEEDED"), "R2 kiểm tra trần admin trên server");
+assert(clientSrc.includes('callEngagementApi("saveOwnDiscussionDraft"'), "client gọi API lưu draft");
+assert(background.includes('request.action === "saveMyDiscussionDraft"'), "background nối action lưu draft");
+assert(ui.includes('action: "saveMyDiscussionDraft"'), "UI lưu draft thay vì queue ngay");
+assert(html.includes('id="myDiscussionPreview"'), "R2 có preview hội thoại");
+assert(ui.includes('data-my-remove=') && ui.includes('data-my-turn='), "R2 preview cho bỏ chuỗi và sửa từng lượt");
+
 // ------------------------------------------ 6b. moderator role + user grants
 section("Moderator role và quyền đăng ký user");
 
@@ -532,8 +549,8 @@ assert(
   "API cho admin cấu hình tối đa 50 chuỗi/bài, mặc định 40"
 );
 assert(
-  background.includes("Math.min(50, Math.max(1, Number(heartbeat?.preferences?.discussions_per_post) || 40))"),
-  "prompt của user nhận quota đến 50 chuỗi thay vì bị khóa ở 10"
+  background.includes("Math.min(3, Math.max(1, Number(heartbeat?.preferences?.discussions_per_post) || 3))"),
+  "wizard R2 mặc định tối đa 3 chuỗi, vẫn tôn trọng trần admin thấp hơn"
 );
 assert(
   html.includes('id="poolDiscussionsPerPost" type="number" min="1" max="50" value="40"'),

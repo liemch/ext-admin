@@ -2318,6 +2318,19 @@ body.view-tab .content {
   gap: 3px;
 }
 
+.thread-edit-input {
+  width: 100%;
+  min-height: 54px;
+  resize: vertical;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 8px;
+  color: var(--text);
+  background: rgba(4, 6, 18, 0.35);
+  font: inherit;
+  line-height: 1.5;
+}
+
 .turn-meta {
   font-size: 10.5px;
   color: var(--text-mute);

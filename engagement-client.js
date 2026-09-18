@@ -279,6 +279,14 @@
     return callEngagementApi("submitOwnThreads", { techhubId, threads });
   }
 
+  function engagementSaveOwnDiscussionDraft(techhubId, threads) {
+    return callEngagementApi("saveOwnDiscussionDraft", { techhubId, threads });
+  }
+
+  function engagementGetOwnDiscussionDraft(techhubId) {
+    return callEngagementApi("getOwnDiscussionDraft", { techhubId });
+  }
+
   // ---- Admin API (ADMIN_TOKEN, chỉ máy admin) ----
 
   function engagementAdmin(action, payload = {}) {
@@ -308,6 +316,8 @@
     engagementGetStatus,
     engagementRedeemUltra,
     engagementSubmitOwnThreads,
+    engagementSaveOwnDiscussionDraft,
+    engagementGetOwnDiscussionDraft,
     engagementAdmin,
   };
 })(typeof window !== "undefined" ? window : globalThis);

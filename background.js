@@ -830,7 +830,7 @@ function handlePopupMessage(request, sendResponse) {
           throw new Error("Thiếu phiên TechHub để đọc nội dung bài.");
         }
         const heartbeat = await EngagementClient.engagementHeartbeat(user.username);
-        const count = Math.min(50, Math.max(1, Number(heartbeat?.preferences?.discussions_per_post) || 40));
+        const count = Math.min(3, Math.max(1, Number(heartbeat?.preferences?.discussions_per_post) || 3));
         const detail = await fetchArticleDetail(post.techhub_uuid, stored.techhubCredentials);
         const title = String(detail?.title || post.title || `Bài #${techhubId}`).trim();
         const articleBody = stripHtml(detail?.body || "").replace(/\s+/g, " ").trim().slice(0, 6000);
@@ -850,12 +850,12 @@ function handlePopupMessage(request, sendResponse) {
             `Nội dung: ${articleBody || "Không có nội dung chi tiết; bám sát tiêu đề."}`,
             "",
             `Hãy tạo đúng ${count} chuỗi thảo luận độc lập, tự nhiên bằng tiếng Việt cho bài này.`,
-            `- JSON phải có đúng ${count} phần tử; mỗi phần tử là một chuỗi riêng, không gộp nhiều câu hỏi vào cùng chuỗi.`,
+            `- JSON schemaVersion 1 phải có đúng ${count} phần tử trong threads; mỗi phần tử là một chuỗi riêng.`,
             "- Mỗi chuỗi chọn ngẫu nhiên đúng 2 hoặc 3 lượt, luân phiên A, B, A.",
             "- A là người ghé thăm, B là tác giả; lượt sau phải trả lời trực tiếp lượt trước.",
             "- Nội dung ngắn gọn, có ý nghĩa, không khen chung chung, không hashtag/emoji/nhắc AI.",
-            "- Chỉ trả JSON array hợp lệ, không markdown và không giải thích.",
-            `Schema: ${JSON.stringify(schema)}`,
+            "- Chỉ trả JSON hợp lệ, không markdown và không giải thích.",
+            `Schema: ${JSON.stringify({ schemaVersion: 1, threads: schema })}`,
           ].join("\n"),
         };
       })
@@ -869,6 +869,22 @@ function handlePopupMessage(request, sendResponse) {
       .then(() => EngagementClient.engagementSubmitOwnThreads(request.techhubId, request.threads))
       .then((result) => sendResponse({ success: true, ...result }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "saveMyDiscussionDraft") {
+    EngagementWorker.ensureEngagementUserAllowed()
+      .then(() => EngagementClient.engagementSaveOwnDiscussionDraft(request.techhubId, request.threads))
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code || null }));
+    return true;
+  }
+
+  if (request.action === "getMyDiscussionDraft") {
+    EngagementWorker.ensureEngagementUserAllowed()
+      .then(() => EngagementClient.engagementGetOwnDiscussionDraft(request.techhubId))
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code || null }));
     return true;
   }
 

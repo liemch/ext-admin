@@ -48,6 +48,7 @@ const ENGAGEMENT_API_CONFIG = {
 | `heartbeat` | device approved | Báo online và tự xếp hàng turn tới hạn khi consent còn hiệu lực |
 | `redeemUltra` | device | Dùng một lượt Ultra cho bài verified thuộc chính user |
 | `submitOwnThreads` | device | Nhập JSON 2–3 turn cho bài verified của mình; server tự chọn visitor online |
+| `saveOwnDiscussionDraft` / `getOwnDiscussionDraft` | device approved | Lưu và đọc bản nháp 1–3 chuỗi cho bài verified thuộc chính mình; mỗi lần đổi nội dung tạo revision bất biến, chưa sinh task |
 | `claimTask` | device | Claim atomic 1 task (lease 5 phút, mỗi actor giữ 1 task) |
 | `completeTask` | device | Ghi kết quả TechHub + interaction, mở turn kế tiếp |
 | `failTask` | device | Phân loại retry / vĩnh viễn / `session_required` |
