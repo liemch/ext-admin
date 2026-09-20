@@ -105,8 +105,18 @@
       };
       changed = true;
     }
-    if (username && device.username !== username) {
-      device = { ...device, username, switchedAt: new Date().toISOString() };
+    if (username && device.username && device.username !== username) {
+      device = {
+        deviceId: newDeviceId(),
+        token: randomToken(24),
+        username,
+        label: device.label || null,
+        createdAt: new Date().toISOString(),
+        switchedAt: new Date().toISOString(),
+      };
+      changed = true;
+    } else if (username && device.username !== username) {
+      device = { ...device, username };
       changed = true;
     }
     if (!device.label) {
@@ -125,6 +135,13 @@
       await chrome.storage.local.set({ [ENGAGEMENT_DEVICE_KEY]: device });
     }
     return device;
+  }
+
+  async function resetEngagementDevice(username) {
+    engagementDeviceCache = null;
+    engagementDeviceLoadPromise = null;
+    await chrome.storage.local.remove(ENGAGEMENT_DEVICE_KEY);
+    return ensureEngagementDevice(username);
   }
 
   async function callEngagementApi(action, payload = {}, options = {}) {
@@ -161,6 +178,7 @@
     if (!response.ok || data?.error) {
       const error = new Error(data?.error || `Engagement API HTTP ${response.status}`);
       error.httpStatus = response.status;
+      error.code = data?.code || null;
       throw error;
     }
     return data;
@@ -193,6 +211,7 @@
     if (!response.ok || data?.error) {
       const error = new Error(data?.error || `Engagement API HTTP ${response.status}`);
       error.httpStatus = response.status;
+      error.code = data?.code || null;
       throw error;
     }
     return data;
@@ -200,6 +219,44 @@
 
   function engagementClaimTask() {
     return callEngagementApi("claimTask", {});
+  }
+
+  function engagementBeginTaskExecution(taskId) {
+    return callEngagementApi("beginTaskExecution", { taskId });
+  }
+
+  function engagementRecordTaskReceipt(taskId, receipt = {}) {
+    return callEngagementApi("recordTaskReceipt", { taskId, ...receipt });
+  }
+
+  async function engagementRequestEnrollment(username) {
+    const device = await ensureEngagementDevice(username);
+    return callEngagementApi("requestEnrollment", {
+      username,
+      deviceId: device.deviceId,
+      label: device.label,
+    });
+  }
+
+  async function engagementEnrollDevice(username, invitationCode) {
+    const device = await ensureEngagementDevice(username);
+    return callEngagementApi("enrollDevice", {
+      invitationCode,
+      deviceId: device.deviceId,
+      label: device.label,
+    });
+  }
+
+  function engagementGetIdentityState() {
+    return callEngagementApi("getIdentityState", {});
+  }
+
+  function engagementUpdateConsent(consent) {
+    return callEngagementApi("updateConsent", consent || {});
+  }
+
+  function engagementDisconnectDevice() {
+    return callEngagementApi("disconnectDevice", {});
   }
 
   function engagementCompleteTask(taskId, result = {}) {
@@ -230,6 +287,26 @@
     return callEngagementApi("submitOwnThreads", { techhubId, threads });
   }
 
+  function engagementSaveOwnDiscussionDraft(techhubId, threads) {
+    return callEngagementApi("saveOwnDiscussionDraft", { techhubId, threads });
+  }
+
+  function engagementGetOwnDiscussionDraft(techhubId) {
+    return callEngagementApi("getOwnDiscussionDraft", { techhubId });
+  }
+
+  function engagementSubmitDiscussionDraft(techhubId) {
+    return callEngagementApi("submitDiscussionDraft", { techhubId });
+  }
+
+  function engagementListOwnDiscussionApprovals() {
+    return callEngagementApi("listOwnDiscussionApprovals", {});
+  }
+
+  function engagementDecideDiscussionApproval(approvalId, decision) {
+    return callEngagementApi("decideDiscussionApproval", { approvalId, decision });
+  }
+
   // ---- Admin API (ADMIN_TOKEN, chỉ máy admin) ----
 
   function engagementAdmin(action, payload = {}) {
@@ -242,10 +319,18 @@
     getEngagementApiConfig,
     isEngagementQueueConfigured,
     ensureEngagementDevice,
+    resetEngagementDevice,
     getEngagementDevice,
     callEngagementApi,
     engagementHeartbeat,
+    engagementRequestEnrollment,
+    engagementEnrollDevice,
+    engagementGetIdentityState,
+    engagementUpdateConsent,
+    engagementDisconnectDevice,
     engagementClaimTask,
+    engagementBeginTaskExecution,
+    engagementRecordTaskReceipt,
     engagementCompleteTask,
     engagementFailTask,
     engagementReleaseMyClaims,
@@ -253,6 +338,11 @@
     engagementGetStatus,
     engagementRedeemUltra,
     engagementSubmitOwnThreads,
+    engagementSaveOwnDiscussionDraft,
+    engagementGetOwnDiscussionDraft,
+    engagementSubmitDiscussionDraft,
+    engagementListOwnDiscussionApprovals,
+    engagementDecideDiscussionApproval,
     engagementAdmin,
   };
 })(typeof window !== "undefined" ? window : globalThis);

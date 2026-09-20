@@ -204,6 +204,25 @@ type Device = {
   label: string | null;
   last_seen_at: string | null;
   revoked: boolean;
+  enrollment_status?: "pending" | "approved" | "revoked";
+  approved_at?: string | null;
+  approved_by?: string | null;
+  revoked_at?: string | null;
+};
+
+type UserConsent = {
+  username: string;
+  consent_version: number;
+  engagement_enabled: boolean;
+  auto_publish_enabled: boolean;
+  delegated_engagement_enabled: boolean;
+  delegation_policy_version: number | null;
+  delegation_expires_at: string | null;
+  consented_at: string | null;
+  paused_at: string | null;
+  quiet_hours: Record<string, unknown>;
+  daily_action_limit: number;
+  updated_at: string;
 };
 
 type EngagementPreferences = {
@@ -248,25 +267,21 @@ async function resolveAuth(
   });
   const device = rows?.[0];
   if (!device) {
-    // Token lạ: cho phép heartbeat tự đăng ký máy mới (bootstrap),
-    // các action khác yêu cầu thiết bị đã đăng ký.
-    const action = String(body.action || "");
-    if (action === "heartbeat") {
-      return { kind: "none" };
-    }
     return { kind: "none" };
   }
   if (device.revoked) {
-    throw new HttpError("Thiết bị đã bị thu hồi. Liên hệ quản trị viên.", 403);
+    throw new HttpError("Thiết bị đã bị thu hồi. Cần đăng ký lại.", 403, "DEVICE_REVOKED");
   }
   return { kind: "device", device, tokenHash };
 }
 
 class HttpError extends Error {
   status: number;
-  constructor(message: string, status = 400) {
+  code: string;
+  constructor(message: string, status = 400, code = "REQUEST_REJECTED") {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -279,6 +294,13 @@ function requireAdmin(auth: Auth): void {
 function requireDevice(auth: Auth): { device: Device; tokenHash: string } {
   if (auth.kind !== "device") {
     throw new HttpError("Unauthorized (thiếu device token).", 401);
+  }
+  if (auth.device.enrollment_status !== "approved") {
+    throw new HttpError(
+      "Thiết bị đang chờ duyệt.",
+      403,
+      "DEVICE_ENROLLMENT_REQUIRED"
+    );
   }
   return auth;
 }
@@ -312,6 +334,56 @@ function clampPreference(value: unknown, fallback: number, min: number, max: num
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, Math.floor(parsed)));
+}
+
+async function currentConsentVersion(rest: Rest): Promise<number> {
+  return clampPreference(await readSetting(rest, "current_consent_version"), 1, 1, 1000);
+}
+
+async function readUserConsent(rest: Rest, username: string): Promise<UserConsent | null> {
+  const rows = await rest.getJson<UserConsent[]>("user_consents", {
+    username: `eq.${username}`,
+    select: "*",
+    limit: "1",
+  });
+  return firstRow(rows);
+}
+
+async function requireEngagementConsent(rest: Rest, device: Device): Promise<UserConsent> {
+  const [consent, requiredVersion] = await Promise.all([
+    readUserConsent(rest, device.username),
+    currentConsentVersion(rest),
+  ]);
+  if (!consent || consent.consent_version !== requiredVersion) {
+    throw new HttpError(
+      "Bạn cần xác nhận lại quyền tham gia mạng lưới.",
+      403,
+      "CONSENT_REQUIRED"
+    );
+  }
+  if (!consent.engagement_enabled || consent.paused_at) {
+    throw new HttpError(
+      "Bạn đang tạm dừng mạng lưới thảo luận.",
+      403,
+      "ENGAGEMENT_PAUSED"
+    );
+  }
+  return consent;
+}
+
+function publicConsent(consent: UserConsent | null, requiredVersion: number) {
+  return consent || {
+    consent_version: requiredVersion,
+    engagement_enabled: false,
+    auto_publish_enabled: false,
+    delegated_engagement_enabled: false,
+    delegation_policy_version: null,
+    delegation_expires_at: null,
+    consented_at: null,
+    paused_at: null,
+    quiet_hours: { enabled: false, timezone: "Asia/Ho_Chi_Minh" },
+    daily_action_limit: 2,
+  };
 }
 
 async function getOrCreatePreferences(
@@ -422,6 +494,7 @@ async function ensureMutualPoolTasks(rest: Rest): Promise<{
   const [devices, activeUsers] = await Promise.all([
     rest.getJson<Array<{ username: string }>>("engagement_devices", {
       revoked: "eq.false",
+      enrollment_status: "eq.approved",
       last_seen_at: `gte.${sinceIso}`,
       select: "username",
       limit: "1000",
@@ -434,7 +507,21 @@ async function ensureMutualPoolTasks(rest: Rest): Promise<{
   ]);
   const activeUserSet = new Set((activeUsers || []).map((row) => row.username).filter(Boolean));
   const onlineNames = [...new Set((devices || []).map((row) => row.username).filter(Boolean))];
-  const memberOnlineNames = onlineNames.filter((name) => activeUserSet.has(name));
+  let memberOnlineNames = onlineNames.filter((name) => activeUserSet.has(name));
+  if (memberOnlineNames.length === 0) {
+    return { participants: 0, posts: 0, created: 0, waitingForPeers: true };
+  }
+  const requiredConsentVersion = await currentConsentVersion(rest);
+  const consentRows = await rest.getJson<Array<{ username: string }>>("user_consents", {
+    username: `in.(${memberOnlineNames.join(",")})`,
+    consent_version: `eq.${requiredConsentVersion}`,
+    engagement_enabled: "eq.true",
+    paused_at: "is.null",
+    select: "username",
+    limit: "1000",
+  });
+  const consentedNames = new Set((consentRows || []).map((row) => row.username));
+  memberOnlineNames = memberOnlineNames.filter((name) => consentedNames.has(name));
   if (memberOnlineNames.length === 0) {
     return { participants: 0, posts: 0, created: 0, waitingForPeers: true };
   }
@@ -845,12 +932,26 @@ async function getLockedUsernames(rest: Rest): Promise<Set<string>> {
 async function getUserByUsername(
   rest: Rest,
   username: string
-): Promise<{ username: string; is_locked: boolean; is_admin: boolean } | null> {
+): Promise<{
+  username: string;
+  full_name?: string | null;
+  avatar?: string | null;
+  is_locked: boolean;
+  is_admin: boolean;
+  is_moderator?: boolean;
+} | null> {
   const rows = await rest.getJson<
-    Array<{ username: string; is_locked: boolean; is_admin: boolean }>
+    Array<{
+      username: string;
+      full_name?: string | null;
+      avatar?: string | null;
+      is_locked: boolean;
+      is_admin: boolean;
+      is_moderator?: boolean;
+    }>
   >("users", {
     username: `eq.${username}`,
-    select: "username,is_locked,is_admin",
+    select: "username,full_name,avatar,is_locked,is_admin,is_moderator",
     limit: "1",
   });
   return firstRow(rows);
@@ -946,6 +1047,20 @@ async function advanceThreadAfterTurn(
       event: "completed",
       detail: { turns: thread.total_turns },
     });
+    const sources = await rest.getJson<Array<{ source_revision_id: number | null }>>("discussion_threads", {
+      id: `eq.${threadId}`, select: "source_revision_id", limit: "1",
+    });
+    const sourceRevisionId = firstRow(sources)?.source_revision_id;
+    if (sourceRevisionId) {
+      const remaining = await rest.getJson<Array<{ id: number }>>("discussion_threads", {
+        source_revision_id: `eq.${sourceRevisionId}`, status: "neq.completed", select: "id", limit: "1",
+      });
+      if (!remaining?.length) {
+        await rest.patch("discussion_script_assignments", { revision_id: `eq.${sourceRevisionId}` }, {
+          status: "completed", updated_at: new Date().toISOString(),
+        });
+      }
+    }
     return { queuedTurnId: null, queuedTaskId: null, deferred: false };
   }
 
@@ -1199,6 +1314,181 @@ function backoffMinutes(attemptCount: number): number {
 // Action handlers
 // ---------------------------------------------------------------------------
 
+async function handleRequestEnrollment(
+  rest: Rest,
+  auth: Auth,
+  body: Record<string, unknown>,
+  token: string
+) {
+  if (!token) throw new HttpError("Thiếu device token.", 401, "DEVICE_TOKEN_REQUIRED");
+  if (auth.kind === "device") {
+    return json({
+      ok: true,
+      enrollmentStatus: auth.device.enrollment_status,
+      username: auth.device.username,
+    });
+  }
+  const username = String(body.username || "").trim();
+  const deviceId = String(body.deviceId || body.device_id || "").trim();
+  const label = String(body.label || "").trim().slice(0, 120) || null;
+  if (!isUsername(username) || !deviceId) {
+    throw new HttpError("Thiếu username/deviceId hợp lệ.", 400, "ENROLLMENT_INVALID");
+  }
+  const user = await getUserByUsername(rest, username);
+  if (!user || user.is_locked) {
+    throw new HttpError("Tài khoản chưa sẵn sàng để đăng ký thiết bị.", 403, "ENROLLMENT_USER_UNAVAILABLE");
+  }
+  const tokenHash = await sha256Hex(token);
+  const created = await rest.postJson<Device[]>("engagement_devices", {
+    device_id: deviceId,
+    username,
+    token_hash: tokenHash,
+    label,
+    last_seen_at: null,
+    revoked: false,
+    enrollment_status: "pending",
+  }, "resolution=ignore-duplicates");
+  let device = firstRow(created);
+  if (!device) {
+    const rows = await rest.getJson<Device[]>("engagement_devices", {
+      username: `eq.${username}`,
+      device_id: `eq.${deviceId}`,
+      select: "*",
+      limit: "1",
+    });
+    device = firstRow(rows);
+    if (!device || device.token_hash !== tokenHash) {
+      throw new HttpError(
+        "Thiết bị này đã có một yêu cầu đăng ký khác.",
+        409,
+        "ENROLLMENT_CONFLICT"
+      );
+    }
+  }
+  return json({ ok: true, enrollmentStatus: device.enrollment_status || "pending", username });
+}
+
+async function handleEnrollDevice(
+  rest: Rest,
+  body: Record<string, unknown>,
+  token: string
+) {
+  const code = String(body.invitationCode || "").trim();
+  const deviceId = String(body.deviceId || body.device_id || "").trim();
+  const label = String(body.label || "").trim().slice(0, 120) || null;
+  if (!token || !code || !deviceId) {
+    throw new HttpError("Thiếu mã mời hoặc thông tin thiết bị.", 400, "ENROLLMENT_INVALID");
+  }
+  const [codeHash, tokenHash] = await Promise.all([sha256Hex(code), sha256Hex(token)]);
+  try {
+    const rows = await rest.rpc<Array<{ device_id: string; username: string; enrollment_status: string }>>(
+      "consume_device_enrollment_invitation",
+      {
+        p_code_hash: codeHash,
+        p_device_id: deviceId,
+        p_token_hash: tokenHash,
+        p_label: label,
+        p_now: new Date().toISOString(),
+      }
+    );
+    const enrolled = firstRow(rows);
+    return json({ ok: true, enrollmentStatus: "approved", username: enrolled?.username || null });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const codeName = message.match(/(ENROLLMENT_[A-Z_]+|DEVICE_[A-Z_]+)/)?.[1]
+      || "ENROLLMENT_REJECTED";
+    throw new HttpError("Mã mời không hợp lệ, đã dùng hoặc đã hết hạn.", 403, codeName);
+  }
+}
+
+async function handleGetIdentityState(rest: Rest, auth: Auth) {
+  if (auth.kind !== "device") {
+    throw new HttpError("Thiết bị chưa gửi yêu cầu đăng ký.", 403, "DEVICE_ENROLLMENT_REQUIRED");
+  }
+  const requiredVersion = await currentConsentVersion(rest);
+  const [consent, account] = await Promise.all([
+    readUserConsent(rest, auth.device.username),
+    getUserByUsername(rest, auth.device.username),
+  ]);
+  if (!account) throw new HttpError("Tài khoản không còn trong hệ thống.", 403, "ACCOUNT_NOT_FOUND");
+  return json({
+    ok: true,
+    enrollmentStatus: auth.device.enrollment_status,
+    username: auth.device.username,
+    account: {
+      username: account.username,
+      fullName: account.full_name || account.username,
+      avatar: account.avatar || null,
+      isLocked: account.is_locked,
+      isAdmin: account.is_admin,
+      isModerator: account.is_moderator === true,
+    },
+    consent: publicConsent(consent, requiredVersion),
+  });
+}
+
+async function handleGetAccessContext(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  requireAdmin(auth);
+  const username = String(body.username || "").trim();
+  if (!isUsername(username)) throw new HttpError("username không hợp lệ.", 400);
+  const account = await getUserByUsername(rest, username);
+  if (!account) throw new HttpError("Tài khoản chưa được cấp quyền sử dụng My Angel.", 404, "ACCOUNT_NOT_FOUND");
+  return json({
+    ok: true,
+    account: {
+      username: account.username,
+      fullName: account.full_name || account.username,
+      avatar: account.avatar || null,
+      isLocked: account.is_locked,
+      isAdmin: account.is_admin,
+      isModerator: account.is_moderator === true,
+    },
+  });
+}
+
+async function handleUpdateConsent(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  const { device } = requireDevice(auth);
+  const requiredVersion = await currentConsentVersion(rest);
+  const requestedVersion = clampPreference(body.consentVersion, 0, 0, 1000);
+  if (requestedVersion !== requiredVersion) {
+    throw new HttpError("Phiên bản consent không còn hợp lệ.", 409, "CONSENT_VERSION_STALE");
+  }
+  const previous = await readUserConsent(rest, device.username);
+  const engagementEnabled = body.engagementEnabled === true;
+  if (body.autoPublishEnabled === true || body.delegatedEngagementEnabled === true) {
+    throw new HttpError("Tính năng này chưa được mở.", 403, "FEATURE_DISABLED");
+  }
+  const autoPublishEnabled = false;
+  const delegatedEnabled = false;
+  const dailyLimit = clampPreference(body.dailyActionLimit, previous?.daily_action_limit || 2, 1, 100);
+  const nowIso = new Date().toISOString();
+  const quietHours = body.quietHours && typeof body.quietHours === "object"
+    ? body.quietHours
+    : previous?.quiet_hours || { enabled: false, timezone: "Asia/Ho_Chi_Minh" };
+  const saved = await rest.rpc<UserConsent[]>("update_user_consent", {
+    p_username: device.username,
+    p_device_id: device.device_id,
+    p_consent_version: requiredVersion,
+    p_engagement_enabled: engagementEnabled,
+    p_auto_publish_enabled: autoPublishEnabled,
+    p_delegated_engagement_enabled: delegatedEnabled,
+    p_quiet_hours: quietHours,
+    p_daily_action_limit: dailyLimit,
+    p_now: nowIso,
+  });
+  return json({ ok: true, consent: firstRow(saved) });
+}
+
+async function handleDisconnectDevice(rest: Rest, auth: Auth) {
+  const { device } = requireDevice(auth);
+  await rest.rpc("disconnect_engagement_device", {
+    p_username: device.username,
+    p_device_id: device.device_id,
+    p_now: new Date().toISOString(),
+  });
+  return json({ ok: true, disconnected: true });
+}
+
 async function handleHeartbeat(
   rest: Rest,
   auth: Auth,
@@ -1206,112 +1496,59 @@ async function handleHeartbeat(
   token: string
 ) {
   const username = String(body.username || "").trim();
-  const deviceId = String(body.deviceId || body.device_id || "").trim();
   const label = String(body.label || "").trim().slice(0, 120) || null;
   const nowIso = new Date().toISOString();
-
-  let device: Device | null =
-    auth.kind === "device" ? auth.device : null;
-
-  if (!device) {
-    // Đăng ký máy mới: cần username + deviceId + token mới.
-    if (!token) throw new HttpError("Thiếu device token.", 401);
-    if (!username || !isUsername(username)) {
-      throw new HttpError("Thiếu username hợp lệ để đăng ký thiết bị.", 400);
-    }
-    if (!deviceId) throw new HttpError("Thiếu deviceId.", 400);
-    const user = await getUserByUsername(rest, username);
-    if (!user) throw new HttpError(`Tài khoản @${username} chưa có trong hệ thống.`, 403);
-    if (user.is_locked) {
-      throw new HttpError(`Tài khoản @${username} đã bị khóa.`, 403);
-    }
-    const tokenHash = await sha256Hex(token);
-    const created = await rest.postJson<Device[]>(
-      "engagement_devices",
-      {
-        device_id: deviceId,
-        username,
-        token_hash: tokenHash,
-        label,
-        last_seen_at: nowIso,
-        revoked: false,
-      },
-      "resolution=ignore-duplicates"
+  if (!token || auth.kind !== "device") {
+    throw new HttpError(
+      "Thiết bị chưa đăng ký. Hãy dùng mã mời hoặc gửi yêu cầu duyệt.",
+      403,
+      "DEVICE_ENROLLMENT_REQUIRED"
     );
-    device = firstRow(created);
-    if (!device) {
-      // Trùng (username, device_id) nhưng token khác: thay token mới, thu hồi ngầm token cũ.
-      const existing = await rest.getJson<Device[]>("engagement_devices", {
-        username: `eq.${username}`,
-        device_id: `eq.${deviceId}`,
-        select: "*",
-        limit: "1",
-      });
-      const row = firstRow(existing);
-      if (!row) throw new HttpError("Không đăng ký được thiết bị.", 500);
-      const updated = await rest.patchJson<Device[]>(
-        "engagement_devices",
-        { id: `eq.${row.id}` },
-        { token_hash: tokenHash, label, last_seen_at: nowIso, revoked: false, updated_at: nowIso }
-      );
-      device = firstRow(updated) || row;
-    }
-  } else {
-    // Thiết bị cũ: kiểm tra tài khoản còn hoạt động không (có thể bị khóa sau
-    // khi đăng ký). Đổi tài khoản thì nhánh dưới kiểm tra tài khoản mới.
-    if (!username || username === device.username) {
-      await assertUserActive(rest, device.username);
-    }
-    // Đổi tài khoản TechHub trên cùng máy: trả claim cũ, nhận actor mới.
-    if (username && username !== device.username) {
-      if (!isUsername(username)) throw new HttpError("Username mới không hợp lệ.", 400);
-      const user = await getUserByUsername(rest, username);
-      if (!user) throw new HttpError(`Tài khoản @${username} chưa có trong hệ thống.`, 403);
-      if (user.is_locked) throw new HttpError(`Tài khoản @${username} đã bị khóa.`, 403);
-      // Giải phóng claim treo của actor cũ trên máy này.
-      await rest.rpc("release_actor_claims", {
-        p_actor: device.username,
-        p_device_id: device.device_id,
-        p_now: nowIso,
-      }).catch(() => 0);
-      // Tránh vi phạm unique (username, device_id): xóa dòng trùng cũ nếu có.
-      await rest.del("engagement_devices", {
-        username: `eq.${username}`,
-        device_id: `eq.${device.device_id}`,
-      }).catch(() => null);
-      const updated = await rest.patchJson<Device[]>(
-        "engagement_devices",
-        { id: `eq.${device.id}` },
-        { username, label: label ?? device.label, last_seen_at: nowIso, updated_at: nowIso }
-      );
-      device = firstRow(updated) || { ...device, username };
-      await logEvent(rest, {
-        actor_username: username,
-        event: "account_switched",
-        detail: { device_id: device.device_id },
-      });
-    } else {
-      await rest.patch(
-        "engagement_devices",
-        { id: `eq.${device.id}` },
-        { last_seen_at: nowIso, updated_at: nowIso }
-      );
-      device = { ...device, last_seen_at: nowIso };
-    }
   }
+  const device = auth.device;
+  if (device.enrollment_status !== "approved") {
+    return json({
+      ok: true,
+      serverTime: nowIso,
+      enrollmentStatus: "pending",
+      device: { deviceId: device.device_id, username: device.username },
+    });
+  }
+  if (username && username !== device.username) {
+    throw new HttpError(
+      "Tài khoản TechHub đã đổi. Thiết bị cần đăng ký lại cho tài khoản mới.",
+      409,
+      "DEVICE_USERNAME_MISMATCH"
+    );
+  }
+  await assertUserActive(rest, device.username);
+  await rest.patch(
+    "engagement_devices",
+    { id: `eq.${device.id}` },
+    { label: label ?? device.label, last_seen_at: nowIso, updated_at: nowIso }
+  );
+
+  const requiredVersion = await currentConsentVersion(rest);
+  const consent = await readUserConsent(rest, device.username);
+  const consentActive = !!consent
+    && consent.consent_version === requiredVersion
+    && consent.engagement_enabled
+    && !consent.paused_at;
 
   const preferences = await getOrCreatePreferences(rest, device.username);
-  const queuedTurns = preferences.enabled
+  const queuedTurns = preferences.enabled && consentActive
     ? await queueDueDiscussionTurns(rest, device.username)
     : 0;
-  if (!preferences.enabled) {
+  if (!preferences.enabled || !consentActive) {
     await rest.rpc("release_actor_claims", {
       p_actor: device.username,
       p_device_id: device.device_id,
       p_now: nowIso,
     }).catch(() => 0);
   }
-  const pool = await ensureMutualPoolTasks(rest);
+  const pool = consentActive
+    ? await ensureMutualPoolTasks(rest)
+    : { participants: 0, posts: 0, created: 0, waitingForPeers: false };
   await cancelTasksForInvalidPosts(rest, device.username);
   const pending = await rest.getJson<Array<{ id: number }>>("engagement_tasks", {
     actor_username: `eq.${device.username}`,
@@ -1333,8 +1570,10 @@ async function handleHeartbeat(
     device: {
       deviceId: device.device_id,
       username: device.username,
-      lastSeenAt: device.last_seen_at,
+      lastSeenAt: nowIso,
     },
+    enrollmentStatus: "approved",
+    consent: publicConsent(consent, requiredVersion),
     killSwitch,
     engagementEnabled: await isEngagementEnabled(rest),
     pendingCount: pending?.length ?? 0,
@@ -1558,6 +1797,7 @@ async function cancelTasksForInvalidPosts(rest: Rest, actorUsername: string) {
 
 async function handleClaimTask(rest: Rest, auth: Auth) {
   const { device } = requireDevice(auth);
+  const consent = await requireEngagementConsent(rest, device);
   if (!(await isEngagementEnabled(rest))) {
     return json({ task: null, engagementEnabled: false, killSwitch: false });
   }
@@ -1569,20 +1809,24 @@ async function handleClaimTask(rest: Rest, auth: Auth) {
   if (!preferences.enabled) {
     return json({ task: null, engagementEnabled: true, participationEnabled: false, killSwitch: false });
   }
+  const effectiveDailyCap = Math.min(
+    preferences.daily_contribution_cap,
+    consent.daily_action_limit
+  );
   const completedToday = await rest.getJson<Array<{ id: number }>>("engagement_tasks", {
     actor_username: `eq.${device.username}`,
     status: "eq.succeeded",
     completed_at: `gte.${startOfTodayVnIso()}`,
     select: "id",
-    limit: String(preferences.daily_contribution_cap),
+    limit: String(effectiveDailyCap),
   });
-  if ((completedToday || []).length >= preferences.daily_contribution_cap) {
+  if ((completedToday || []).length >= effectiveDailyCap) {
     return json({
       task: null,
       engagementEnabled: true,
       killSwitch: false,
       dailyCapReached: true,
-      dailyContributionCap: preferences.daily_contribution_cap,
+      dailyContributionCap: effectiveDailyCap,
     });
   }
   const nowIso = new Date().toISOString();
@@ -1709,6 +1953,95 @@ async function loadOwnedTask(
   return task;
 }
 
+async function handleBeginTaskExecution(
+  rest: Rest,
+  auth: Auth,
+  body: Record<string, unknown>
+) {
+  const { device } = requireDevice(auth);
+  await requireEngagementConsent(rest, device);
+  await assertUserActive(rest, device.username);
+  if (await isKillSwitchOn(rest)) {
+    throw new HttpError("Hệ thống đang tạm dừng.", 403, "ENGAGEMENT_PAUSED");
+  }
+  const taskId = toPositiveInt(body.taskId);
+  if (!taskId) throw new HttpError("taskId không hợp lệ.", 400);
+  const task = await loadOwnedTask(rest, device, taskId);
+  if (task.status !== "claimed" || task.claimed_by_device !== device.device_id
+    || !task.lease_until || new Date(task.lease_until).getTime() <= Date.now()) {
+    throw new HttpError("Claim đã hết hạn hoặc không thuộc thiết bị này.", 409, "LEASE_STALE");
+  }
+  const posts = await rest.getJson<PostRow[]>("posts", {
+    techhub_id: `eq.${task.techhub_id}`,
+    status: "eq.open",
+    verification_status: "eq.verified",
+    select: "techhub_id,techhub_uuid,username,status,verification_status",
+    limit: "1",
+  });
+  if (!firstRow(posts)) {
+    throw new HttpError("Bài không còn verified hoặc đã đóng.", 409, "POST_NOT_VERIFIED");
+  }
+  if (task.action === "reply" && !task.parent_techhub_comment_id) {
+    throw new HttpError("Chưa có comment cha để reply.", 409, "PARENT_MISSING");
+  }
+  const receipts = await rest.getJson<Array<{ state: string; techhub_result_id: number | null; http_status: number | null }>>(
+    "engagement_task_receipts", { task_id: `eq.${task.id}`,
+      select: "state,techhub_result_id,http_status", limit: "1" });
+  const receipt = firstRow(receipts);
+  if (receipt?.state === "posted" && (receipt.techhub_result_id || task.action === "vote")) {
+    return json({ ok: true, taskId, resumeCompletion: true,
+      techhubResultId: receipt.techhub_result_id, httpStatus: receipt.http_status });
+  }
+  if (receipt?.state === "ambiguous") {
+    throw new HttpError("Request trước chưa xác định kết quả; cần đối soát.", 409, "RESULT_AMBIGUOUS");
+  }
+  if (receipt?.state === "completed") {
+    return json({ ok: true, taskId, alreadyCompleted: true });
+  }
+  await rest.post("engagement_task_receipts", {
+    task_id: task.id, actor_username: device.username, device_id: device.device_id,
+    idempotency_key: task.idempotency_key, state: "begun", updated_at: new Date().toISOString(),
+  }, "resolution=merge-duplicates");
+  if (task.discussion_turn_id) {
+    const turns = await rest.getJson<Array<{ thread_id: number }>>("discussion_turns", {
+      id: `eq.${task.discussion_turn_id}`, select: "thread_id", limit: "1",
+    });
+    const turn = firstRow(turns);
+    if (turn) {
+      const threads = await rest.getJson<Array<{ source_revision_id: number | null }>>("discussion_threads", {
+        id: `eq.${turn.thread_id}`, select: "source_revision_id", limit: "1",
+      });
+      const revisionId = firstRow(threads)?.source_revision_id;
+      if (revisionId) await rest.patch("discussion_script_assignments", { revision_id: `eq.${revisionId}`, status: "eq.ready" }, {
+        status: "running", updated_at: new Date().toISOString(),
+      });
+    }
+  }
+  return json({ ok: true, taskId, serverTime: new Date().toISOString() });
+}
+
+async function handleRecordTaskReceipt(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  const { device } = requireDevice(auth);
+  const taskId = toPositiveInt(body.taskId);
+  if (!taskId) throw new HttpError("taskId không hợp lệ.", 400);
+  const task = await loadOwnedTask(rest, device, taskId);
+  const techhubResultId = toPositiveInt(body.techhubResultId);
+  const content = String(body.content || task.content || "");
+  const receiptState = techhubResultId || task.action === "vote" ? "posted" : "ambiguous";
+  await rest.post("engagement_task_receipts", {
+    task_id: task.id, actor_username: device.username, device_id: device.device_id,
+    idempotency_key: task.idempotency_key,
+    state: receiptState,
+    techhub_result_id: techhubResultId,
+    content_hash: content ? await sha256Hex(content) : null,
+    http_status: typeof body.httpStatus === "number" ? body.httpStatus : null,
+    detail: body.detail || null,
+    posted_at: techhubResultId ? new Date().toISOString() : null,
+    updated_at: new Date().toISOString(),
+  }, "resolution=merge-duplicates");
+  return json({ ok: true, taskId, state: receiptState });
+}
+
 async function handleCompleteTask(
   rest: Rest,
   auth: Auth,
@@ -1790,6 +2123,10 @@ async function handleCompleteTask(
       updated_at: nowIso,
     }
   );
+  await rest.patch("engagement_task_receipts", { task_id: `eq.${taskId}` }, {
+    state: "completed", techhub_result_id: techhubResultId,
+    completed_at: nowIso, updated_at: nowIso,
+  });
 
   // Ghi interaction để các job khác dedup (bỏ qua nếu đã có).
   const interactionType =
@@ -2230,6 +2567,7 @@ async function handleGetStatus(
 
 async function handleRedeemUltra(rest: Rest, auth: Auth, body: Record<string, unknown>) {
   const { device } = requireDevice(auth);
+  await requireEngagementConsent(rest, device);
   const techhubId = toPositiveInt(body.techhubId);
   if (!techhubId) throw new HttpError("techhubId không hợp lệ.", 400);
   const discussions = clampPreference(
@@ -2252,6 +2590,10 @@ async function handleRedeemUltra(rest: Rest, auth: Auth, body: Record<string, un
       techhubId,
       discussions,
       reward: firstRow(result as Array<Record<string, unknown>>),
+      // Ưu tiên xếp hàng không đảm bảo số comment hay thời gian hoàn thành
+      // (PLAN_PRODUCT_9_10 mục 18.5); nếu không ghép được người trước khi hết
+      // hạn, lượt Ultra được hoàn đúng một lần.
+      note: "Ultra chỉ đổi ưu tiên xếp hàng theo thứ tự quota; không đảm bảo số comment hoặc thời gian hoàn thành.",
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -2264,6 +2606,7 @@ async function handleRedeemUltra(rest: Rest, auth: Auth, body: Record<string, un
 
 async function handleSubmitOwnThreads(rest: Rest, auth: Auth, body: Record<string, unknown>) {
   const { device } = requireDevice(auth);
+  await requireEngagementConsent(rest, device);
   await assertUserActive(rest, device.username);
   const techhubId = toPositiveInt(body.techhubId);
   if (!techhubId) throw new HttpError("techhubId không hợp lệ.", 400);
@@ -2309,13 +2652,27 @@ async function handleSubmitOwnThreads(rest: Rest, auth: Auth, body: Record<strin
   );
   const devices = await rest.getJson<Array<{ username: string }>>("engagement_devices", {
     revoked: "eq.false",
+    enrollment_status: "eq.approved",
     last_seen_at: `gte.${new Date(Date.now() - offlineMinutes * 60 * 1000).toISOString()}`,
     select: "username",
     limit: "1000",
   });
-  const candidateNames = [...new Set((devices || [])
+  let candidateNames = [...new Set((devices || [])
     .map((row) => row.username)
     .filter((name) => name && name !== device.username))];
+  if (candidateNames.length) {
+    const requiredVersion = await currentConsentVersion(rest);
+    const consents = await rest.getJson<Array<{ username: string }>>("user_consents", {
+      username: `in.(${candidateNames.join(",")})`,
+      consent_version: `eq.${requiredVersion}`,
+      engagement_enabled: "eq.true",
+      paused_at: "is.null",
+      select: "username",
+      limit: "1000",
+    });
+    const consented = new Set((consents || []).map((row) => row.username));
+    candidateNames = candidateNames.filter((name) => consented.has(name));
+  }
   const [activeUsers, candidatePosts] = await Promise.all([
     getActiveUsernames(rest),
     candidateNames.length
@@ -2361,6 +2718,261 @@ async function handleSubmitOwnThreads(rest: Rest, auth: Auth, body: Record<strin
   });
 }
 
+async function handleSaveOwnDiscussionDraft(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  const { device } = requireDevice(auth);
+  await assertUserActive(rest, device.username);
+  const techhubId = toPositiveInt(body.techhubId);
+  if (!techhubId || !Array.isArray(body.threads) || body.threads.length < 1 || body.threads.length > 3) {
+    throw new HttpError("Chọn bài và nhập từ 1 đến 3 chuỗi hợp lệ.", 400, "DRAFT_INVALID");
+  }
+  const preferences = await getOrCreatePreferences(rest, device.username);
+  if (body.threads.length > preferences.discussions_per_post) {
+    throw new HttpError("Số chuỗi vượt trần admin cho bài này.", 409, "QUOTA_EXCEEDED");
+  }
+  const threads = body.threads.map((raw, index) => {
+    const parsed = parseThreadIndex(raw, index);
+    if ((parsed.targetTechhubId && parsed.targetTechhubId !== techhubId)
+      || parsed.visitor
+      || parsed.actors.A.toLowerCase() !== "visitor"
+      || parsed.actors.B.toLowerCase() !== "author") {
+      throw new HttpError(`thread[${index}]: bài đích hoặc actor không thuộc quyền tự chọn.`, 403, "DRAFT_SCOPE_DENIED");
+    }
+    return {
+      name: parsed.name.slice(0, 120),
+      actors: { A: "visitor", B: "author" },
+      turns: parsed.turns,
+    };
+  });
+  const contentHash = await sha256Hex(JSON.stringify(threads));
+  try {
+    const saved = await rest.rpc<Array<{ draft_id: number; revision_number: number; created: boolean }>>(
+      "save_discussion_script_draft",
+      {
+        p_owner_username: device.username,
+        p_techhub_id: techhubId,
+        p_threads: threads,
+        p_content_hash: contentHash,
+        p_now: new Date().toISOString(),
+      }
+    );
+    const row = firstRow(saved);
+    return json({ ok: true, draftId: row?.draft_id, revision: row?.revision_number,
+      created: row?.created === true, threads });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("POST_NOT_OWNED_OR_VERIFIED")) {
+      throw new HttpError("Bài không thuộc bạn hoặc chưa được xác minh.", 403, "POST_NOT_VERIFIED");
+    }
+    throw error;
+  }
+}
+
+async function handleGetOwnDiscussionDraft(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  const { device } = requireDevice(auth);
+  const techhubId = toPositiveInt(body.techhubId);
+  if (!techhubId) throw new HttpError("ID bài không hợp lệ.", 400, "DRAFT_INVALID");
+  const drafts = await rest.getJson<Array<{ id: number; current_revision: number; status: string }>>(
+    "discussion_script_drafts",
+    { owner_username: `eq.${device.username}`, techhub_id: `eq.${techhubId}`,
+      select: "id,current_revision,status", limit: "1" }
+  );
+  const draft = firstRow(drafts);
+  if (!draft) return json({ ok: true, draft: null });
+  const revisions = await rest.getJson<Array<{ threads: unknown[]; created_at: string }>>(
+    "discussion_script_revisions",
+    { draft_id: `eq.${draft.id}`, revision_number: `eq.${draft.current_revision}`,
+      select: "threads,created_at", limit: "1" }
+  );
+  const revision = firstRow(revisions);
+  return json({ ok: true, draft: {
+    id: draft.id, techhubId, revision: draft.current_revision,
+    status: draft.status, threads: revision?.threads || [], createdAt: revision?.created_at || null,
+  } });
+}
+
+async function handleSubmitDiscussionDraft(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  const { device } = requireDevice(auth);
+  const authorConsent = await requireEngagementConsent(rest, device);
+  const techhubId = toPositiveInt(body.techhubId);
+  if (!techhubId) throw new HttpError("ID bài không hợp lệ.", 400, "DRAFT_INVALID");
+  const drafts = await rest.getJson<Array<{ id: number; current_revision: number }>>(
+    "discussion_script_drafts",
+    { owner_username: `eq.${device.username}`, techhub_id: `eq.${techhubId}`,
+      status: "eq.draft", select: "id,current_revision", limit: "1" }
+  );
+  const draft = firstRow(drafts);
+  if (!draft?.current_revision) throw new HttpError("Chưa có draft để gửi duyệt.", 404, "DRAFT_NOT_FOUND");
+  const revisions = await rest.getJson<Array<{ id: number; content_hash: string; threads: Array<{ turns?: Array<{ actor?: string }> }> }>>(
+    "discussion_script_revisions",
+    { draft_id: `eq.${draft.id}`, revision_number: `eq.${draft.current_revision}`,
+      select: "id,content_hash,threads", limit: "1" }
+  );
+  const revision = firstRow(revisions);
+  if (!revision) throw new HttpError("Không tìm thấy revision hiện tại.", 404, "DRAFT_NOT_FOUND");
+  const authorReserved = (revision.threads || []).reduce((sum, thread) =>
+    sum + (thread.turns || []).filter((turn) => String(turn.actor).toUpperCase() === "B").length, 0);
+  const visitorReserved = (revision.threads || []).reduce((sum, thread) =>
+    sum + (thread.turns || []).filter((turn) => String(turn.actor).toUpperCase() === "A").length, 0);
+  if (!authorReserved || !visitorReserved) throw new HttpError("Revision thiếu lượt A/B hợp lệ.", 400, "DRAFT_INVALID");
+  const authorPref = await getOrCreatePreferences(rest, device.username);
+  const [authorTasks, authorAssignments] = await Promise.all([
+    rest.getJson<Array<{ id: number }>>("engagement_tasks", {
+      actor_username: `eq.${device.username}`, created_at: `gte.${startOfTodayVnIso()}`,
+      status: "neq.cancelled", select: "id", limit: "1000",
+    }),
+    rest.getJson<Array<{ author_username: string; visitor_username: string; author_reserved_actions: number; visitor_reserved_actions: number }>>(
+      "discussion_script_assignments", {
+        or: `(author_username.eq.${device.username},visitor_username.eq.${device.username})`,
+        status: "in.(awaiting_approval,ready,running)",
+        select: "author_username,visitor_username,author_reserved_actions,visitor_reserved_actions", limit: "1000",
+      }),
+  ]);
+  const authorUsed = (authorTasks?.length || 0) + (authorAssignments || []).reduce((sum, row) =>
+    sum + (row.author_username === device.username ? Number(row.author_reserved_actions || 0) : Number(row.visitor_reserved_actions || 0)), 0);
+  const authorCap = Math.min(authorConsent.daily_action_limit, authorPref.daily_contribution_cap || authorConsent.daily_action_limit);
+  if (authorUsed + authorReserved > authorCap) {
+    throw new HttpError("Draft vượt quota hành động còn lại của bạn hôm nay.", 409, "QUOTA_EXCEEDED");
+  }
+  const existing = await rest.getJson<Array<{ id: number; status: string; visitor_username: string }>>(
+    "discussion_script_assignments",
+    { revision_id: `eq.${revision.id}`, select: "id,status,visitor_username", limit: "1" }
+  );
+  const old = firstRow(existing);
+  if (old) return json({ ok: true, assignmentId: old.id, status: old.status, visitor: old.visitor_username, duplicate: true });
+
+  const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const devices = await rest.getJson<Array<{ username: string }>>("engagement_devices", {
+    username: `neq.${device.username}`, revoked: "eq.false", enrollment_status: "eq.approved",
+    last_seen_at: `gte.${cutoff}`, select: "username", order: "last_seen_at.desc", limit: "100",
+  });
+  const names = [...new Set((devices || []).map((row) => row.username).filter(Boolean))];
+  if (!names.length) throw new HttpError("Chưa có thành viên phù hợp đang online.", 409, "NO_ELIGIBLE_ACTOR");
+  const requiredVersion = await currentConsentVersion(rest);
+  const todayStart = startOfTodayVnIso();
+  const [consents, posts, users, todayTasks, reservations, activePairs] = await Promise.all([
+    rest.getJson<Array<{ username: string; daily_action_limit: number }>>("user_consents", {
+      username: `in.(${names.join(",")})`, consent_version: `eq.${requiredVersion}`,
+      engagement_enabled: "eq.true", paused_at: "is.null", select: "username,daily_action_limit", limit: "100",
+    }),
+    rest.getJson<Array<{ username: string }>>("posts", {
+      username: `in.(${names.join(",")})`, status: "eq.open", verification_status: "eq.verified",
+      select: "username", limit: "1000",
+    }),
+    rest.getJson<Array<{ username: string }>>("users", {
+      username: `in.(${names.join(",")})`, is_locked: "eq.false", select: "username", limit: "100",
+    }),
+    rest.getJson<Array<{ actor_username: string }>>("engagement_tasks", {
+      actor_username: `in.(${names.join(",")})`, created_at: `gte.${todayStart}`,
+      status: "neq.cancelled", select: "actor_username", limit: "10000",
+    }),
+    rest.getJson<Array<{ visitor_username: string; visitor_reserved_actions: number }>>("discussion_script_assignments", {
+      visitor_username: `in.(${names.join(",")})`, status: "in.(awaiting_approval,ready,running)",
+      select: "visitor_username,visitor_reserved_actions", limit: "1000",
+    }),
+    rest.getJson<Array<{ visitor_username: string }>>("discussion_script_assignments", {
+      techhub_id: `eq.${techhubId}`, author_username: `eq.${device.username}`,
+      status: "in.(awaiting_approval,ready,running)", select: "visitor_username", limit: "100",
+    }),
+  ]);
+  const consentByUser = new Map((consents || []).map((row) => [row.username, row]));
+  const withPosts = new Set((posts || []).map((row) => row.username));
+  const active = new Set((users || []).map((row) => row.username));
+  const paired = new Set((activePairs || []).map((row) => row.visitor_username));
+  const used = new Map<string, number>();
+  for (const row of todayTasks || []) used.set(row.actor_username, (used.get(row.actor_username) || 0) + 1);
+  for (const row of reservations || []) used.set(row.visitor_username,
+    (used.get(row.visitor_username) || 0) + Number(row.visitor_reserved_actions || 0));
+  let visitor: string | undefined;
+  for (const name of names) {
+    if (!consentByUser.has(name) || !withPosts.has(name) || !active.has(name) || paired.has(name)) continue;
+    const pref = await getOrCreatePreferences(rest, name);
+    const cap = Math.min(consentByUser.get(name)?.daily_action_limit || 1, pref.daily_contribution_cap || 1);
+    if ((used.get(name) || 0) + visitorReserved <= cap) { visitor = name; break; }
+  }
+  if (!visitor) throw new HttpError("Chưa có thành viên phù hợp đang online.", 409, "NO_ELIGIBLE_ACTOR");
+
+  const assignments = await rest.postJson<Array<{ id: number }>>("discussion_script_assignments", {
+    draft_id: draft.id, revision_id: revision.id, techhub_id: techhubId,
+    author_username: device.username, visitor_username: visitor,
+    author_reserved_actions: authorReserved, visitor_reserved_actions: visitorReserved,
+    status: "awaiting_approval",
+  });
+  const assignment = firstRow(assignments);
+  if (!assignment) throw new HttpError("Không tạo được yêu cầu duyệt.", 500);
+  await rest.post("discussion_script_approvals", [
+    { assignment_id: assignment.id, revision_id: revision.id, username: device.username,
+      actor_role: "author", decision: "approved", decided_at: new Date().toISOString() },
+    { assignment_id: assignment.id, revision_id: revision.id, username: visitor,
+      actor_role: "visitor", decision: "pending" },
+  ]);
+  await rest.patch("discussion_script_drafts", { id: `eq.${draft.id}` }, { status: "submitted", updated_at: new Date().toISOString() });
+  return json({ ok: true, assignmentId: assignment.id, status: "awaiting_approval", visitor });
+}
+
+async function handleListOwnDiscussionApprovals(rest: Rest, auth: Auth) {
+  const { device } = requireDevice(auth);
+  const approvals = await rest.getJson<Array<{ id: number; assignment_id: number; revision_id: number; actor_role: string; decision: string; created_at: string }>>(
+    "discussion_script_approvals",
+    { username: `eq.${device.username}`, select: "id,assignment_id,revision_id,actor_role,decision,created_at",
+      order: "created_at.desc", limit: "20" }
+  );
+  const result = [];
+  for (const approval of approvals || []) {
+    const assignments = await rest.getJson<Array<{ id: number; draft_id: number; author_username: string; visitor_username: string; status: string; expires_at: string }>>(
+      "discussion_script_assignments", { id: `eq.${approval.assignment_id}`, select: "*", limit: "1" });
+    const assignment = firstRow(assignments);
+    if (!assignment) continue;
+    const revisions = await rest.getJson<Array<{ threads: unknown[]; revision_number: number }>>(
+      "discussion_script_revisions", { id: `eq.${approval.revision_id}`, select: "threads,revision_number", limit: "1" });
+    const drafts = await rest.getJson<Array<{ techhub_id: number }>>(
+      "discussion_script_drafts", { id: `eq.${assignment.draft_id}`, select: "techhub_id", limit: "1" });
+    result.push({ ...approval, ...assignment, revision: firstRow(revisions)?.revision_number,
+      threads: firstRow(revisions)?.threads || [], techhubId: firstRow(drafts)?.techhub_id });
+  }
+  return json({ ok: true, approvals: result });
+}
+
+async function handleDecideDiscussionApproval(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  const { device } = requireDevice(auth);
+  const approvalId = toPositiveInt(body.approvalId);
+  const decision = body.decision === "approved" ? "approved" : body.decision === "rejected" ? "rejected" : null;
+  if (!approvalId || !decision) throw new HttpError("Quyết định không hợp lệ.", 400);
+  const approvals = await rest.getJson<Array<{ id: number; assignment_id: number; revision_id: number; decision: string }>>(
+    "discussion_script_approvals", { id: `eq.${approvalId}`, username: `eq.${device.username}`, select: "*", limit: "1" });
+  const approval = firstRow(approvals);
+  if (!approval) throw new HttpError("Yêu cầu duyệt không thuộc bạn.", 403, "APPROVAL_DENIED");
+  if (approval.decision !== "pending") return json({ ok: true, duplicate: true, decision: approval.decision });
+  const assignments = await rest.getJson<Array<{ id: number; draft_id: number; status: string; expires_at: string; visitor_username: string }>>(
+    "discussion_script_assignments", { id: `eq.${approval.assignment_id}`, select: "*", limit: "1" });
+  const assignment = firstRow(assignments);
+  if (!assignment || assignment.status !== "awaiting_approval") throw new HttpError("Yêu cầu không còn chờ duyệt.", 409);
+  if (new Date(assignment.expires_at).getTime() <= Date.now()) {
+    await rest.patch("discussion_script_assignments", { id: `eq.${assignment.id}` }, { status: "expired", updated_at: new Date().toISOString() });
+    throw new HttpError("Yêu cầu duyệt đã hết hạn.", 409, "APPROVAL_EXPIRED");
+  }
+  await rest.patch("discussion_script_approvals", { id: `eq.${approval.id}` }, { decision, decided_at: new Date().toISOString() });
+  if (decision === "rejected") {
+    await rest.patch("discussion_script_assignments", { id: `eq.${assignment.id}` }, { status: "rejected", updated_at: new Date().toISOString() });
+    return json({ ok: true, decision, status: "rejected" });
+  }
+  const pending = await rest.getJson<Array<{ id: number }>>("discussion_script_approvals", {
+    assignment_id: `eq.${assignment.id}`, decision: "neq.approved", select: "id", limit: "1",
+  });
+  if (pending?.length) return json({ ok: true, decision, status: "awaiting_approval" });
+  const revisions = await rest.getJson<Array<{ threads: unknown[] }>>("discussion_script_revisions", {
+    id: `eq.${approval.revision_id}`, select: "threads", limit: "1" });
+  const drafts = await rest.getJson<Array<{ techhub_id: number }>>("discussion_script_drafts", {
+    id: `eq.${assignment.draft_id}`, select: "techhub_id", limit: "1" });
+  const activated = await handleImportThreads(rest, { kind: "admin" }, {
+    threads: firstRow(revisions)?.threads || [],
+    defaults: { techhubId: firstRow(drafts)?.techhub_id, visitor: assignment.visitor_username },
+    sourceRevisionId: approval.revision_id,
+    createdBy: `revision:${approval.revision_id}`,
+  });
+  await rest.patch("discussion_script_assignments", { id: `eq.${assignment.id}` }, { status: "ready", updated_at: new Date().toISOString() });
+  return activated;
+}
+
 async function handlePushComments(rest: Rest, auth: Auth, body: Record<string, unknown>) {
   requireAdmin(auth);
   const techhubId = toPositiveInt(body.techhubId);
@@ -2395,16 +3007,909 @@ async function handlePushComments(rest: Rest, auth: Auth, body: Record<string, u
 
 async function handleListBoosts(rest: Rest, auth: Auth, body: Record<string, unknown>) {
   requireAdmin(auth);
+  // Đối soát boost hết hạn trước khi list: hoàn Ultra đúng một lần cho yêu
+  // cầu chưa từng mở turn đầu (R4, PLAN_PRODUCT_9_10 mục 18.5).
+  await settleExpiredBoosts(rest);
   const status = ["active", "completed", "cancelled", "expired"].includes(String(body.status || ""))
     ? String(body.status)
     : "active";
   const boosts = await rest.getJson<Array<Record<string, unknown>>>("engagement_boost_requests", {
     status: `eq.${status}`,
-    select: "id,techhub_id,owner_username,source,requested_discussions,status,created_by,expires_at,created_at,updated_at",
+    select: "id,techhub_id,owner_username,source,requested_discussions,status,created_by,expires_at,created_at,updated_at,refunded_at,refund_reason",
     order: "created_at.desc",
     limit: String(clampPreference(body.limit, 100, 1, 500)),
   });
   return json({ ok: true, boosts: boosts || [] });
+}
+
+/** Quét boost active đã hết hạn: đánh dấu expired và hoàn Ultra idempotent. */
+async function settleExpiredBoosts(rest: Rest): Promise<void> {
+  try {
+    await rest.rpc("settle_engagement_boosts", {});
+  } catch (error) {
+    console.error("[engagement-api] settle_engagement_boosts failed:", error);
+  }
+}
+
+async function handleCancelBoost(rest: Rest, auth: Auth, body: Record<string, unknown>) {
+  requireAdmin(auth);
+  const boostId = toPositiveInt(body.boostId);
+  if (!boostId) throw new HttpError("boostId không hợp lệ.", 400);
+  const reason = String(body.reason || "").trim().slice(0, 140) || "admin_cancelled";
+  const result = await rest.rpc<Array<Record<string, unknown>>>("settle_engagement_boosts", {
+    p_boost_id: boostId,
+    p_cancel_reason: reason,
+  });
+  const rows = Array.isArray(result) ? result : [];
+  if (rows.length === 0) {
+    throw new HttpError(
+      `Boost #${boostId} không còn active (đã xử lý hoặc đã hoàn credit).`,
+      409
+    );
+  }
+  return json({ ok: true, settled: rows });
+}
+
+// ---------------------------------------------------------------------------
+// Chiến dịch nhanh (R4) — năm trường cấu hình + hai preset MVP + preview
+// capacity. Tham chiếu PLAN_PRODUCT_9_10.md mục 5.2, 5.3, 17.2, 21 (R4).
+// Màn hình cơ bản chỉ có: nhóm user, bài đích, số chuỗi/bài, khung giờ, preset.
+// Trần kỹ thuật (hành động/user/ngày, chuỗi/bài/ngày, khoảng cách tối thiểu)
+// do server quản qua settings; client tự khai giá trị lớn hơn sẽ bị chặn.
+// ---------------------------------------------------------------------------
+
+type QuickPresetName = "safe" | "balanced";
+
+type QuickPresetParams = {
+  name: QuickPresetName;
+  label: string;
+  maxActionsPerUserDaily: number;
+  maxThreadsPerPostDaily: number;
+  minActionGapMinutes: number;
+  batchThreadLimit: number;
+};
+
+async function resolveQuickPreset(
+  rest: Rest,
+  presetName: string
+): Promise<QuickPresetParams> {
+  if (presetName !== "safe" && presetName !== "balanced") {
+    throw new HttpError(
+      "Preset phải là 'safe' (An toàn) hoặc 'balanced' (Cân bằng).",
+      400,
+      "PRESET_REQUIRED"
+    );
+  }
+  const [
+    safeActions,
+    safeThreads,
+    balancedActions,
+    balancedThreads,
+    minGap,
+    batchLimit,
+  ] = await Promise.all([
+    readSetting(rest, "engagement_preset_safe_daily_actions"),
+    readSetting(rest, "engagement_preset_safe_threads_per_post"),
+    readSetting(rest, "engagement_preset_balanced_daily_actions"),
+    readSetting(rest, "engagement_preset_balanced_threads_per_post"),
+    readSetting(rest, "engagement_preset_min_action_gap_minutes"),
+    readSetting(rest, "engagement_preset_max_threads_per_batch"),
+  ]);
+  if (presetName === "safe") {
+    return {
+      name: "safe",
+      label: "An toàn",
+      maxActionsPerUserDaily: clampPreference(safeActions, 2, 1, 20),
+      maxThreadsPerPostDaily: clampPreference(safeThreads, 1, 1, 10),
+      minActionGapMinutes: clampPreference(minGap, 10, 1, 1440),
+      batchThreadLimit: clampPreference(batchLimit, 50, 1, 50),
+    };
+  }
+  return {
+    name: "balanced",
+    label: "Cân bằng",
+    maxActionsPerUserDaily: clampPreference(balancedActions, 5, 1, 20),
+    maxThreadsPerPostDaily: clampPreference(balancedThreads, 3, 1, 10),
+    minActionGapMinutes: clampPreference(minGap, 10, 1, 1440),
+    batchThreadLimit: clampPreference(batchLimit, 50, 1, 50),
+  };
+}
+
+type QuickCampaignInput = {
+  name: string;
+  preset: QuickPresetName;
+  groupUsernames: string[];
+  techhubId: number | null;
+  threadsPerPost: number;
+  windowStartAt: Date;
+  windowMinutes: number;
+};
+
+function parseQuickCampaignInput(
+  body: Record<string, unknown>,
+  preset: QuickPresetParams
+): QuickCampaignInput {
+  const group = Array.isArray(body.groupUsernames)
+    ? body.groupUsernames.map(String)
+    : String(body.groupUsernames || "");
+  const groupUsernames = [
+    ...new Set(
+      group
+        .flatMap((item) => String(item).split(","))
+        .map((name) => name.trim())
+        .filter(Boolean)
+        .map((name) => name.slice(0, 100))
+    ),
+  ].slice(0, 100);
+  const techhubId = toPositiveInt(body.techhubId);
+  const threadsPerPost = Math.min(
+    preset.maxThreadsPerPostDaily,
+    Math.max(1, Math.floor(Number(body.threadsPerPost) || preset.maxThreadsPerPostDaily))
+  );
+  const windowMinutes = Math.min(
+    720,
+    Math.max(30, Math.floor(Number(body.windowMinutes) || 120))
+  );
+  const startRaw = String(body.windowStartAt || "").trim();
+  const parsedStart = startRaw ? new Date(startRaw) : null;
+  const windowStartAt =
+    parsedStart && Number.isFinite(parsedStart.getTime()) ? parsedStart : new Date();
+  const stamp = new Date();
+  const name =
+    String(body.name || "").trim().slice(0, 200) ||
+    `quick-${preset.name}-${stamp.toISOString().slice(0, 16).replace(/[-:T]/g, "")}`;
+  return {
+    name,
+    preset: preset.name,
+    groupUsernames,
+    techhubId,
+    threadsPerPost,
+    windowStartAt,
+    windowMinutes,
+  };
+}
+
+type QuickIssue = {
+  code: string;
+  message: string;
+  action: string;
+};
+
+type QuickPlannedThread = {
+  index: number;
+  name: string;
+  techhubId: number;
+  postTitle: string | null;
+  author: string;
+  visitor: string | null;
+  visitorTurns: number;
+  authorTurns: number;
+  scheduledAt: string | null;
+  schedulable: boolean;
+  reasonCode: string | null;
+};
+
+const QUICK_ISSUE_HINTS: Record<string, { message: string; action: string }> = {
+  NO_ELIGIBLE_POST: {
+    message: "Không có bài hợp lệ (open + verified, tác giả còn hoạt động) trong phạm vi chọn.",
+    action: "Đồng bộ bài qua post-sync hoặc bớt lọc nhóm user rồi thử lại.",
+  },
+  POST_NOT_ELIGIBLE: {
+    message: "Bài đích chưa đủ điều kiện (chưa verified, đã đóng hoặc không tồn tại).",
+    action: "Bấm Đồng bộ bài trong post-sync rồi xem lại preview.",
+  },
+  NO_ELIGIBLE_ACTOR: {
+    message: "Chưa đủ hai tài khoản: cần tác giả và một thành viên khác cùng online, đã bật tham gia.",
+    action: "Draft vẫn được lưu khi chạy; đợi thành viên online hoặc mở rộng nhóm user.",
+  },
+  QUOTA_EXCEEDED: {
+    message: "Thành viên đủ điều kiện đã dùng hết quota hành động hôm nay.",
+    action: "Giảm số chuỗi, đổi preset An toàn hoặc chạy lại vào ngày mai.",
+  },
+  THREAD_CAP_PER_POST: {
+    message: "Bài đã đạt giới hạn chuỗi mới trong hôm nay theo preset.",
+    action: "Chọn bài khác, bớt số chuỗi/bài hoặc chạy lại vào ngày mai.",
+  },
+  THREAD_ALREADY_ACTIVE: {
+    message: "Cặp user này đã có chuỗi đang chạy trên bài trong hôm nay.",
+    action: "Bỏ qua chuỗi trùng; hệ thống giữ một chuỗi active cho mỗi cặp/bài.",
+  },
+  WINDOW_FULL: {
+    message: "Khung giờ không đủ chỗ cho thêm hành động do khoảng cách tối thiểu.",
+    action: "Mở rộng khung giờ hoặc giảm số chuỗi rồi chạy lại.",
+  },
+  VISITOR_NOT_ELIGIBLE: {
+    message: "Visitor khai trong JSON chưa đủ điều kiện (không online, trùng tác giả hoặc hết quota).",
+    action: "Bỏ trường visitor để server tự ghép, hoặc đổi tên user khác.",
+  },
+  THREADS_REQUIRED: {
+    message: "Chưa có nội dung: chiến dịch nhanh cần JSON chuỗi từ copy prompt.",
+    action: "Bấm Copy prompt, tạo JSON bằng ChatGPT/Gemini rồi dán vào ô nội dung.",
+  },
+};
+
+/**
+ * Bộ tính capacity dùng chung cho preview và launch. CHỈ ĐỌC, không ghi:
+ * preview trả về đúng kế hoạch này mà không tạo campaign/thread/task ảo
+ * (mục 17.2: không tạo task giả khi thiếu người).
+ */
+async function buildQuickCampaignPlan(
+  rest: Rest,
+  input: QuickCampaignInput,
+  preset: QuickPresetParams,
+  rawThreads: unknown[] | null
+) {
+  const issues: QuickIssue[] = [];
+  const threadErrors: Array<{ index: number; name: string; error: string; action: string }> = [];
+  const now = new Date();
+
+  // 1. Bài hợp lệ.
+  let posts: PostRow[] = [];
+  if (input.techhubId) {
+    const post = await getPostByTechhubId(rest, input.techhubId);
+    posts = post ? [post] : [];
+  } else {
+    const cutoff = new Date(now.getTime() - 60 * 24 * 3600 * 1000);
+    posts = await rest.getJson<PostRow[]>("posts", {
+      status: "eq.open",
+      verification_status: "eq.verified",
+      last_verified_at: "not.is.null",
+      published_at: `gte.${cutoff.toISOString()}`,
+      select:
+        "techhub_id,techhub_uuid,username,title,status,published_at,created_at,community_slug,verification_status,last_verified_at",
+      order: "created_at.desc",
+      limit: "200",
+    });
+    posts = posts || [];
+  }
+  const activeUsers = await getActiveUsernames(rest);
+  if (input.groupUsernames.length > 0) {
+    const groupSet = new Set(input.groupUsernames.map((name) => name.toLowerCase()));
+    posts = posts.filter((post) => groupSet.has(String(post.username || "").toLowerCase()));
+  }
+  posts = posts.filter(
+    (post) =>
+      !!post.techhub_uuid &&
+      !!post.username &&
+      activeUsers.has(post.username) &&
+      String(post.status || "").toLowerCase() === "open" &&
+      String(post.verification_status || "").toLowerCase() === "verified"
+  );
+
+  // Boost active chỉ đổi thứ tự ưu tiên, KHÔNG tăng quota (R4: bài ưu tiên
+  // vẫn chịu quota).
+  const activeBoosts = await rest.getJson<
+    Array<{ techhub_id: number; requested_discussions: number }>
+  >("engagement_boost_requests", {
+    status: "eq.active",
+    expires_at: `gt.${now.toISOString()}`,
+    select: "techhub_id,requested_discussions",
+    order: "created_at.desc",
+    limit: "500",
+  });
+  const boostedPosts = new Set(
+    (activeBoosts || []).map((boost) => Number(boost.techhub_id))
+  );
+  posts.sort((a, b) => {
+    const boosted = Number(boostedPosts.has(b.techhub_id)) - Number(boostedPosts.has(a.techhub_id));
+    if (boosted !== 0) return boosted;
+    return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+  });
+
+  if (posts.length === 0) {
+    issues.push({ code: "NO_ELIGIBLE_POST", ...QUICK_ISSUE_HINTS.NO_ELIGIBLE_POST });
+  }
+
+  // 2. Thành viên đủ điều kiện: device approved online 30 phút + consent
+  //    hợp lệ + pool bật + không khóa (giữ nguyên tiêu chí ghép của R3).
+  const sinceIso = new Date(now.getTime() - 30 * 60 * 1000).toISOString();
+  const [seenDevices, activeThreadRows, todayTaskRows, recentTaskRows] = await Promise.all([
+    rest.getJson<Array<{ username: string }>>("engagement_devices", {
+      revoked: "eq.false",
+      enrollment_status: "eq.approved",
+      last_seen_at: `gte.${sinceIso}`,
+      select: "username",
+      limit: "5000",
+    }),
+    rest.getJson<
+      Array<{ techhub_id: number; author_username: string; visitor_username: string; created_at: string }>
+    >("discussion_threads", {
+      created_at: `gte.${startOfTodayVnIso()}`,
+      status: "neq.cancelled",
+      select: "techhub_id,author_username,visitor_username,created_at",
+      limit: "10000",
+    }),
+    rest.getJson<
+      Array<{ actor_username: string; target_username: string | null; scheduled_at: string | null }>
+    >("engagement_tasks", {
+      created_at: `gte.${startOfTodayVnIso()}`,
+      status: "neq.cancelled",
+      select: "actor_username,target_username,scheduled_at",
+      limit: "10000",
+    }),
+    rest.getJson<
+      Array<{ actor_username: string; target_username: string | null; created_at: string }>
+    >("engagement_tasks", {
+      created_at: `gte.${new Date(now.getTime() - 7 * 24 * 3600 * 1000).toISOString()}`,
+      select: "actor_username,target_username,created_at",
+      limit: "10000",
+    }),
+  ]);
+  const onlineNames = [
+    ...new Set((seenDevices || []).map((row) => row.username).filter(Boolean)),
+  ];
+  const groupLower = new Set(input.groupUsernames.map((name) => name.toLowerCase()));
+  const requiredConsentVersion = await currentConsentVersion(rest);
+  const [prefRows, consentRows] = await Promise.all([
+    onlineNames.length
+      ? rest.getJson<Array<{ username: string }>>("engagement_preferences", {
+          username: `in.(${onlineNames.join(",")})`,
+          enabled: "eq.true",
+          select: "username",
+          limit: "5000",
+        })
+      : [],
+    onlineNames.length
+      ? rest.getJson<Array<{ username: string }>>("user_consents", {
+          username: `in.(${onlineNames.join(",")})`,
+          consent_version: `eq.${requiredConsentVersion}`,
+          engagement_enabled: "eq.true",
+          paused_at: "is.null",
+          select: "username",
+          limit: "5000",
+        })
+      : [],
+  ]);
+  const enabledSet = new Set((prefRows || []).map((row) => row.username));
+  const consentedSet = new Set((consentRows || []).map((row) => row.username));
+  const actors = onlineNames.filter(
+    (name) =>
+      activeUsers.has(name) &&
+      enabledSet.has(name) &&
+      consentedSet.has(name) &&
+      (groupLower.size === 0 || groupLower.has(name.toLowerCase()))
+  );
+
+  // 3. Quota hôm nay theo preset (một hành động = một comment/reply;
+  //    chuỗi 3 turn = 2 hành động của A + 1 của B).
+  const actionsToday = new Map<string, number>();
+  const lastSlotByActor = new Map<string, number>();
+  for (const task of todayTaskRows || []) {
+    if (!task.actor_username) continue;
+    actionsToday.set(task.actor_username, (actionsToday.get(task.actor_username) || 0) + 1);
+    const slot = task.scheduled_at ? new Date(task.scheduled_at).getTime() : 0;
+    if (Number.isFinite(slot)) {
+      lastSlotByActor.set(
+        task.actor_username,
+        Math.max(lastSlotByActor.get(task.actor_username) || 0, slot)
+      );
+    }
+  }
+  const pairCount7d = new Map<string, number>();
+  for (const task of recentTaskRows || []) {
+    if (!task.actor_username || !task.target_username) continue;
+    const key = `${task.actor_username}:${task.target_username}`;
+    pairCount7d.set(key, (pairCount7d.get(key) || 0) + 1);
+  }
+  const threadsTodayByPost = new Map<number, number>();
+  const activePairsToday = new Set<string>();
+  for (const thread of activeThreadRows || []) {
+    threadsTodayByPost.set(
+      thread.techhub_id,
+      (threadsTodayByPost.get(thread.techhub_id) || 0) + 1
+    );
+    activePairsToday.add(
+      `${thread.techhub_id}:${thread.visitor_username}:${thread.author_username}`
+    );
+  }
+
+  const remainingActions = new Map<string, number>();
+  for (const actor of actors) {
+    remainingActions.set(actor, preset.maxActionsPerUserDaily - (actionsToday.get(actor) || 0));
+  }
+  const remainingThreads = new Map<number, number>();
+  for (const post of posts) {
+    remainingThreads.set(
+      post.techhub_id,
+      preset.maxThreadsPerPostDaily - (threadsTodayByPost.get(post.techhub_id) || 0)
+    );
+  }
+
+  // 4. Nội dung: map JSON thread -> bài đích (chỉ đường copy prompt, mục 0.3).
+  type PlanSource = {
+    index: number;
+    name: string;
+    techhubId: number | null;
+    visitor: string | null;
+    turns: Array<{ actor: string; content: string }>;
+  };
+  const sources: PlanSource[] = [];
+  if (rawThreads && rawThreads.length > 0) {
+    for (let i = 0; i < rawThreads.length; i++) {
+      try {
+        const thread = parseThreadIndex(rawThreads[i], i);
+        sources.push({
+          index: i,
+          name: thread.name,
+          techhubId: thread.targetTechhubId,
+          visitor:
+            thread.visitor && thread.visitor.toLowerCase() !== "auto" ? thread.visitor : null,
+          turns: thread.turns,
+        });
+      } catch (error) {
+        threadErrors.push({
+          index: i,
+          name: `thread-${i + 1}`,
+          error: error instanceof Error ? error.message : String(error),
+          action: "Sửa JSON rồi kiểm tra lại; các thread đúng vẫn chạy.",
+        });
+      }
+    }
+  } else {
+    // Preview chưa cần nội dung: dựng đủ số slot theo posts × threadsPerPost.
+    let index = 0;
+    for (const post of posts) {
+      const slots = Math.max(0, Math.min(input.threadsPerPost, remainingThreads.get(post.techhub_id) || 0));
+      for (let i = 0; i < slots; i++) {
+        sources.push({
+          index: index++,
+          name: `chuoi-${index}`,
+          techhubId: post.techhub_id,
+          visitor: null,
+          turns: [],
+        });
+      }
+    }
+  }
+
+  // 5. Ghép visitor + xếp lịch trong khung giờ.
+  const windowStartMs = Math.max(input.windowStartAt.getTime(), now.getTime());
+  const windowEndMs = windowStartMs + input.windowMinutes * 60 * 1000;
+  const minGapMs = preset.minActionGapMinutes * 60 * 1000;
+  const postById = new Map(posts.map((post) => [post.techhub_id, post]));
+  const roundRobinPostIds = posts.map((post) => post.techhub_id);
+  let roundRobinCursor = 0;
+  const pairUsageToday = new Map<string, number>();
+  const plannedThreads: QuickPlannedThread[] = [];
+
+  for (const source of sources) {
+    let techhubId = source.techhubId;
+    if (!techhubId) {
+      // Chưa khai bài đích: phân phối vòng tròn vào bài còn slot.
+      for (let i = 0; i < roundRobinPostIds.length; i++) {
+        const candidate = roundRobinPostIds[(roundRobinCursor + i) % roundRobinPostIds.length];
+        if ((remainingThreads.get(candidate) || 0) > 0) {
+          techhubId = candidate;
+          roundRobinCursor = (roundRobinCursor + i + 1) % roundRobinPostIds.length;
+          break;
+        }
+      }
+    }
+    const post = techhubId ? postById.get(techhubId) : undefined;
+    if (!post || !post.username) {
+      const hint = techhubId && !postById.has(techhubId)
+        ? QUICK_ISSUE_HINTS.POST_NOT_ELIGIBLE
+        : QUICK_ISSUE_HINTS.THREAD_CAP_PER_POST;
+      threadErrors.push({
+        index: source.index,
+        name: source.name,
+        error: techhubId
+          ? `Bài #${techhubId} không hợp lệ hoặc đã đủ chuỗi hôm nay.`
+          : "Không còn bài nào có slot chuỗi trống.",
+        action: hint.action,
+      });
+      continue;
+    }
+    const author = post.username;
+    const turnTotal = source.turns.length || 3;
+    const visitorTurns = Math.ceil(turnTotal / 2);
+    const authorTurns = Math.floor(turnTotal / 2);
+
+    const candidates = actors
+      .filter((actor) => actor !== author)
+      .filter((actor) => (remainingActions.get(actor) || 0) >= visitorTurns)
+      .filter((actor) => (remainingActions.get(author) || 0) >= authorTurns)
+      .filter((actor) => !activePairsToday.has(`${post.techhub_id}:${actor}:${author}`))
+      .sort(
+        (a, b) =>
+          (pairUsageToday.get(`${a}:${author}`) || 0) - (pairUsageToday.get(`${b}:${author}`) || 0) ||
+          (pairCount7d.get(`${a}:${author}`) || 0) - (pairCount7d.get(`${b}:${author}`) || 0) ||
+          (actionsToday.get(a) || 0) - (actionsToday.get(b) || 0) ||
+          (a < b ? -1 : a > b ? 1 : 0)
+      );
+
+    let visitor = source.visitor && candidates.includes(source.visitor)
+      ? source.visitor
+      : null;
+    if (source.visitor && !visitor) {
+      threadErrors.push({
+        index: source.index,
+        name: source.name,
+        error: `Visitor @${source.visitor} không đủ điều kiện cho bài #${post.techhub_id}.`,
+        action: QUICK_ISSUE_HINTS.VISITOR_NOT_ELIGIBLE.action,
+      });
+      continue;
+    }
+    if (!visitor) visitor = candidates[0] || null;
+
+    if (!visitor) {
+      // Không ghép được: chờ, không tạo task giả (17.2).
+      const authorEligible = actors.includes(author);
+      const others = actors.filter((actor) => actor !== author);
+      const reason =
+        !authorEligible || others.length === 0
+          ? "NO_ELIGIBLE_ACTOR"
+          : (remainingActions.get(author) || 0) < authorTurns ||
+              others.every((actor) => (remainingActions.get(actor) || 0) < visitorTurns)
+            ? "QUOTA_EXCEEDED"
+            : others.every((actor) =>
+                activePairsToday.has(`${post.techhub_id}:${actor}:${author}`)
+              )
+              ? "THREAD_ALREADY_ACTIVE"
+              : "NO_ELIGIBLE_ACTOR";
+      plannedThreads.push({
+        index: source.index,
+        name: source.name,
+        techhubId: post.techhub_id,
+        postTitle: post.title || null,
+        author,
+        visitor: null,
+        visitorTurns,
+        authorTurns,
+        scheduledAt: null,
+        schedulable: false,
+        reasonCode: reason,
+      });
+      continue;
+    }
+
+    // Xếp lịch: cùng user giữ khoảng cách tối thiểu, nằm trong khung giờ.
+    const slotMs = Math.max(
+      windowStartMs,
+      (lastSlotByActor.get(visitor) || 0) + minGapMs,
+      (lastSlotByActor.get(author) || 0) + minGapMs
+    );
+    if (slotMs > windowEndMs) {
+      plannedThreads.push({
+        index: source.index,
+        name: source.name,
+        techhubId: post.techhub_id,
+        postTitle: post.title || null,
+        author,
+        visitor,
+        visitorTurns,
+        authorTurns,
+        scheduledAt: null,
+        schedulable: false,
+        reasonCode: "WINDOW_FULL",
+      });
+      continue;
+    }
+
+    remainingActions.set(visitor, (remainingActions.get(visitor) || 0) - visitorTurns);
+    remainingActions.set(author, (remainingActions.get(author) || 0) - authorTurns);
+    remainingThreads.set(post.techhub_id, (remainingThreads.get(post.techhub_id) || 0) - 1);
+    pairUsageToday.set(`${visitor}:${author}`, (pairUsageToday.get(`${visitor}:${author}`) || 0) + 1);
+    lastSlotByActor.set(visitor, slotMs);
+    lastSlotByActor.set(author, slotMs);
+    plannedThreads.push({
+      index: source.index,
+      name: source.name,
+      techhubId: post.techhub_id,
+      postTitle: post.title || null,
+      author,
+      visitor,
+      visitorTurns,
+      authorTurns,
+      scheduledAt: new Date(slotMs).toISOString(),
+      schedulable: true,
+      reasonCode: null,
+    });
+  }
+
+  // 6. Gộp lỗi thành danh sách "lỗi có hành động sửa" (R4).
+  const waitingReasons = new Set(
+    plannedThreads.filter((item) => !item.schedulable).map((item) => item.reasonCode || "")
+  );
+  for (const code of waitingReasons) {
+    if (code && QUICK_ISSUE_HINTS[code]) {
+      issues.push({ code, ...QUICK_ISSUE_HINTS[code] });
+    }
+  }
+  if (threadErrors.length > 0) {
+    issues.push({
+      code: "THREAD_CONTENT_INVALID",
+      message: `${threadErrors.length} chuỗi trong JSON không dùng được.`,
+      action: "Xem chi tiết từng chuỗi dưới đây, sửa JSON rồi kiểm tra lại.",
+    });
+  }
+
+  return {
+    preset: {
+      name: preset.name,
+      label: preset.label,
+      maxActionsPerUserDaily: preset.maxActionsPerUserDaily,
+      maxThreadsPerPostDaily: preset.maxThreadsPerPostDaily,
+      minActionGapMinutes: preset.minActionGapMinutes,
+    },
+    window: {
+      startAt: new Date(windowStartMs).toISOString(),
+      endAt: new Date(windowEndMs).toISOString(),
+      minutes: input.windowMinutes,
+    },
+    eligiblePosts: posts.slice(0, 50).map((post) => ({
+      techhubId: post.techhub_id,
+      title: post.title || null,
+      author: post.username,
+      boosted: boostedPosts.has(post.techhub_id),
+      threadsToday: threadsTodayByPost.get(post.techhub_id) || 0,
+      remainingThreads: Math.max(0, remainingThreads.get(post.techhub_id) || 0),
+    })),
+    eligibleActors: actors.map((actor) => ({
+      username: actor,
+      actionsToday: actionsToday.get(actor) || 0,
+      remainingActions: Math.max(0, remainingActions.get(actor) || 0),
+    })),
+    plannedThreads,
+    threadErrors,
+    issues,
+    summary: {
+      posts: posts.length,
+      actors: actors.length,
+      threadsRequested: plannedThreads.length,
+      threadsNow: plannedThreads.filter((item) => item.schedulable).length,
+      threadsWaiting: plannedThreads.filter((item) => !item.schedulable).length,
+    },
+  };
+}
+
+async function handleQuickCampaign(
+  rest: Rest,
+  auth: Auth,
+  body: Record<string, unknown>,
+  options: { dryRun: boolean }
+) {
+  requireAdmin(auth);
+  if (await isKillSwitchOn(rest)) {
+    throw new HttpError("Hệ thống đang tạm dừng.", 403, "ENGAGEMENT_PAUSED");
+  }
+  const preset = await resolveQuickPreset(rest, String(body.preset || ""));
+  const input = parseQuickCampaignInput(body, preset);
+
+  let rawThreads: unknown[] | null = null;
+  if (Array.isArray(body.threads)) {
+    rawThreads = body.threads;
+    if (rawThreads.length === 0 && !options.dryRun) {
+      throw new HttpError(
+        "Cần JSON chuỗi để khởi chạy. " + QUICK_ISSUE_HINTS.THREADS_REQUIRED.action,
+        400,
+        "THREADS_REQUIRED"
+      );
+    }
+    if (rawThreads.length > preset.batchThreadLimit) {
+      throw new HttpError(
+        `Tối đa ${preset.batchThreadLimit} chuỗi mỗi batch.`,
+        400,
+        "QUOTA_EXCEEDED"
+      );
+    }
+  } else if (!options.dryRun) {
+    throw new HttpError(
+      "Cần JSON chuỗi để khởi chạy. " + QUICK_ISSUE_HINTS.THREADS_REQUIRED.action,
+      400,
+      "THREADS_REQUIRED"
+    );
+  }
+
+  const plan = await buildQuickCampaignPlan(rest, input, preset, rawThreads);
+
+  if (options.dryRun) {
+    return json({
+      ok: true,
+      dryRun: true,
+      campaignName: input.name,
+      ...plan,
+    });
+  }
+
+  // ---- Launch: chỉ tạo campaign + thread xếp được; chuỗi chờ được lưu lại
+  // trong campaign (draft) chứ không tạo task ảo.
+  const nowIso = new Date().toISOString();
+  const schedulable = plan.plannedThreads.filter((item) => item.schedulable);
+  const waiting = plan.plannedThreads.filter((item) => !item.schedulable);
+  const threadErrorsSafe: Array<{ index: number; name: string; error: string; action: string }> = [];
+  if (schedulable.length === 0) {
+    throw new HttpError(
+      "Không có chuỗi nào xếp được ngay. " +
+        (plan.issues[0]?.action || "Xem lại preview trước khi chạy."),
+      409,
+      plan.issues[0]?.code || "NO_ELIGIBLE_ACTOR"
+    );
+  }
+  const rawThreadByIndex = new Map<number, unknown>();
+  (rawThreads || []).forEach((thread, index) => rawThreadByIndex.set(index, thread));
+
+  const createdCampaigns = await rest.postJson<Array<{ id: number }>>(
+    "engagement_campaigns",
+    {
+      name: input.name,
+      description: `Chiến dịch nhanh preset ${preset.label}`,
+      status: "active",
+      actions: ["comment", "reply"],
+      votes_per_post: 0,
+      comments_per_post: 0,
+      max_tasks_per_actor_daily: preset.maxActionsPerUserDaily,
+      max_per_pair_daily: 1,
+      cooldown_minutes: preset.minActionGapMinutes,
+      jitter_minutes: 0,
+      post_scope: {
+        quick: true,
+        usernames: input.groupUsernames,
+        techhubId: input.techhubId,
+      },
+      schedule: {
+        quick: true,
+        windowStartAt: new Date(
+          Math.max(input.windowStartAt.getTime(), Date.now())
+        ).toISOString(),
+        windowMinutes: input.windowMinutes,
+        pendingDraft: waiting.map((item) => rawThreadByIndex.get(item.index) ?? null),
+      },
+      ai_assist: false,
+      comment_source: "thread",
+      preset: preset.name,
+      created_by: String(body.createdBy || "admin").slice(0, 100),
+      started_at: nowIso,
+    }
+  );
+  const campaign = firstRow(createdCampaigns);
+  if (!campaign) throw new HttpError("Không tạo được campaign.", 500);
+
+  const imported: Array<{ threadId: number; name: string; techhubId: number; visitor: string; scheduledAt: string }> = [];
+  for (const item of schedulable) {
+    const raw = rawThreadByIndex.get(item.index);
+    let thread: NormalizedThread | null = null;
+    try {
+      thread = parseThreadIndex(raw, item.index);
+    } catch {
+      thread = null;
+    }
+    // Không tạo thread với nội dung rỗng/không đọc được; báo lỗi theo từng
+    // chuỗi thay vì tạo task giả.
+    if (!thread || !thread.turns.length) {
+      threadErrorsSafe.push({
+        index: item.index,
+        name: item.name,
+        error: "Nội dung chuỗi không đọc được khi khởi chạy.",
+        action: "Kiểm tra lại JSON rồi chạy lại phần chuỗi còn thiếu.",
+      });
+      continue;
+    }
+    const turns = thread.turns;
+    const post = await getPostByTechhubId(rest, item.techhubId);
+    const createdThreads = await rest.postJson<Array<{ id: number }>>("discussion_threads", {
+      name: item.name,
+      campaign_id: campaign.id,
+      techhub_id: item.techhubId,
+      techhub_uuid: post?.techhub_uuid ?? null,
+      author_username: item.author,
+      visitor_username: item.visitor || item.author,
+      actor_a_username: item.visitor,
+      actor_b_username: item.author,
+      status: "active",
+      current_turn_index: 1,
+      total_turns: turns.length,
+      created_by: "admin",
+    });
+    const threadRow = firstRow(createdThreads);
+    if (!threadRow) continue;
+    let prevTurnId: number | null = null;
+    let firstTurn: { id: number; turn_index: number; actor_username: string; content: string } | null = null;
+    let turnIndex = 0;
+    for (const turn of turns) {
+      turnIndex += 1;
+      const actorUsername = turn.actor === "A" ? item.visitor || item.author : item.author;
+      const createdTurns = await rest.postJson<Array<{ id: number }>>("discussion_turns", {
+        thread_id: threadRow.id,
+        turn_index: turnIndex,
+        actor_key: turn.actor,
+        actor_username: actorUsername,
+        content: turn.content || "",
+        status: "pending",
+        depends_on_turn_id: prevTurnId,
+      });
+      const turnRow = firstRow(createdTurns);
+      if (!turnRow) break;
+      if (turnIndex === 1) {
+        firstTurn = {
+          id: turnRow.id,
+          turn_index: 1,
+          actor_username: actorUsername,
+          content: turn.content || "",
+        };
+      }
+      prevTurnId = turnRow.id;
+    }
+    if (!firstTurn) continue;
+    const delayMinutes = Math.max(
+      0,
+      (new Date(item.scheduledAt || nowIso).getTime() - Date.now()) / 60000
+    );
+    await queueDiscussionTurn(
+      rest,
+      {
+        id: threadRow.id,
+        techhub_id: item.techhubId,
+        techhub_uuid: post?.techhub_uuid ?? null,
+        campaign_id: campaign.id,
+        author_username: item.author,
+      },
+      firstTurn,
+      { delayMinutes }
+    );
+    imported.push({
+      threadId: threadRow.id,
+      name: item.name,
+      techhubId: item.techhubId,
+      visitor: item.visitor || "",
+      scheduledAt: item.scheduledAt || nowIso,
+    });
+  }
+
+  // Boost đã đủ số chuỗi thực tế thì hoàn tất (giữ logic import cũ).
+  const importedPostIds = [...new Set(imported.map((item) => item.techhubId))];
+  for (const techhubId of importedPostIds) {
+    const boosts = await rest.getJson<
+      Array<{ id: number; requested_discussions: number; created_at: string }>
+    >("engagement_boost_requests", {
+      techhub_id: `eq.${techhubId}`,
+      status: "eq.active",
+      select: "id,requested_discussions,created_at",
+      order: "created_at.asc",
+      limit: "100",
+    });
+    for (const boost of boosts || []) {
+      const threads = await rest.getJson<Array<{ id: number }>>("discussion_threads", {
+        techhub_id: `eq.${techhubId}`,
+        created_at: `gte.${boost.created_at}`,
+        select: "id",
+        limit: String(Math.max(1, Number(boost.requested_discussions) || 1)),
+      });
+      if ((threads || []).length < Number(boost.requested_discussions)) continue;
+      await rest.patch("engagement_boost_requests", { id: `eq.${boost.id}` }, {
+        status: "completed",
+        updated_at: new Date().toISOString(),
+      });
+    }
+  }
+
+  await logEvent(rest, {
+    campaign_id: campaign.id,
+    event: "quick_campaign_launched",
+    detail: {
+      preset: preset.name,
+      threads: imported.length,
+      waiting: waiting.length,
+      posts: plan.summary.posts,
+      actors: plan.summary.actors,
+      window_minutes: input.windowMinutes,
+    },
+  });
+
+  return json({
+    ok: true,
+    campaignId: campaign.id,
+    preset: plan.preset,
+    imported,
+    waiting,
+    threadErrors: [...plan.threadErrors, ...threadErrorsSafe],
+    issues: plan.issues,
+    summary: {
+      ...plan.summary,
+      threadsNow: imported.length,
+    },
+    pendingDraftSaved: waiting.length > 0,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2497,6 +4002,7 @@ async function handlePlanCampaign(
   const sinceIso = new Date(Date.now() - 30 * 60 * 1000).toISOString();
   const seen = await rest.getJson<Array<{ username: string }>>("engagement_devices", {
     revoked: "eq.false",
+    enrollment_status: "eq.approved",
     last_seen_at: `gte.${sinceIso}`,
     select: "username",
     limit: "5000",
@@ -2510,7 +4016,21 @@ async function handlePlanCampaign(
         limit: "5000",
       })
     : [];
-  const optedIn = new Set((preferences || []).map((row) => row.username));
+  const requiredConsentVersion = await currentConsentVersion(rest);
+  const consentRows = online.length
+    ? await rest.getJson<Array<{ username: string }>>("user_consents", {
+        username: `in.(${online.join(",")})`,
+        consent_version: `eq.${requiredConsentVersion}`,
+        engagement_enabled: "eq.true",
+        paused_at: "is.null",
+        select: "username",
+        limit: "5000",
+      })
+    : [];
+  const consented = new Set((consentRows || []).map((row) => row.username));
+  const optedIn = new Set(
+    (preferences || []).map((row) => row.username).filter((name) => consented.has(name))
+  );
   const activeUsers = await getActiveUsernames(rest);
   const requested = input.actorUsernames?.length
     ? new Set(input.actorUsernames.map((name) => name.trim()).filter(Boolean))
@@ -2930,6 +4450,8 @@ async function handleImportThreads(
   const defaultTechhubId = toPositiveInt(defaults.techhubId);
   const defaultVisitor = toUsername(defaults.visitor);
   const campaignId = toPositiveInt(body.campaignId);
+  const sourceRevisionId = toPositiveInt(body.sourceRevisionId);
+  const createdBy = String(body.createdBy || "admin").slice(0, 100);
   const dryRun = body.dryRun === true;
 
   if (campaignId) {
@@ -3077,7 +4599,8 @@ async function handleImportThreads(
       status: "active",
       current_turn_index: 1,
       total_turns: item.turns.length,
-      created_by: "admin",
+      created_by: createdBy,
+      source_revision_id: sourceRevisionId,
     });
     const threadRow = firstRow(createdThreads);
     if (!threadRow) {
@@ -3087,7 +4610,7 @@ async function handleImportThreads(
     let prevTurnId: number | null = null;
     let firstTurn: { id: number; turn_index: number; actor_username: string; content: string } | null = null;
     for (const turn of item.turns) {
-      const createdTurns = await rest.postJson<Array<{ id: number }>>("discussion_turns", {
+      const createdTurns: Array<{ id: number }> = await rest.postJson<Array<{ id: number }>>("discussion_turns", {
         thread_id: threadRow.id,
         turn_index: turn.turn,
         actor_key: turn.actorKey,
@@ -3096,7 +4619,7 @@ async function handleImportThreads(
         status: "pending",
         depends_on_turn_id: prevTurnId,
       });
-      const turnRow = firstRow(createdTurns);
+      const turnRow: { id: number } | null = firstRow(createdTurns);
       if (!turnRow) break;
       if (turn.turn === 1) {
         firstTurn = {
@@ -3456,9 +4979,11 @@ async function handleListTasks(
 
 async function handleGetOpsStats(rest: Rest, auth: Auth) {
   requireAdmin(auth);
+  // Đối soát boost hết hạn để tổng quan không hiển thị yêu cầu đã chết.
+  await settleExpiredBoosts(rest);
   const since24h = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
   const since7d = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
-  const [tasks7d, events24h, stuck, sessionTasks, devices] = await Promise.all([
+  const [tasks7d, events24h, stuck, sessionTasks, devices, boostRefunds] = await Promise.all([
     rest.getJson<TaskRow[]>("engagement_tasks", {
       created_at: `gte.${since7d}`,
       select: "id,actor_username,action,status,last_http_status,created_at,completed_at",
@@ -3484,10 +5009,20 @@ async function handleGetOpsStats(rest: Rest, auth: Auth) {
       limit: "100",
     }),
     rest.getJson<Device[]>("engagement_devices", {
-      select: "device_id,username,label,last_seen_at,revoked",
+      select: "device_id,username,label,last_seen_at,revoked,enrollment_status,approved_at,revoked_at",
       order: "last_seen_at.desc",
       limit: "100",
     }),
+    rest.getJson<Array<{ id: number; event: string; detail: unknown; created_at: string }>>(
+      "engagement_events",
+      {
+        event: "eq.ultra_refunded",
+        created_at: `gte.${since7d}`,
+        select: "id,event,detail,created_at",
+        order: "created_at.desc",
+        limit: "100",
+      }
+    ),
   ]);
 
   const byStatus: Record<string, number> = {};
@@ -3524,6 +5059,7 @@ async function handleGetOpsStats(rest: Rest, auth: Auth) {
     stuckClaimed: stuck || [],
     sessionRequired: sessionTasks || [],
     devices: devices || [],
+    ultraRefunds7d: boostRefunds || [],
   });
 }
 
@@ -3615,7 +5151,14 @@ async function handleRevokeDevice(
   await rest.patch(
     "engagement_devices",
     { device_id: `eq.${deviceId}`, username: `eq.${username}` },
-    { revoked, updated_at: new Date().toISOString() }
+    {
+      revoked,
+      enrollment_status: revoked ? "revoked" : "pending",
+      revoked_at: revoked ? new Date().toISOString() : null,
+      approved_at: revoked ? null : undefined,
+      approved_by: revoked ? null : undefined,
+      updated_at: new Date().toISOString(),
+    }
   );
   if (revoked) {
     await rest.rpc("release_actor_claims", {
@@ -3625,6 +5168,85 @@ async function handleRevokeDevice(
     }).catch(() => 0);
   }
   return json({ ok: true, deviceId, username, revoked });
+}
+
+function randomInvitationCode(): string {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("").toUpperCase();
+  return `${hex.slice(0, 8)}-${hex.slice(8, 16)}-${hex.slice(16)}`;
+}
+
+async function handleCreateEnrollmentInvitation(
+  rest: Rest,
+  auth: Auth,
+  body: Record<string, unknown>
+) {
+  requireAdmin(auth);
+  const username = String(body.username || "").trim();
+  if (!isUsername(username)) throw new HttpError("username không hợp lệ.", 400);
+  const existingUser = await getUserByUsername(rest, username);
+  if (!existingUser) {
+    await rest.postJson("users", {
+      username,
+      full_name: username,
+      is_admin: false,
+      is_moderator: false,
+      is_locked: false,
+      last_update: new Date().toISOString(),
+    }, "resolution=ignore-duplicates");
+  }
+  await assertUserActive(rest, username);
+  const invitationCode = randomInvitationCode();
+  const codeHash = await sha256Hex(invitationCode);
+  const expiresAt = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+  const created = await rest.post("device_enrollment_invitations", {
+    username,
+    code_hash: codeHash,
+    expires_at: expiresAt,
+    created_by: "admin",
+  });
+  if (!created.ok) throw new HttpError("Không tạo được mã mời.", 500, "ENROLLMENT_CREATE_FAILED");
+  return json({ ok: true, username, invitationCode, expiresAt });
+}
+
+async function handleListEnrollmentRequests(rest: Rest, auth: Auth) {
+  requireAdmin(auth);
+  const devices = await rest.getJson<Device[]>("engagement_devices", {
+    enrollment_status: "eq.pending",
+    select: "id,device_id,username,label,enrollment_status,created_at,updated_at",
+    order: "created_at.asc",
+    limit: "200",
+  });
+  return json({ ok: true, devices: devices || [] });
+}
+
+async function handleApproveDevice(
+  rest: Rest,
+  auth: Auth,
+  body: Record<string, unknown>
+) {
+  requireAdmin(auth);
+  const deviceId = String(body.deviceId || "").trim();
+  const username = String(body.username || "").trim();
+  if (!deviceId || !isUsername(username)) {
+    throw new HttpError("Thiếu deviceId/username hợp lệ.", 400);
+  }
+  const rows = await rest.patchJson<Device[]>("engagement_devices", {
+    device_id: `eq.${deviceId}`,
+    username: `eq.${username}`,
+    enrollment_status: "eq.pending",
+    revoked: "eq.false",
+  }, {
+    enrollment_status: "approved",
+    approved_at: new Date().toISOString(),
+    approved_by: "admin",
+    updated_at: new Date().toISOString(),
+  });
+  if (!firstRow(rows)) {
+    throw new HttpError("Không tìm thấy yêu cầu đang chờ.", 404, "ENROLLMENT_NOT_FOUND");
+  }
+  return json({ ok: true, device: firstRow(rows) });
 }
 
 // ---------------------------------------------------------------------------
@@ -3673,14 +5295,40 @@ Deno.serve(async (req) => {
     const auth = await resolveAuth(req, rest, body);
 
     switch (action) {
+      case "requestEnrollment":
+        return await handleRequestEnrollment(rest, auth, body, bearer);
+      case "enrollDevice":
+        return await handleEnrollDevice(rest, body, bearer);
+      case "getIdentityState":
+        return await handleGetIdentityState(rest, auth);
+      case "getAccessContext":
+        return await handleGetAccessContext(rest, auth, body);
+      case "updateConsent":
+        return await handleUpdateConsent(rest, auth, body);
+      case "disconnectDevice":
+        return await handleDisconnectDevice(rest, auth);
       case "heartbeat":
         return await handleHeartbeat(rest, auth, body, bearer);
       case "redeemUltra":
         return await handleRedeemUltra(rest, auth, body);
       case "submitOwnThreads":
         return await handleSubmitOwnThreads(rest, auth, body);
+      case "saveOwnDiscussionDraft":
+        return await handleSaveOwnDiscussionDraft(rest, auth, body);
+      case "getOwnDiscussionDraft":
+        return await handleGetOwnDiscussionDraft(rest, auth, body);
+      case "submitDiscussionDraft":
+        return await handleSubmitDiscussionDraft(rest, auth, body);
+      case "listOwnDiscussionApprovals":
+        return await handleListOwnDiscussionApprovals(rest, auth);
+      case "decideDiscussionApproval":
+        return await handleDecideDiscussionApproval(rest, auth, body);
       case "claimTask":
         return await handleClaimTask(rest, auth);
+      case "beginTaskExecution":
+        return await handleBeginTaskExecution(rest, auth, body);
+      case "recordTaskReceipt":
+        return await handleRecordTaskReceipt(rest, auth, body);
       case "completeTask":
         return await handleCompleteTask(rest, auth, body);
       case "failTask":
@@ -3732,14 +5380,26 @@ Deno.serve(async (req) => {
         return await handlePushComments(rest, auth, body);
       case "listBoosts":
         return await handleListBoosts(rest, auth, body);
+      case "cancelBoost":
+        return await handleCancelBoost(rest, auth, body);
+      case "previewQuickCampaign":
+        return await handleQuickCampaign(rest, auth, body, { dryRun: true });
+      case "launchQuickCampaign":
+        return await handleQuickCampaign(rest, auth, body, { dryRun: false });
       case "revokeDevice":
         return await handleRevokeDevice(rest, auth, body);
+      case "createEnrollmentInvitation":
+        return await handleCreateEnrollmentInvitation(rest, auth, body);
+      case "listEnrollmentRequests":
+        return await handleListEnrollmentRequests(rest, auth);
+      case "approveDevice":
+        return await handleApproveDevice(rest, auth, body);
       default:
         return json({ error: `Action không hỗ trợ: ${action}` }, 400);
     }
   } catch (error) {
     if (error instanceof HttpError) {
-      return json({ error: error.message }, error.status);
+      return json({ error: error.message, code: error.code }, error.status);
     }
     console.error("[engagement-api] Unhandled:", error);
     return json(

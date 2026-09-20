@@ -136,24 +136,19 @@ class SupabaseClient {
    * @returns {Promise<Object|null>}
    */
   async findUserByUsername(username) {
-    console.log("[Supabase] Finding user by username:", username);
     try {
       const url = `${this.restUrl}/${SUPABASE_CONFIG.tableName}?username=eq.${encodeURIComponent(username)}`;
-      console.log("[Supabase] Find URL:", url);
       const response = await fetch(url, {
         method: "GET",
         headers: this.getHeaders(),
       });
 
-      console.log("[Supabase] Find response status:", response.status);
       if (!response.ok) {
         const errorText = await response.text();
-        console.error("[Supabase] Find error response:", errorText);
         throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
       }
 
       const data = await response.json();
-      console.log("[Supabase] Find result:", data);
       return data.length > 0 ? data[0] : null;
     } catch (error) {
       console.error("[Supabase] Error finding user:", error);
@@ -167,7 +162,6 @@ class SupabaseClient {
    * @returns {Promise<Object>}
    */
   async createUser(userData) {
-    console.log("[Supabase] Creating user:", userData);
     try {
       const payload = {
         full_name: userData.fullName || userData.displayName,
@@ -177,7 +171,6 @@ class SupabaseClient {
         last_update: new Date().toISOString(),
         created_at: new Date().toISOString(),
       };
-      console.log("[Supabase] Create payload:", payload);
 
       const response = await fetch(`${this.restUrl}/${SUPABASE_CONFIG.tableName}`, {
         method: "POST",
@@ -185,15 +178,12 @@ class SupabaseClient {
         body: JSON.stringify(payload),
       });
 
-      console.log("[Supabase] Create response status:", response.status);
       if (!response.ok) {
         const errorText = await response.text();
-        console.error("[Supabase] Create error response:", errorText);
         throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
       }
 
       const data = await response.json();
-      console.log("[Supabase] Create result:", data);
       return data[0];
     } catch (error) {
       console.error("[Supabase] Error creating user:", error);
@@ -243,25 +233,18 @@ class SupabaseClient {
    * @returns {Promise<{action: string, user: Object}>}
    */
   async syncUser(userProfile) {
-    console.log("[Supabase] ========== SYNC USER ==========");
-    console.log("[Supabase] UserProfile:", userProfile);
     try {
-      console.log("[Supabase] Finding existing user...");
       const existingUser = await this.findUserByUsername(userProfile.username);
-      console.log("[Supabase] Existing user:", existingUser);
 
       if (existingUser) {
-        console.log("[Supabase] User exists, updating activity...");
         // User đã tồn tại - Cập nhật activity
         const updatedUser = await this.updateUserActivity(userProfile.username);
-        console.log("[Supabase] Updated user:", updatedUser);
         return {
           action: "updated",
           user: updatedUser,
           message: `Đã cập nhật thông tin cho user: ${userProfile.username}`,
         };
       } else {
-        console.log("[Supabase] User not found, creating new...");
         // User chưa tồn tại - Tạo mới
         const newUser = await this.createUser({
           fullName: userProfile.display_name || userProfile.username,
@@ -269,7 +252,6 @@ class SupabaseClient {
           email: userProfile.email,
           avatar: userProfile.avatar,
         });
-        console.log("[Supabase] Created user:", newUser);
         return {
           action: "created",
           user: newUser,
@@ -287,18 +269,12 @@ class SupabaseClient {
    * @returns {Promise<boolean>}
    */
   async testConnection() {
-    console.log("[Supabase] Testing connection...");
-    console.log("[Supabase] URL:", this.restUrl);
-    console.log("[Supabase] Table:", SUPABASE_CONFIG.tableName);
     try {
-      const url = `${this.restUrl}/${SUPABASE_CONFIG.tableName}?limit=1`;
-      console.log("[Supabase] Test URL:", url);
+      const url = `${this.restUrl}/settings?select=key&limit=1`;
       const response = await fetch(url, {
         method: "GET",
         headers: this.getHeaders(),
       });
-      console.log("[Supabase] Test response status:", response.status);
-      console.log("[Supabase] Test response ok:", response.ok);
       if (!response.ok) {
         const errorText = await response.text();
         console.error("[Supabase] Test error:", errorText);

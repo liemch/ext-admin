@@ -3,8 +3,9 @@
 ## Phạm vi dự án
 
 Đây là Chrome Extension Manifest V3 tên **My Angel**. Extension chạy trên
-TechHub, lưu dữ liệu ở Supabase và dùng bốn Edge Functions:
-`nvidia-proxy`, `admin-api`, `engagement-api`, `post-sync-api`.
+TechHub, lưu dữ liệu ở Supabase và dùng năm Edge Functions:
+`nvidia-proxy`, `admin-api`, `engagement-api`, `post-sync-api`,
+`publishing-api`.
 
 Các file JavaScript ở thư mục gốc là plain script, không có bundler và không có
 `package.json`. Thứ tự nạp script trong `background.js` và `popup.html` là một
@@ -19,6 +20,8 @@ yêu cầu rõ ràng.
 - `engagement-*.js`, `discussion-import.js`: campaign, task vote/comment và chuỗi
   thảo luận nhiều turn.
 - `post-sync-*.js`: hint, leader sync, feed discovery và UI đồng bộ bài.
+- `publishing-*.js`: kho bài AI, revision bất biến, phân lịch và "Bài sắp
+  đăng của tôi" (phê duyệt của user đích).
 - `supabase/functions/`: Edge Functions chạy bằng Deno.
 - `supabase/migrations/`: migration PostgreSQL chạy theo số tăng dần.
 - `scripts/test-*.mjs`: test offline không cần Supabase hoặc TechHub.
@@ -87,6 +90,7 @@ Chạy kiểm tra phù hợp với phạm vi đã sửa:
 ```bash
 node scripts/test-engagement.mjs
 node scripts/test-post-sync.mjs
+node scripts/test-publishing.mjs
 node --check background.js
 node --check popup.js
 git diff --check

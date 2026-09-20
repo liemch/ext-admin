@@ -1343,6 +1343,15 @@ deploy. Không đánh dấu xong chỉ vì đã có UI hoặc test kiểm tra ch
 - Nghiệm thu: hai tài khoản A/B trên hai browser profile chạy đúng ba turn;
   tắt máy A sau turn 1 rồi mở lại vẫn dùng A cho turn 3; không mất receipt khi
   complete lỗi; parent bị xóa thì blocked.
+- Trạng thái 18/09/2026: **đã hoàn tất implementation và test local; chờ demo
+  tích hợp hai browser profile sau deploy**. Đã có assignment giữ nguyên visitor
+  cho cả revision, approval riêng của tác giả/visitor, giữ quota trước khi duyệt,
+  trạng thái chờ/ready/running/completed, execution gate kiểm lại consent/lease/
+  bài verified/parent ngay trước POST và receipt bền vững để complete lỗi không
+  gửi lại POST đã xác định thành công. Bằng chứng: commit `3112de2`, `b8e1c63`,
+  `e7e7639`; test DB `scripts/test-r3-approval-receipts.sql`; 370 test engagement
+  và 165 test post-sync pass. Chưa đánh dấu nghiệm thu production cho tới khi chạy
+  đủ kịch bản A/B, offline-resume, parent bị xóa và crash sau POST trên extension.
 
 ### R4 — Admin cơ bản và điểm/Ultra
 
@@ -1351,6 +1360,23 @@ deploy. Không đánh dấu xong chỉ vì đã có UI hoặc test kiểm tra ch
   ledger hoàn Ultra cho yêu cầu chưa bắt đầu đủ điều kiện.
 - Nghiệm thu: admin hoàn thành chiến dịch trong 2 phút; bài ưu tiên vẫn chịu quota;
   retry reward/refund không thay đổi số dư lần hai.
+- Trạng thái 18/09/2026: **đã hoàn tất implementation và test local; chờ áp
+  migration lên dev, chạy `scripts/test-r4-ultra-refund.sql` và demo tạo chiến
+  dịch trong 2 phút trước khi đánh dấu nghiệm thu**. Đã có: màn hình Chiến dịch
+  nhanh đúng năm trường (nhóm user, bài đích, số chuỗi/bài, khung giờ, preset);
+  preset An toàn/Cân bằng đọc trần từ settings server và chặn giá trị client tự
+  khai; action `previewQuickCampaign` dry-run trả về bài hợp lệ, thành viên đủ
+  điều kiện, chuỗi xếp ngay/chờ kèm reason code và hành động sửa (có case
+  "Chưa đủ hai tài khoản"); `launchQuickCampaign` tự ghép visitor theo quota/
+  cặp/giờ, lưu chuỗi chờ vào campaign (không tạo task giả), boost chỉ đổi thứ tự
+  ưu tiên mà vẫn chịu quota; RPC `settle_engagement_boosts` hoàn 1 lượt Ultra
+  đúng một lần (guard `status='active'` + `refunded_at`) cho yêu cầu hết hạn/hủy
+  chưa từng mở turn đầu, kèm ledger sự kiện `ultra_refunded` duy nhất; admin có
+  action `cancelBoost` (Hủy & hoàn) và listBoosts/getOpsStats tự đối soát hết
+  hạn. Bằng chứng: migration
+  `20260918120000_quick_campaign_presets_ultra_refund.sql`; 441 test engagement
+  pass (71 test R4 mới); test DB `scripts/test-r4-ultra-refund.sql`. Cần deploy
+  `engagement-api` sau khi áp migration.
 
 ### R5 — Kho bài, revision và phân lịch
 
@@ -1359,6 +1385,30 @@ deploy. Không đánh dấu xong chỉ vì đã có UI hoặc test kiểm tra ch
   user approval, phân bài và lịch tuần.
 - Nghiệm thu: hai admin reserve cùng revision chỉ một người thành công;
   sửa draft không đổi bài đã duyệt đang chờ đăng; nhập batch lặp không nhân đôi kho.
+- Trạng thái 18/09/2026: **đã hoàn tất implementation và test local; chờ áp
+  migration lên dev, chạy `scripts/test-r5-content-scheduling.sql` và demo Demo B
+  (kho 5 bài cho 5 ngày, bỏ phần tự đăng thuộc R6) trước khi đánh dấu nghiệm
+  thu**. Đã có: Edge Function `publishing-api` (thứ năm, server không nhận
+  cookie/CSRF TechHub) với 19 action — admin: preset (seed "Cải tiến mỗi ngày"
+  community 35, terms 178/368/274, markdown — không hardcode worker), tạo draft
+  chống trùng bằng `content_hash` UNIQUE, import batch all-or-nothing ≤20 bài
+  ≤1MB (dry-run Kiểm tra, lỗi hiện từng item/field, không bỏ âm thầm), sửa draft
+  (bài đã duyệt bị khóa CONTENT_LOCKED), duyệt tạo revision bất biến (UNIQUE
+  item+số revision, gắn `current_revision_id`), phân lịch chỉ nhận bài approved
+  (APPROVAL_REQUIRED), chặn giờ trong quá khứ và giờ yên lặng của user đích
+  TRƯỚC KHI LƯU (QUIET_HOURS_CONFLICT, đọc `user_consents.quiet_hours`), trần
+  pilot ≤1 lịch/user/ngày (settings), lịch tuần Đổi giờ/Tạm dừng/Tiếp tục/Hủy;
+  user: "Bài sắp đăng của tôi" (full preview bản revision + giờ địa phương +
+  tài khoản đăng, chỉ user đích Chấp nhận/Từ chối — SCHEDULE_NOT_OWNED nếu lệch
+  username), dùng device token enrollment chung engagement. Bằng chứng: migration
+  `20260918130000_content_library_scheduling.sql` (5 bảng + RLS + partial unique
+  `(content_revision_id)` và `(content_item_id, target_username)` WHERE còn hiệu
+  lực — hai admin reserve đua nhau thì một người thắng, hủy xong mới phân lại);
+  126 test publishing pass (`node scripts/test-publishing.mjs`); test DB
+  `scripts/test-r5-content-scheduling.sql`. Kho hết bài thì dừng và báo
+  dashboard, không tự sinh bài lấp lịch. Cần deploy `publishing-api` sau khi áp
+  migration. Thực thi đăng bài (publishing_jobs/runs/worker, late policy
+  runtime) thuộc R6.
 
 ### R6 — Publish execution và phục hồi
 
@@ -1452,4 +1502,9 @@ không được bù bằng nhiều tính năng hay số comment cao.
 Checklist bàn giao mỗi release: commit/branch, file/contract thay đổi, test và
 demo đã chạy, migration/function cần deploy theo đúng thứ tự, feature flag,
 metric theo dõi, rollback và phần chưa kiểm chứng. Trong lần rà soát plan này
-chỉ chỉnh tài liệu; chưa triển khai các ticket R0–R9 hoặc xác minh production.
+R1–R4 đã có implementation và test local trên branch `product-9-10`; R0 create
+API được hoãn đến lúc chạy extension. R5–R9 chưa triển khai và chưa có ticket nào
+được xác minh production. Trước demo R3 phải áp lần lượt migration
+`20260917020158`, `20260917025828`, `20260918043557`, deploy `engagement-api`
+và `post-sync-api`, sau đó reload extension trên hai browser profile. Trước demo
+R4 áp thêm migration `20260918120000` và deploy lại `engagement-api`.

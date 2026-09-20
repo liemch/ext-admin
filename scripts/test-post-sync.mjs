@@ -93,7 +93,7 @@ const clientSandbox = { POST_SYNC_API_CONFIG: { url: "https://x.supabase.co/func
     "reconcileMyScannedPosts",
     "claimPostSyncJob", "startPostSyncRun", "extendPostSyncLease",
     "completePostSyncJob", "failPostSyncJob", "getPostSyncStatus",
-    "listPostSyncRuns", "listPostHints", "listNewPosts", "getUserSyncStatus",
+    "listPostSyncRuns", "listPostHints", "listNewPosts", "getUserSyncStatus", "listActiveUsernames",
     "getMySyncedPosts", "listJobs", "listRuns",
     "resubmitHint", "retryJob", "cancelJob", "getStatus", "enqueueJobs",
   ]) {
@@ -236,6 +236,14 @@ for (const a of requiredActions) {
 assert(edge.includes("requireAdmin"), "edge có helper requireAdmin");
 assert(edge.includes("isRateLimited"), "edge có rate limit");
 assert(edge.includes("const device = requireDevice(auth)"), "saveMyScannedPosts yêu cầu device token");
+assert(
+  edge.includes('(device.enrollment_status || "approved") !== "approved"'),
+  "post-sync từ chối device pending/revoked"
+);
+assert(edge.includes('case "listActiveUsernames"'), "leader đọc username hợp lệ qua admin API");
+assert(read("post-sync-client.js").includes('postSyncAdmin("listActiveUsernames"'), "client có action listActiveUsernames");
+assert(workerSource.includes("PostSyncClient.listActiveUsernames()"), "leader không đọc trực tiếp bảng users");
+assert(!workerSource.includes("supabase.getAllUsers()"), "worker đã bỏ direct read users");
 assert(edge.includes("author.toLowerCase() !== device.username.toLowerCase()"),
   "server chỉ nhận bài đúng username của device");
 assert(edge.includes("Bài #${conflicting.techhub_id} đã thuộc tài khoản khác"),

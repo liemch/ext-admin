@@ -1,4 +1,4 @@
-importScripts('config.js', 'supabase-client.js', 'nvidia-client.js', 'engagement-client.js', 'engagement-worker.js', 'post-sync-client.js', 'post-sync-worker.js');
+importScripts('config.js', 'supabase-client.js', 'nvidia-client.js', 'engagement-client.js', 'engagement-worker.js', 'post-sync-client.js', 'post-sync-worker.js', 'publishing-client.js');
 
 // Background Service Worker - Lắng nghe và bắt headers từ TechHub API
 
@@ -571,12 +571,35 @@ const ADMIN_ONLY_ACTIONS = new Set([
   "engagementSetKillSwitch",
   "engagementSetEnabled",
   "engagementRevokeDevice",
+  "engagementCreateEnrollmentInvitation",
+  "engagementListEnrollmentRequests",
+  "engagementApproveDevice",
   "engagementGetPoolSettings",
   "engagementSetPoolSettings",
   "engagementSetUserPolicy",
   "engagementPushComments",
   "engagementListBoosts",
+  "engagementCancelBoost",
+  "engagementPreviewQuickCampaign",
+  "engagementLaunchQuickCampaign",
   "buildEngagementDiscussionPrompt",
+  // Publishing admin (kho bài + phân lịch, chỉ máy admin).
+  "publishingListPresets",
+  "publishingSavePreset",
+  "publishingCreateDraft",
+  "publishingImportBatch",
+  "publishingUpdateDraft",
+  "publishingApproveContent",
+  "publishingRejectContent",
+  "publishingArchiveContent",
+  "publishingListLibrary",
+  "publishingGetContentItem",
+  "publishingScheduleContent",
+  "publishingUpdateSchedule",
+  "publishingPauseSchedule",
+  "publishingResumeSchedule",
+  "publishingCancelSchedule",
+  "publishingListSchedules",
   // Post-sync admin (chỉ máy admin/leader).
   "postSyncGetStatus",
   "postSyncCheckSession",
@@ -601,15 +624,44 @@ async function ensureActionAllowed(action) {
   }
   const { _techhubSessionVerified, ...profile } = liveProfile;
   await chrome.storage.local.set({ userProfile: profile });
-  const user = await supabase.findUserByUsername(profile.username);
-  if (!user) {
-    throw new Error("Tài khoản chưa được đăng ký trong hệ thống.");
-  }
-  if (user.is_locked) {
+  const context = await getCurrentAccessContext(profile.username);
+  const user = context.account;
+  if (user.isLocked) {
     throw new Error("Tài khoản đã bị khóa khỏi extension.");
   }
-  if (!user.is_admin && !(user.is_moderator && MODERATOR_ACTIONS.has(action))) {
+  if (!user.isAdmin && !(user.isModerator && MODERATOR_ACTIONS.has(action))) {
     throw new Error("Bạn không có quyền sử dụng chức năng này.");
+  }
+}
+
+async function getCurrentAccessContext(username) {
+  const expected = String(username || "").trim();
+  if (!expected) throw new Error("Thiếu username TechHub.");
+  await EngagementClient.ensureEngagementDevice(expected);
+  try {
+    let identity;
+    try {
+      identity = await EngagementClient.engagementGetIdentityState();
+    } catch (error) {
+      if (!["DEVICE_ENROLLMENT_REQUIRED", "DEVICE_REVOKED"].includes(error.code)) throw error;
+      if (error.code === "DEVICE_REVOKED") {
+        await EngagementClient.resetEngagementDevice(expected);
+      }
+      await EngagementClient.engagementRequestEnrollment(expected);
+      identity = await EngagementClient.engagementGetIdentityState();
+    }
+    if (String(identity?.account?.username || "").toLowerCase() !== expected.toLowerCase()) {
+      throw new Error("Device token không thuộc tài khoản TechHub hiện tại.");
+    }
+    return identity;
+  } catch (deviceError) {
+    const cfg = EngagementClient.getEngagementApiConfig();
+    if (!cfg.adminToken) throw deviceError;
+    const adminContext = await EngagementClient.engagementAdmin("getAccessContext", { username: expected });
+    if (String(adminContext?.account?.username || "").toLowerCase() !== expected.toLowerCase()) {
+      throw new Error("Không xác minh được quyền của tài khoản hiện tại.");
+    }
+    return adminContext;
   }
 }
 
@@ -670,6 +722,18 @@ function handlePopupMessage(request, sendResponse) {
     return true;
   }
 
+  if (request.action === "getAccessContext") {
+    readCurrentUserProfileFromTechHub()
+      .then(async (profile) => {
+        if (!profile?.username) throw new Error("Không xác nhận được tài khoản TechHub hiện tại.");
+        const context = await getCurrentAccessContext(profile.username);
+        return { success: true, ...context };
+      })
+      .then(sendResponse)
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code }));
+    return true;
+  }
+
   if (request.action === "runInteractions") {
     runCrossInteraction(true);
     sendResponse({ success: true });
@@ -710,8 +774,58 @@ function handlePopupMessage(request, sendResponse) {
   }
 
   if (request.action === "setEngagementEnabled") {
-    sendResponse({ success: false, error: "Chế độ tương tác do admin điều phối." });
-    return false;
+    EngagementClient.engagementUpdateConsent({
+      consentVersion: request.consentVersion,
+      engagementEnabled: request.enabled === true,
+      autoPublishEnabled: request.autoPublishEnabled,
+      delegatedEngagementEnabled: request.delegatedEngagementEnabled,
+      dailyActionLimit: request.dailyActionLimit,
+      quietHours: request.quietHours,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code }));
+    return true;
+  }
+
+  if (request.action === "engagementRequestEnrollment") {
+    readCurrentUserProfileFromTechHub()
+      .then((profile) => {
+        const username = profile?.username || request.username;
+        if (!username) throw new Error("Hãy đăng nhập TechHub trước khi đăng ký thiết bị.");
+        return EngagementClient.engagementRequestEnrollment(username);
+      })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code }));
+    return true;
+  }
+
+  if (request.action === "engagementEnrollDevice") {
+    readCurrentUserProfileFromTechHub()
+      .then((profile) => {
+        const username = profile?.username || request.username;
+        if (!username) throw new Error("Hãy đăng nhập TechHub trước khi dùng mã mời.");
+        return EngagementClient.engagementEnrollDevice(username, request.invitationCode);
+      })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code }));
+    return true;
+  }
+
+  if (request.action === "engagementGetIdentityState") {
+    EngagementClient.engagementGetIdentityState()
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code }));
+    return true;
+  }
+
+  if (request.action === "engagementDisconnectDevice") {
+    EngagementClient.engagementDisconnectDevice()
+      .then(async (result) => {
+        await chrome.storage.local.remove(EngagementClient.ENGAGEMENT_DEVICE_KEY);
+        sendResponse({ success: true, ...result });
+      })
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code }));
+    return true;
   }
 
   if (request.action === "redeemEngagementUltra") {
@@ -736,7 +850,7 @@ function handlePopupMessage(request, sendResponse) {
           throw new Error("Thiếu phiên TechHub để đọc nội dung bài.");
         }
         const heartbeat = await EngagementClient.engagementHeartbeat(user.username);
-        const count = Math.min(50, Math.max(1, Number(heartbeat?.preferences?.discussions_per_post) || 40));
+        const count = Math.min(3, Math.max(1, Number(heartbeat?.preferences?.discussions_per_post) || 3));
         const detail = await fetchArticleDetail(post.techhub_uuid, stored.techhubCredentials);
         const title = String(detail?.title || post.title || `Bài #${techhubId}`).trim();
         const articleBody = stripHtml(detail?.body || "").replace(/\s+/g, " ").trim().slice(0, 6000);
@@ -756,12 +870,12 @@ function handlePopupMessage(request, sendResponse) {
             `Nội dung: ${articleBody || "Không có nội dung chi tiết; bám sát tiêu đề."}`,
             "",
             `Hãy tạo đúng ${count} chuỗi thảo luận độc lập, tự nhiên bằng tiếng Việt cho bài này.`,
-            `- JSON phải có đúng ${count} phần tử; mỗi phần tử là một chuỗi riêng, không gộp nhiều câu hỏi vào cùng chuỗi.`,
+            `- JSON schemaVersion 1 phải có đúng ${count} phần tử trong threads; mỗi phần tử là một chuỗi riêng.`,
             "- Mỗi chuỗi chọn ngẫu nhiên đúng 2 hoặc 3 lượt, luân phiên A, B, A.",
             "- A là người ghé thăm, B là tác giả; lượt sau phải trả lời trực tiếp lượt trước.",
             "- Nội dung ngắn gọn, có ý nghĩa, không khen chung chung, không hashtag/emoji/nhắc AI.",
-            "- Chỉ trả JSON array hợp lệ, không markdown và không giải thích.",
-            `Schema: ${JSON.stringify(schema)}`,
+            "- Chỉ trả JSON hợp lệ, không markdown và không giải thích.",
+            `Schema: ${JSON.stringify({ schemaVersion: 1, threads: schema })}`,
           ].join("\n"),
         };
       })
@@ -775,6 +889,46 @@ function handlePopupMessage(request, sendResponse) {
       .then(() => EngagementClient.engagementSubmitOwnThreads(request.techhubId, request.threads))
       .then((result) => sendResponse({ success: true, ...result }))
       .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "saveMyDiscussionDraft") {
+    EngagementWorker.ensureEngagementUserAllowed()
+      .then(() => EngagementClient.engagementSaveOwnDiscussionDraft(request.techhubId, request.threads))
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code || null }));
+    return true;
+  }
+
+  if (request.action === "getMyDiscussionDraft") {
+    EngagementWorker.ensureEngagementUserAllowed()
+      .then(() => EngagementClient.engagementGetOwnDiscussionDraft(request.techhubId))
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code || null }));
+    return true;
+  }
+
+  if (request.action === "submitMyDiscussionDraft") {
+    EngagementWorker.ensureEngagementUserAllowed()
+      .then(() => EngagementClient.engagementSubmitDiscussionDraft(request.techhubId))
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code || null }));
+    return true;
+  }
+
+  if (request.action === "listMyDiscussionApprovals") {
+    EngagementWorker.ensureEngagementUserAllowed()
+      .then(() => EngagementClient.engagementListOwnDiscussionApprovals())
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code || null }));
+    return true;
+  }
+
+  if (request.action === "decideMyDiscussionApproval") {
+    EngagementWorker.ensureEngagementUserAllowed()
+      .then(() => EngagementClient.engagementDecideDiscussionApproval(request.approvalId, request.decision))
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code || null }));
     return true;
   }
 
@@ -1021,6 +1175,122 @@ function handlePopupMessage(request, sendResponse) {
     EngagementClient.engagementAdmin("listBoosts", {
       status: request.status || "active",
       limit: request.limit || 100,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  // R4: hủy Push/Ultra đang chờ; hoàn lượt Ultra đúng một lần nếu chưa có
+  // chuỗi nào mở turn đầu (đối soát qua settle_engagement_boosts).
+  if (request.action === "engagementCancelBoost") {
+    EngagementClient.engagementAdmin("cancelBoost", {
+      boostId: request.boostId,
+      reason: request.reason,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  // R4: chiến dịch nhanh — năm trường cấu hình + preset; preview là dry-run
+  // nên không tạo campaign/thread/task.
+  if (request.action === "engagementPreviewQuickCampaign") {
+    EngagementClient.engagementAdmin("previewQuickCampaign", request.payload || {})
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementLaunchQuickCampaign") {
+    EngagementClient.engagementAdmin("launchQuickCampaign", request.payload || {})
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  // ---- Publishing (R5): kho bài + lịch đăng ----
+  // Action admin đã qua ensureActionAllowed (ADMIN_ONLY_ACTIONS).
+  const PUBLISHING_ADMIN_ACTIONS = new Set([
+    "publishingListPresets",
+    "publishingSavePreset",
+    "publishingCreateDraft",
+    "publishingImportBatch",
+    "publishingUpdateDraft",
+    "publishingApproveContent",
+    "publishingRejectContent",
+    "publishingArchiveContent",
+    "publishingListLibrary",
+    "publishingGetContentItem",
+    "publishingScheduleContent",
+    "publishingUpdateSchedule",
+    "publishingPauseSchedule",
+    "publishingResumeSchedule",
+    "publishingCancelSchedule",
+    "publishingListSchedules",
+  ]);
+  const PUBLISHING_ACTION_MAP = {
+    publishingListPresets: "listContentPresets",
+    publishingSavePreset: "saveContentPreset",
+    publishingCreateDraft: "createContentDraft",
+    publishingImportBatch: "importContentBatch",
+    publishingUpdateDraft: "updateContentDraft",
+    publishingApproveContent: "approveContent",
+    publishingRejectContent: "rejectContent",
+    publishingArchiveContent: "archiveContent",
+    publishingListLibrary: "listContentLibrary",
+    publishingGetContentItem: "getContentItem",
+    publishingScheduleContent: "scheduleContent",
+    publishingUpdateSchedule: "updateSchedule",
+    publishingPauseSchedule: "pauseSchedule",
+    publishingResumeSchedule: "resumeSchedule",
+    publishingCancelSchedule: "cancelSchedule",
+    publishingListSchedules: "listSchedules",
+  };
+  if (PUBLISHING_ADMIN_ACTIONS.has(request.action)) {
+    const apiAction = PUBLISHING_ACTION_MAP[request.action];
+    PublishingClient.publishingAdmin(apiAction, request.payload || {})
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code }));
+    return true;
+  }
+
+  // User thường: xem lịch đăng của mình và Chấp nhận / Từ chối bản sắp đăng.
+  if (request.action === "publishingGetMyStatus") {
+    PublishingClient.publishingUser("getMyPublishingStatus", {})
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code }));
+    return true;
+  }
+
+  if (request.action === "publishingDecideApproval") {
+    PublishingClient.publishingUser("decideContentApproval", {
+      scheduleId: request.scheduleId,
+      decision: request.decision,
+    })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message, code: error.code }));
+    return true;
+  }
+
+  if (request.action === "engagementCreateEnrollmentInvitation") {
+    EngagementClient.engagementAdmin("createEnrollmentInvitation", { username: request.username })
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementListEnrollmentRequests") {
+    EngagementClient.engagementAdmin("listEnrollmentRequests", {})
+      .then((result) => sendResponse({ success: true, ...result }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "engagementApproveDevice") {
+    EngagementClient.engagementAdmin("approveDevice", {
+      username: request.username,
+      deviceId: request.deviceId,
     })
       .then((result) => sendResponse({ success: true, ...result }))
       .catch((error) => sendResponse({ success: false, error: error.message }));

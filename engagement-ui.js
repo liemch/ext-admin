@@ -8,6 +8,7 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
+  let identityState = null;
 
   function esc(value) {
     return String(value ?? "")
@@ -117,6 +118,118 @@
   }
 
   // ---------------------------------------------------------- lớp user
+
+  function renderIdentityState(state) {
+    identityState = state || null;
+    const status = state?.enrollmentStatus || "not_registered";
+    const labels = {
+      approved: "Đã duyệt",
+      pending: "Đang chờ admin duyệt",
+      revoked: "Đã bị thu hồi",
+      not_registered: "Chưa đăng ký",
+    };
+    if ($("identityEnrollmentStatus")) {
+      $("identityEnrollmentStatus").textContent = labels[status] || status;
+    }
+    const approved = status === "approved";
+    const consent = state?.consent || {};
+    if ($("engagementConsentToggle")) {
+      $("engagementConsentToggle").disabled = !approved;
+      $("engagementConsentToggle").checked = approved && consent.engagement_enabled === true && !consent.paused_at;
+    }
+    if ($("engagementDailyActionLimit")) {
+      $("engagementDailyActionLimit").value = consent.daily_action_limit || 2;
+      $("engagementDailyActionLimit").disabled = !approved;
+    }
+    if ($("disconnectEngagementDeviceBtn")) {
+      $("disconnectEngagementDeviceBtn").disabled = !approved;
+    }
+  }
+
+  async function loadIdentityState() {
+    try {
+      const response = await sendMessage({ action: "engagementGetIdentityState" });
+      if (!response?.success) {
+        if (response?.code === "DEVICE_ENROLLMENT_REQUIRED") {
+          renderIdentityState({ enrollmentStatus: "not_registered", consent: null });
+          return null;
+        }
+        throw new Error(response?.error || "Không đọc được trạng thái thiết bị.");
+      }
+      renderIdentityState(response);
+      return response;
+    } catch (error) {
+      renderIdentityState({ enrollmentStatus: "not_registered", consent: null });
+      showAdminMsg($("identityConsentMessage"), `Lỗi: ${error.message}`, "error");
+      return null;
+    }
+  }
+
+  async function requestEnrollment() {
+    try {
+      const response = await sendMessage({ action: "engagementRequestEnrollment" });
+      if (!response?.success) throw new Error(response?.error || "Không gửi được yêu cầu.");
+      showAdminMsg($("identityConsentMessage"), "Đã gửi yêu cầu. Admin cần duyệt thiết bị này.", "success");
+      await loadIdentityState();
+    } catch (error) {
+      showAdminMsg($("identityConsentMessage"), `Lỗi: ${error.message}`, "error");
+    }
+  }
+
+  async function enrollWithInvitation() {
+    const invitationCode = String($("invitationCodeInput")?.value || "").trim();
+    if (!invitationCode) {
+      showAdminMsg($("identityConsentMessage"), "Hãy nhập mã mời.", "error");
+      return;
+    }
+    try {
+      const response = await sendMessage({ action: "engagementEnrollDevice", invitationCode });
+      if (!response?.success) throw new Error(response?.error || "Đăng ký thất bại.");
+      if ($("invitationCodeInput")) $("invitationCodeInput").value = "";
+      showAdminMsg($("identityConsentMessage"), "Thiết bị đã được duyệt. Bạn có thể bật tham gia.", "success");
+      await loadIdentityState();
+    } catch (error) {
+      showAdminMsg($("identityConsentMessage"), `Lỗi: ${error.message}`, "error");
+    }
+  }
+
+  async function updateOwnConsent() {
+    const checkbox = $("engagementConsentToggle");
+    if (!checkbox || !identityState?.consent) return;
+    checkbox.disabled = true;
+    try {
+      const response = await sendMessage({
+        action: "setEngagementEnabled",
+        consentVersion: identityState.consent.consent_version,
+        enabled: checkbox.checked,
+        dailyActionLimit: Number($("engagementDailyActionLimit")?.value) || 2,
+      });
+      if (!response?.success) throw new Error(response?.error || "Không cập nhật được consent.");
+      renderIdentityState({ ...identityState, consent: response.consent });
+      showAdminMsg(
+        $("identityConsentMessage"),
+        checkbox.checked ? "Bạn đã bật tham gia mạng lưới." : "Đã dừng việc mới ngay.",
+        checkbox.checked ? "success" : "muted"
+      );
+    } catch (error) {
+      checkbox.checked = !checkbox.checked;
+      showAdminMsg($("identityConsentMessage"), `Lỗi: ${error.message}`, "error");
+    } finally {
+      checkbox.disabled = identityState?.enrollmentStatus !== "approved";
+    }
+  }
+
+  async function disconnectOwnDevice() {
+    if (!window.confirm("Ngắt kết nối thiết bị này? Bạn sẽ cần đăng ký lại để tham gia.")) return;
+    try {
+      const response = await sendMessage({ action: "engagementDisconnectDevice" });
+      if (!response?.success) throw new Error(response?.error || "Không ngắt kết nối được.");
+      renderIdentityState({ enrollmentStatus: "not_registered", consent: null });
+      showAdminMsg($("identityConsentMessage"), "Đã ngắt kết nối và tắt mọi quyền tự động.", "success");
+    } catch (error) {
+      showAdminMsg($("identityConsentMessage"), `Lỗi: ${error.message}`, "error");
+    }
+  }
 
   async function loadEngagementState() {
     const msgEl = $("engagementUserMessage");
@@ -258,7 +371,9 @@
       globalThis.setPostsUltraCredits?.(response.reward?.ultra_credits ?? 0);
       showAdminMsg(
         $("postsMessage"),
-        `Đã dùng Ultra cho bài #${techhubId}; hệ thống sẽ ưu tiên ${response.discussions} chuỗi.`,
+        `Đã dùng Ultra cho bài #${techhubId}; hệ thống sẽ ưu tiên ${response.discussions} chuỗi. ` +
+          "Ultra chỉ đổi thứ tự ưu tiên, không đảm bảo số comment hoặc thời gian hoàn thành; " +
+          "nếu không ghép được người trước khi hết hạn, lượt Ultra được hoàn đúng một lần.",
         "success"
       );
       await loadEngagementState();
@@ -290,6 +405,120 @@
     }
   }
 
+  function myDiscussionDraftKey() {
+    const username = identityState?.username;
+    const techhubId = Number($("myDiscussionPostId")?.value);
+    return username && Number.isInteger(techhubId) && techhubId > 0
+      ? `my-angel:discussion-draft:${username}:${techhubId}`
+      : null;
+  }
+
+  function saveMyDiscussionDraft() {
+    const key = myDiscussionDraftKey();
+    if (!key) return;
+    try {
+      localStorage.setItem(key, String($("myDiscussionJsonInput")?.value || ""));
+    } catch (_) {
+      showAdminMsg($("myDiscussionMessage"), "Không lưu được bản nháp trên thiết bị này.", "error");
+    }
+  }
+
+  async function restoreMyDiscussionDraft() {
+    const key = myDiscussionDraftKey();
+    if (!key || !$("myDiscussionJsonInput")) return;
+    let localDraft = "";
+    try {
+      localDraft = localStorage.getItem(key) || "";
+    } catch (_) {
+      localDraft = "";
+    }
+    $("myDiscussionJsonInput").value = localDraft;
+    if ($("myDiscussionPreview")) $("myDiscussionPreview").innerHTML = "";
+    if (localDraft) return;
+    try {
+      const response = await sendMessage({
+        action: "getMyDiscussionDraft",
+        techhubId: Number($("myDiscussionPostId")?.value),
+      });
+      if (!response?.success || !response.draft) return;
+      if (key !== myDiscussionDraftKey() || $("myDiscussionJsonInput").value) return;
+      $("myDiscussionJsonInput").value = JSON.stringify({
+        schemaVersion: 1, threads: response.draft.threads,
+      }, null, 2);
+      showAdminMsg($("myDiscussionMessage"),
+        `Đã tải bản nháp revision ${response.draft.revision}.`, "muted");
+    } catch (_) {
+      // Local input remains usable while the server is unavailable.
+    }
+  }
+
+  function previewMyDiscussion() {
+    const list = $("myDiscussionPreview");
+    if (!list || !globalThis.DiscussionImport) return null;
+    const checked = globalThis.DiscussionImport.validateThreads(
+      String($("myDiscussionJsonInput")?.value || "")
+    );
+    const errors = checked.errors.map((item) =>
+      `<div class="msg error">${esc(item.error)}</div>`
+    ).join("");
+    const cards = checked.errors.length ? "" : checked.threads.map((thread, index) => `
+      <div class="thread-card">
+        <div class="thread-head">
+          <strong>Chuỗi ${index + 1}: ${esc(thread.name)}</strong>
+          <button class="mini-btn" type="button" data-my-remove="${index}"
+            ${checked.threads.length === 1 ? "disabled" : ""}>Bỏ chuỗi</button>
+        </div>
+        ${thread.turns.map((turn, turnIndex) => `
+          <div class="turn-row">
+            <span class="turn-actor turn-${turn.actor}">${turn.actor}</span>
+            <div class="turn-content">
+              <span class="turn-meta">${turn.actor === "A" ? "Thành viên" : "Tác giả"} · lượt ${turnIndex + 1}</span>
+              <textarea class="thread-edit-input" data-my-turn="${index}:${turnIndex}"
+                aria-label="Nội dung chuỗi ${index + 1} lượt ${turnIndex + 1}">${esc(turn.content)}</textarea>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+    `).join("");
+    list.innerHTML = errors + cards;
+    showAdminMsg(
+      $("myDiscussionMessage"),
+      checked.errors.length
+        ? `${checked.errors.length} lỗi; sửa JSON rồi xem trước lại.`
+        : `${checked.threads.length} chuỗi, tối đa ${checked.threads.reduce((sum, thread) => sum + thread.turns.length, 0)} comment/reply; phụ thuộc thành viên online.`,
+      checked.errors.length ? "error" : "muted"
+    );
+    return checked;
+  }
+
+  function editMyDiscussionPreview(event) {
+    const remove = event.target.closest("[data-my-remove]");
+    const edit = event.target.closest("[data-my-turn]");
+    if (!remove && !edit) return;
+    const checked = globalThis.DiscussionImport?.validateThreads(
+      String($("myDiscussionJsonInput")?.value || "")
+    );
+    if (!checked || checked.errors.length) return;
+    const threads = checked.threads;
+    if (remove) {
+      if (threads.length <= 1) return;
+      threads.splice(Number(remove.dataset.myRemove), 1);
+    } else {
+      const [threadIndex, turnIndex] = String(edit.dataset.myTurn).split(":").map(Number);
+      if (!threads[threadIndex]?.turns[turnIndex]) return;
+      const content = String(edit.value || "").trim();
+      if (!content || content.length > 2000) {
+        showAdminMsg($("myDiscussionMessage"),
+          "Mỗi lượt cần từ 1 đến 2000 ký tự.", "error");
+        return;
+      }
+      threads[threadIndex].turns[turnIndex].content = content;
+    }
+    $("myDiscussionJsonInput").value = JSON.stringify({ schemaVersion: 1, threads }, null, 2);
+    saveMyDiscussionDraft();
+    if (remove) previewMyDiscussion();
+  }
+
   async function submitMyDiscussion() {
     const techhubId = Number($("myDiscussionPostId")?.value);
     const raw = String($("myDiscussionJsonInput")?.value || "");
@@ -298,27 +527,84 @@
     try {
       if (!Number.isInteger(techhubId) || techhubId <= 0) throw new Error("Chọn bài của bạn.");
       if (!globalThis.DiscussionImport) throw new Error("Thiếu bộ kiểm tra JSON.");
-      const checked = globalThis.DiscussionImport.validateThreads(raw);
+      const checked = previewMyDiscussion();
       if (checked.errors.length || !checked.threads.length) {
         throw new Error(checked.errors[0]?.error || "JSON chưa có chuỗi hợp lệ.");
       }
-      const parsed = JSON.parse(raw);
       const response = await sendMessage({
-        action: "submitMyEngagementThreads",
+        action: "saveMyDiscussionDraft",
         techhubId,
-        threads: parsed,
+        threads: checked.threads,
       });
-      if (!response?.success) throw new Error(response?.error || "Không gửi được chuỗi.");
-      const imported = Array.isArray(response.imported) ? response.imported.length : 0;
+      if (!response?.success) throw new Error(response?.error || "Không lưu được bản nháp.");
       showAdminMsg(
         $("myDiscussionMessage"),
-        `Đã đưa ${imported} chuỗi vào pool. Hệ thống đã tự chọn user khác đang online.`,
+        `Đã lưu ${checked.threads.length} chuỗi vào bản nháp revision ${response.revision}. Chưa tạo task; nội dung sẽ cần được duyệt trước khi chạy.`,
         "success"
       );
-      if ($("myDiscussionJsonInput")) $("myDiscussionJsonInput").value = "";
-      await loadEngagementState();
+      saveMyDiscussionDraft();
     } catch (error) {
       showAdminMsg($("myDiscussionMessage"), `Lỗi: ${error.message}`, "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function sendMyDiscussionForApproval() {
+    const techhubId = Number($("myDiscussionPostId")?.value);
+    const button = $("sendMyDiscussionApprovalBtn");
+    if (button) button.disabled = true;
+    try {
+      if (!Number.isInteger(techhubId) || techhubId <= 0) throw new Error("Chọn bài của bạn.");
+      const response = await sendMessage({ action: "submitMyDiscussionDraft", techhubId });
+      if (!response?.success) throw new Error(response?.error || "Không gửi được yêu cầu duyệt.");
+      showAdminMsg($("myDiscussionMessage"),
+        `Đã ghép thành viên và gửi revision hiện tại để duyệt. Trạng thái: ${response.status}.`, "success");
+      await loadMyDiscussionApprovals();
+    } catch (error) {
+      showAdminMsg($("myDiscussionMessage"), `Lỗi: ${error.message}`, "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function loadMyDiscussionApprovals() {
+    const list = $("myDiscussionApprovalsList");
+    if (!list) return;
+    try {
+      const response = await sendMessage({ action: "listMyDiscussionApprovals" });
+      if (!response?.success) throw new Error(response?.error || "Không tải được yêu cầu duyệt.");
+      const approvals = Array.isArray(response.approvals) ? response.approvals : [];
+      if (!approvals.length) {
+        list.innerHTML = '<div class="empty">Chưa có yêu cầu duyệt.</div>';
+        return;
+      }
+      list.innerHTML = approvals.map((item) => `
+        <div class="thread-card">
+          <div class="thread-head"><strong>Bài #${esc(item.techhubId)} · revision ${esc(item.revision)}</strong>${statusBadge(item.decision)}</div>
+          <span class="schedule-meta">Tác giả @${esc(item.author_username)} · Thành viên @${esc(item.visitor_username)} · hết hạn ${esc(fmtTime(item.expires_at))}</span>
+          ${(item.threads || []).map((thread, index) => `
+            <div class="turn-content"><strong>Chuỗi ${index + 1}</strong>${(thread.turns || []).map((turn) =>
+              `<span><b>${turn.actor === "A" ? "Thành viên" : "Tác giả"}:</b> ${esc(turn.content)}</span>`).join("")}</div>
+          `).join("")}
+          ${item.decision === "pending" ? `<div class="card-actions">
+            <button class="btn btn-primary" data-approval-id="${esc(item.id)}" data-decision="approved" type="button">Đồng ý</button>
+            <button class="btn btn-secondary" data-approval-id="${esc(item.id)}" data-decision="rejected" type="button">Từ chối</button>
+          </div>` : ""}
+        </div>`).join("");
+    } catch (error) {
+      list.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+    }
+  }
+
+  async function decideMyDiscussionApproval(approvalId, decision, button) {
+    if (button) button.disabled = true;
+    try {
+      const response = await sendMessage({ action: "decideMyDiscussionApproval", approvalId, decision });
+      if (!response?.success) throw new Error(response?.error || "Không cập nhật được quyết định.");
+      await Promise.all([loadMyDiscussionApprovals(), loadEngagementState()]);
+    } catch (error) {
+      showAdminMsg($("myDiscussionMessage"), `Lỗi duyệt: ${error.message}`, "error");
     } finally {
       if (button) button.disabled = false;
     }
@@ -452,9 +738,199 @@
     }
   }
 
+  // ---------------------------------------- R4: chiến dịch nhanh + hoàn Ultra
+
+  const QUICK_REASON_TEXT = {
+    NO_ELIGIBLE_ACTOR: "Chưa đủ hai tài khoản",
+    QUOTA_EXCEEDED: "Hết quota hành động hôm nay",
+    THREAD_CAP_PER_POST: "Bài đã đủ chuỗi hôm nay",
+    THREAD_ALREADY_ACTIVE: "Cặp user đã có chuỗi đang chạy",
+    WINDOW_FULL: "Khung giờ không đủ chỗ",
+    VISITOR_NOT_ELIGIBLE: "Visitor không đủ điều kiện",
+    POST_NOT_ELIGIBLE: "Bài chưa đủ điều kiện",
+    NO_ELIGIBLE_POST: "Không có bài hợp lệ",
+  };
+
+  function quickCampaignPayload() {
+    const group = String($("quickGroupUsernames")?.value || "")
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean);
+    const targetPost = Number($("quickTargetPostId")?.value);
+    return {
+      preset: String($("quickPreset")?.value || "balanced"),
+      groupUsernames: group,
+      techhubId: Number.isInteger(targetPost) && targetPost > 0 ? targetPost : null,
+      threadsPerPost: Number($("quickThreadsPerPost")?.value) || 3,
+      windowStartAt: $("quickWindowStart")?.value ? new Date($("quickWindowStart").value).toISOString() : new Date().toISOString(),
+      windowMinutes: Number($("quickWindowMinutes")?.value) || 120,
+      threads: parseQuickThreadsJson(),
+    };
+  }
+
+  function parseQuickThreadsJson() {
+    const raw = String($("quickThreadJson")?.value || "").trim();
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function renderQuickPreview(preview) {
+    const box = $("quickPreviewBox");
+    if (!box) return;
+    box.classList.remove("hidden");
+    const summary = preview.summary || {};
+    const chips = [
+      `Preset: ${esc(preview.preset?.label || "")}`,
+      `Bài hợp lệ: ${summary.posts ?? 0}`,
+      `Thành viên đủ điều kiện: ${summary.actors ?? 0}`,
+      `Xếp ngay: ${summary.threadsNow ?? 0}`,
+      `Chờ: ${summary.threadsWaiting ?? 0}`,
+    ].map((chip) => `<span class="chip">${chip}</span>`).join("");
+    const issues = (preview.issues || []).map((issue) => `
+      <div class="issue-item">
+        <div class="issue-main">
+          <strong>${esc(QUICK_REASON_TEXT[issue.code] || issue.code)}:</strong> ${esc(issue.message)}
+        </div>
+        <div class="issue-action">→ ${esc(issue.action)}</div>
+      </div>
+    `).join("");
+    const threads = (preview.plannedThreads || []).map((item) => `
+      <div class="issue-item">
+        <div class="issue-main">
+          ${item.schedulable
+            ? `✓ <strong>#${esc(item.techhubId)}</strong> ${esc(item.postTitle || "")} · @${esc(item.visitor)} → @${esc(item.author)} · ${esc(new Date(item.scheduledAt).toLocaleString("vi-VN"))}`
+            : `⏳ <strong>#${esc(item.techhubId)}</strong> ${esc(item.postTitle || "")} · @${esc(item.author)} — ${esc(QUICK_REASON_TEXT[item.reasonCode] || item.reasonCode || "Chờ")}`}
+        </div>
+      </div>
+    `).join("");
+    const errors = (preview.threadErrors || []).map((item) => `
+      <div class="issue-item">
+        <div class="issue-main">✗ [${esc(item.name)}] ${esc(item.error)}</div>
+        <div class="issue-action">→ ${esc(item.action)}</div>
+      </div>
+    `).join("");
+    box.innerHTML = `
+      <div class="chip-row">${chips}</div>
+      ${issues ? `<div class="issue-list">${issues}</div>` : ""}
+      ${threads ? `<div class="issue-list">${threads}</div>` : ""}
+      ${errors ? `<div class="issue-list">${errors}</div>` : ""}
+      ${!issues && !threads && !errors ? '<div class="empty">Chưa có dữ liệu preview.</div>' : ""}
+    `;
+  }
+
+  async function previewQuickCampaign() {
+    try {
+      const payload = quickCampaignPayload();
+      if (payload.threads === null && String($("quickThreadJson")?.value || "").trim()) {
+        throw new Error("JSON chuỗi không hợp lệ. Sửa rồi thử lại.");
+      }
+      const response = await sendMessage({ action: "engagementPreviewQuickCampaign", payload });
+      if (!response?.success) throw new Error(response?.error || "Không xem trước được.");
+      renderQuickPreview(response);
+      showAdminMsg(
+        $("quickMessage"),
+        `Preview: ${response.summary?.threadsNow ?? 0} chuỗi xếp ngay, ${response.summary?.threadsWaiting ?? 0} chuỗi chờ. Kiểm tra trước khi bấm Khởi chạy.`,
+        "success"
+      );
+    } catch (error) {
+      showAdminMsg($("quickMessage"), `Lỗi: ${error.message}`, "error");
+    }
+  }
+
+  async function launchQuickCampaign() {
+    const payload = quickCampaignPayload();
+    if (payload.threads === null && String($("quickThreadJson")?.value || "").trim()) {
+      showAdminMsg($("quickMessage"), "JSON chuỗi không hợp lệ. Sửa rồi thử lại.", "error");
+      return;
+    }
+    if (!payload.threads || payload.threads.length === 0) {
+      showAdminMsg(
+        $("quickMessage"),
+        "Chưa có nội dung: bấm Copy prompt, tạo JSON bằng ChatGPT/Gemini rồi dán vào ô nội dung.",
+        "error"
+      );
+      return;
+    }
+    const ok = window.confirm(
+      `Khởi chạy chiến dịch nhanh preset ${payload.preset}? ` +
+        `${payload.threads.length} chuỗi sẽ được ghép người và xếp lịch tự động.`
+    );
+    if (!ok) return;
+    try {
+      const response = await sendMessage({ action: "engagementLaunchQuickCampaign", payload });
+      if (!response?.success) throw new Error(response?.error || "Khởi chạy thất bại.");
+      renderQuickPreview(response);
+      const waitingCount = response.waiting?.length || 0;
+      let message =
+        `Đã tạo campaign #${response.campaignId}: ${response.imported?.length ?? 0} chuỗi xếp lịch`;
+      if (waitingCount > 0) {
+        message += `, ${waitingCount} chuỗi chờ được lưu trong campaign (không tạo task ảo)`;
+      }
+      showAdminMsg($("quickMessage"), `${message}.`, "success");
+      await refreshCampaigns();
+    } catch (error) {
+      showAdminMsg($("quickMessage"), `Lỗi: ${error.message}`, "error");
+    }
+  }
+
+  async function copyQuickPrompt() {
+    try {
+      const targetPost = Number($("quickTargetPostId")?.value);
+      const count = Math.min(50, Math.max(1, Number($("quickThreadsPerPost")?.value) || 3));
+      if (!Number.isInteger(targetPost) || targetPost <= 0) {
+        throw new Error("Nhập ID bài đích trước khi copy prompt (chiến dịch nhanh cần bài cụ thể).");
+      }
+      const response = await sendMessage({
+        action: "buildEngagementDiscussionPrompt",
+        techhubId: targetPost,
+        visitor: "auto",
+        count,
+      });
+      if (!response?.success) throw new Error(response?.error || "Không tạo được prompt.");
+      await navigator.clipboard.writeText(response.prompt);
+      showAdminMsg(
+        $("quickMessage"),
+        "Đã copy prompt. Dán vào ChatGPT/Gemini rồi đưa JSON kết quả vào ô nội dung; visitor để tự động để server ghép người.",
+        "success"
+      );
+    } catch (error) {
+      showAdminMsg($("quickMessage"), `Không copy được prompt: ${error.message}`, "error");
+    }
+  }
+
+  async function cancelBoostRequest(boostId) {
+    if (!Number.isInteger(boostId) || boostId <= 0) return;
+    const ok = window.confirm(
+      `Hủy yêu cầu Ultra #${boostId}? Nếu chưa có chuỗi nào bắt đầu, 1 lượt Ultra sẽ được hoàn cho user.`
+    );
+    if (!ok) return;
+    try {
+      const response = await sendMessage({
+        action: "engagementCancelBoost",
+        boostId,
+        reason: "admin_cancelled",
+      });
+      if (!response?.success) throw new Error(response?.error || "Không hủy được yêu cầu.");
+      const settled = Array.isArray(response.settled) ? response.settled[0] : null;
+      showAdminMsg(
+        $("threadImportMessage"),
+        settled?.refunded
+          ? `Đã hủy yêu cầu #${boostId} và hoàn 1 lượt Ultra cho @${settled.owner_username}.`
+          : `Đã hủy yêu cầu #${boostId} (không hoàn lượt vì đã có chuỗi bắt đầu hoặc không phải Ultra).`,
+        "success"
+      );
+      await refreshBoosts();
+    } catch (error) {
+      showAdminMsg($("threadImportMessage"), `Lỗi hủy yêu cầu: ${error.message}`, "error");
+    }
+  }
+
   async function refreshBoosts() {
-    const list = $("boostRequestsList");
-    if (!list) return;
     list.innerHTML = '<div class="empty">Đang tải…</div>';
     try {
       const response = await sendMessage({ action: "engagementListBoosts", status: "active" });
@@ -470,8 +946,14 @@
             <strong>#${esc(boost.techhub_id)} · @${esc(boost.owner_username)}</strong>
             <span class="badge ${boost.source === "ultra" ? "ok" : "info"}">${esc(boost.source)}</span>
             <span class="schedule-meta">${esc(boost.requested_discussions)} chuỗi · ${esc(fmtAgo(boost.created_at))}</span>
+            ${boost.refunded_at ? '<span class="badge ok">đã hoàn 1 lượt Ultra</span>' : ""}
           </div>
-          <button class="mini-btn" data-prepare-boost="${esc(boost.techhub_id)}|${esc(boost.requested_discussions)}" type="button">Chuẩn bị nội dung</button>
+          <div class="schedule-actions">
+            <button class="mini-btn" data-prepare-boost="${esc(boost.techhub_id)}|${esc(boost.requested_discussions)}" type="button">Chuẩn bị nội dung</button>
+            ${boost.source === "ultra"
+              ? `<button class="mini-btn danger" data-boost-cancel="${esc(boost.id)}" type="button" title="Hủy và hoàn 1 lượt Ultra nếu chưa có chuỗi nào bắt đầu">Hủy &amp; hoàn</button>`
+              : ""}
+          </div>
         </div>
       `).join("");
     } catch (error) {
@@ -623,13 +1105,7 @@
       return { threads: [], errors: [{ index: -1, name: "", error: "Thiếu discussion-import.js." }], raw: [] };
     }
     const result = DiscussionImport.validateThreads(raw);
-    let parsed = [];
-    try {
-      parsed = JSON.parse(raw.trim() || "[]");
-    } catch (_) {
-      parsed = [];
-    }
-    return { ...result, raw: parsed };
+    return { ...result, raw: result.threads };
   }
 
   async function validateThreads() {
@@ -915,7 +1391,7 @@
         <div class="schedule-item">
           <div class="schedule-main">
             <strong>@${esc(device.username)}</strong>
-            ${device.revoked ? statusBadge("blocked") : statusBadge("active")}
+            ${statusBadge(device.revoked ? "blocked" : (device.enrollment_status || "active"))}
             <span class="schedule-meta">${esc(device.label || "thiết bị")} · ${esc(String(device.device_id).slice(0, 8))}… · thấy ${esc(fmtAgo(device.last_seen_at) || "chưa bao giờ")}</span>
           </div>
           <div class="schedule-actions">
@@ -927,6 +1403,65 @@
       `).join("");
     }
     list.innerHTML = html;
+  }
+
+  async function refreshEnrollmentRequests() {
+    const list = $("pendingEnrollmentList");
+    if (!list) return;
+    try {
+      const response = await sendMessage({ action: "engagementListEnrollmentRequests" });
+      if (!response?.success) throw new Error(response?.error || "Không tải được yêu cầu.");
+      const devices = response.devices || [];
+      list.innerHTML = devices.length
+        ? devices.map((device) => `
+          <div class="schedule-item">
+            <div class="schedule-main">
+              <strong>@${esc(device.username)}</strong> ${statusBadge("pending")}
+              <span class="schedule-meta">${esc(device.label || "thiết bị")} · ${esc(String(device.device_id).slice(0, 12))}…</span>
+            </div>
+            <div class="schedule-actions">
+              <button class="mini-btn" data-enrollment-approve="${esc(device.device_id)}|${esc(device.username)}" type="button">Duyệt</button>
+            </div>
+          </div>
+        `).join("")
+        : '<div class="empty">Chưa có yêu cầu chờ duyệt.</div>';
+    } catch (error) {
+      list.innerHTML = `<div class="empty">Lỗi: ${esc(error.message)}</div>`;
+    }
+  }
+
+  async function createEnrollmentInvitation() {
+    const username = String($("enrollmentInviteUsername")?.value || "").trim();
+    if (!username) {
+      showAdminMsg($("enrollmentInviteOutput"), "Hãy nhập username.", "error");
+      return;
+    }
+    try {
+      const response = await sendMessage({ action: "engagementCreateEnrollmentInvitation", username });
+      if (!response?.success) throw new Error(response?.error || "Không tạo được mã mời.");
+      showAdminMsg(
+        $("enrollmentInviteOutput"),
+        `Mã cho @${response.username}: ${response.invitationCode} · hết hạn ${fmtTime(response.expiresAt)}`,
+        "success"
+      );
+    } catch (error) {
+      showAdminMsg($("enrollmentInviteOutput"), `Lỗi: ${error.message}`, "error");
+    }
+  }
+
+  async function approveEnrollment(deviceId, username) {
+    try {
+      const response = await sendMessage({
+        action: "engagementApproveDevice",
+        deviceId,
+        username,
+      });
+      if (!response?.success) throw new Error(response?.error || "Không duyệt được thiết bị.");
+      showAdminMsg($("opsMessage"), `Đã duyệt thiết bị của @${username}.`, "success");
+      await Promise.all([refreshEnrollmentRequests(), refreshOps()]);
+    } catch (error) {
+      showAdminMsg($("opsMessage"), `Lỗi: ${error.message}`, "error");
+    }
   }
 
   async function toggleKillSwitch() {
@@ -985,6 +1520,21 @@
   // ---------------------------------------------------------- init
 
   function bindEvents() {
+    if ($("requestEnrollmentBtn")) {
+      $("requestEnrollmentBtn").addEventListener("click", requestEnrollment);
+    }
+    if ($("enrollDeviceBtn")) {
+      $("enrollDeviceBtn").addEventListener("click", enrollWithInvitation);
+    }
+    if ($("engagementConsentToggle")) {
+      $("engagementConsentToggle").addEventListener("change", updateOwnConsent);
+    }
+    if ($("engagementDailyActionLimit")) {
+      $("engagementDailyActionLimit").addEventListener("change", updateOwnConsent);
+    }
+    if ($("disconnectEngagementDeviceBtn")) {
+      $("disconnectEngagementDeviceBtn").addEventListener("click", disconnectOwnDevice);
+    }
     if ($("myPostsList")) {
       $("myPostsList").addEventListener("click", (event) => {
         const button = event.target.closest("[data-ultra-post-id]");
@@ -996,8 +1546,36 @@
     if ($("copyMyDiscussionPromptBtn")) {
       $("copyMyDiscussionPromptBtn").addEventListener("click", copyMyDiscussionPrompt);
     }
+    if ($("myDiscussionPostId")) {
+      $("myDiscussionPostId").addEventListener("change", restoreMyDiscussionDraft);
+    }
+    if ($("syncMyDiscussionPostsBtn")) {
+      $("syncMyDiscussionPostsBtn").addEventListener("click", () => $("syncMyPostsBtn")?.click());
+    }
+    if ($("myDiscussionJsonInput")) {
+      $("myDiscussionJsonInput").addEventListener("input", () => {
+        saveMyDiscussionDraft();
+        if ($("myDiscussionPreview")) $("myDiscussionPreview").innerHTML = "";
+      });
+    }
+    if ($("previewMyDiscussionBtn")) {
+      $("previewMyDiscussionBtn").addEventListener("click", previewMyDiscussion);
+    }
+    if ($("myDiscussionPreview")) {
+      $("myDiscussionPreview").addEventListener("click", editMyDiscussionPreview);
+      $("myDiscussionPreview").addEventListener("change", editMyDiscussionPreview);
+    }
     if ($("submitMyDiscussionBtn")) {
       $("submitMyDiscussionBtn").addEventListener("click", submitMyDiscussion);
+    }
+    if ($("sendMyDiscussionApprovalBtn")) {
+      $("sendMyDiscussionApprovalBtn").addEventListener("click", sendMyDiscussionForApproval);
+    }
+    if ($("myDiscussionApprovalsList")) {
+      $("myDiscussionApprovalsList").addEventListener("click", (event) => {
+        const button = event.target.closest("[data-approval-id][data-decision]");
+        if (button) decideMyDiscussionApproval(Number(button.dataset.approvalId), button.dataset.decision, button);
+      });
     }
     if ($("refreshEngagementBtn")) {
       $("refreshEngagementBtn").addEventListener("click", () => loadEngagementState());
@@ -1037,6 +1615,11 @@
     if ($("boostRequestsList")) {
       $("boostRequestsList").addEventListener("click", async (event) => {
         const button = event.target.closest("[data-prepare-boost]");
+        const cancelButton = event.target.closest("[data-boost-cancel]");
+        if (cancelButton) {
+          await cancelBoostRequest(Number(cancelButton.dataset.boostCancel));
+          return;
+        }
         if (!button) return;
         const [techhubId, count] = String(button.dataset.prepareBoost || "").split("|");
         if ($("threadDefaultPostId")) $("threadDefaultPostId").value = techhubId;
@@ -1046,6 +1629,15 @@
     }
     if ($("planCampaignBtn")) {
       $("planCampaignBtn").addEventListener("click", planCampaign);
+    }
+    if ($("quickPreviewBtn")) {
+      $("quickPreviewBtn").addEventListener("click", previewQuickCampaign);
+    }
+    if ($("quickLaunchBtn")) {
+      $("quickLaunchBtn").addEventListener("click", launchQuickCampaign);
+    }
+    if ($("quickCopyPromptBtn")) {
+      $("quickCopyPromptBtn").addEventListener("click", copyQuickPrompt);
     }
     if ($("refreshCampaignsBtn")) {
       $("refreshCampaignsBtn").addEventListener("click", refreshCampaigns);
@@ -1094,7 +1686,10 @@
       $("refreshTasksBtn").addEventListener("click", refreshTasks);
     }
     if ($("refreshOpsBtn")) {
-      $("refreshOpsBtn").addEventListener("click", refreshOps);
+      $("refreshOpsBtn").addEventListener("click", () => {
+        refreshOps();
+        refreshEnrollmentRequests();
+      });
     }
     if ($("killSwitchToggle")) {
       $("killSwitchToggle").addEventListener("change", toggleKillSwitch);
@@ -1131,6 +1726,17 @@
         toggleDevice(deviceId, username, revoke === "1");
       });
     }
+    if ($("createEnrollmentInviteBtn")) {
+      $("createEnrollmentInviteBtn").addEventListener("click", createEnrollmentInvitation);
+    }
+    if ($("pendingEnrollmentList")) {
+      $("pendingEnrollmentList").addEventListener("click", (event) => {
+        const button = event.target.closest("[data-enrollment-approve]");
+        if (!button) return;
+        const [deviceId, username] = String(button.dataset.enrollmentApprove).split("|");
+        approveEnrollment(deviceId, username);
+      });
+    }
     // Cập nhật trạng thái khi background broadcast tiến trình tương tác.
     try {
       chrome.runtime.onMessage.addListener((message) => {
@@ -1148,7 +1754,9 @@
     // Kiểm tra phiên + tải trạng thái ngay khi mở panel (không chờ init chính
     // xong mới kiểm tra phiên, nhưng phần admin vẫn cần chờ phân quyền).
     await checkSession(false);
+    await loadIdentityState();
     await loadEngagementState();
+    await loadMyDiscussionApprovals();
     await waitForInit();
     if (isAdminView()) {
       await Promise.all([
@@ -1157,6 +1765,7 @@
         loadPoolSettings().catch((error) => {
           showAdminMsg($("engSettingsMessage"), `Lỗi tải điều phối: ${error.message}`, "error");
         }),
+        refreshEnrollmentRequests().catch(() => {}),
       ]);
     }
   }

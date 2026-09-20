@@ -204,11 +204,12 @@
     if (!username) {
       throw new Error("Không tìm thấy phiên TechHub. Mở TechHub và đăng nhập trước.");
     }
-    const user = await supabase.findUserByUsername(username);
-    if (!user) {
-      throw new Error("Tài khoản chưa được đăng ký trong hệ thống.");
+    const identity = await EngagementClient.engagementGetIdentityState();
+    const user = identity?.account;
+    if (!user || String(user.username || "").toLowerCase() !== String(username).toLowerCase()) {
+      throw new Error("Thiết bị chưa được đăng ký đúng tài khoản TechHub.");
     }
-    if (user.is_locked) {
+    if (user.isLocked) {
       throw new Error("Tài khoản đã bị khóa khỏi extension.");
     }
     return user;
@@ -917,17 +918,44 @@
     try {
       heartbeat = await EngagementClient.engagementHeartbeat(username);
     } catch (error) {
+      const isAccessGate = [
+        "DEVICE_ENROLLMENT_REQUIRED",
+        "DEVICE_USERNAME_MISMATCH",
+        "CONSENT_REQUIRED",
+        "ENGAGEMENT_PAUSED",
+      ].includes(error.code);
       await saveEngagementStatus({
         lastRunAt: startedAt,
-        lastOutcome: "error",
-        lastMessage: `Không kết nối được hàng đợi: ${error.message}`,
+        lastOutcome: isAccessGate ? "paused" : "error",
+        lastMessage: isAccessGate ? error.message : `Không kết nối được hàng đợi: ${error.message}`,
         lastError: error.message,
         lastHttpStatus: error.httpStatus || null,
         actorUsername: username,
         queueMode: true,
       });
-      broadcast(`Hàng đợi tương tác lỗi: ${error.message}`, "error");
+      if (manual) broadcast(error.message, isAccessGate ? "info" : "error");
       return { ran: false, error: error.message };
+    }
+
+    if (heartbeat?.enrollmentStatus !== "approved") {
+      await saveEngagementStatus({
+        lastRunAt: startedAt,
+        lastOutcome: "paused",
+        lastMessage: "Thiết bị đang chờ quản trị viên duyệt.",
+        actorUsername: username,
+        queueMode: true,
+      });
+      return { ran: false, enrollmentRequired: true };
+    }
+    if (!heartbeat?.consent?.engagement_enabled || heartbeat?.consent?.paused_at) {
+      await saveEngagementStatus({
+        lastRunAt: startedAt,
+        lastOutcome: "paused",
+        lastMessage: "Bạn đang tạm dừng mạng lưới thảo luận.",
+        actorUsername: username,
+        queueMode: true,
+      });
+      return { ran: false, consentRequired: true };
     }
 
     if (heartbeat?.killSwitch === true) {
@@ -965,6 +993,32 @@
       if (!claim?.task) break;
       const task = claim.task;
       lastTaskLabel = `#${task.techhubId} ${task.action}`;
+      try {
+        await ensureEngagementUserAllowed();
+        const execution = await EngagementClient.engagementBeginTaskExecution(task.id);
+        if (execution?.resumeCompletion) {
+          await EngagementClient.engagementCompleteTask(task.id, {
+            techhubResultId: execution.techhubResultId,
+            content: task.content || null,
+            httpStatus: execution.httpStatus || 200,
+            resultDetail: { recoveredFromReceipt: true },
+          });
+          succeeded += 1;
+          continue;
+        }
+        if (execution?.alreadyCompleted) {
+          succeeded += 1;
+          continue;
+        }
+      } catch (error) {
+        await saveEngagementStatus({
+          lastRunAt: startedAt,
+          lastOutcome: "paused",
+          lastMessage: `Chưa thực thi task #${task.id}: ${error.message}`,
+          lastError: error.message,
+        });
+        break;
+      }
       broadcast(
         `Đang thực hiện ${task.action} bài #${task.techhubId}${task.postTitle ? ` (${task.postTitle.slice(0, 60)})` : ""}…`,
         "info"
@@ -986,6 +1040,12 @@
       }
       if (result.ok) {
         try {
+          await EngagementClient.engagementRecordTaskReceipt(task.id, {
+            techhubResultId: result.commentId || null,
+            content: result.content || task.content || null,
+            httpStatus: result.httpStatus || 200,
+            detail: { outcome: result.outcome || "succeeded" },
+          });
           await EngagementClient.engagementCompleteTask(task.id, {
             techhubResultId: result.commentId || null,
             content: result.content || task.content || null,
