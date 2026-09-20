@@ -354,10 +354,22 @@ assert(
     html.indexOf("publishing-ui.js") > html.indexOf("popup.js"),
   "publishing-ui.js nạp sau popup.js (dùng chung helper)"
 );
+const contentStart = html.indexOf('id="adminSection"');
+const accountPanelStart = html.indexOf('data-panel="account-access"', contentStart);
+const approvalsPanelStart = html.indexOf('data-panel="my-approvals"', contentStart);
+const dashboardPanelStart = html.indexOf('data-panel="dashboard"', contentStart);
 assert(
-  html.includes('id="myPublishingList"') &&
-    html.indexOf('id="myPublishingList"') < html.indexOf('id="myPostsList"'),
-  "card Bài sắp đăng nằm trong menu Bài viết, trước danh sách dài"
+  accountPanelStart > contentStart &&
+    html.indexOf('id="identityEnrollmentStatus"') > accountPanelStart &&
+    html.indexOf('id="identityEnrollmentStatus"') < approvalsPanelStart,
+  "quyền tham gia và thiết bị nằm trong menu quản trị hệ thống"
+);
+assert(
+  approvalsPanelStart > contentStart &&
+    html.indexOf('id="myDiscussionApprovalsList"') > approvalsPanelStart &&
+    html.indexOf('id="myPublishingList"') > approvalsPanelStart &&
+    html.indexOf('id="myPublishingList"') < dashboardPanelStart,
+  "thảo luận và Bài sắp đăng nằm trong menu Việc cần tôi duyệt"
 );
 // UI hành vi.
 assert(

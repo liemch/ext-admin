@@ -51,6 +51,31 @@
             </svg>
             <span class="nav-label">Thống kê</span>
           </button>
+          <span class="nav-group">Quản trị hệ thống</span>
+          <button
+            class="nav-item"
+            type="button"
+            data-panel="account-access"
+            data-title="Quyền tham gia và thiết bị"
+            data-subtitle="Quản lý thiết bị và quyền tham gia của tài khoản"
+          >
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true">
+              <path d="M12 2 3 6v6c0 5 3.4 8.7 9 10 5.6-1.3 9-5 9-10V6l-9-4zm0 3 6 2.7V12c0 3.4-2 5.8-6 7-4-1.2-6-3.6-6-7V7.7L12 5z" fill="currentColor" />
+            </svg>
+            <span class="nav-label">Quyền &amp; thiết bị</span>
+          </button>
+          <button
+            class="nav-item"
+            type="button"
+            data-panel="my-approvals"
+            data-title="Việc cần tôi duyệt"
+            data-subtitle="Duyệt thảo luận và bài sắp đăng bằng tài khoản của bạn"
+          >
+            <svg viewBox="0 0 24 24" class="nav-icon" aria-hidden="true">
+              <path d="M4 3h16v18H4V3zm3 5h10V6H7v2zm0 5 3 3 7-7-1.4-1.4-5.6 5.6-1.6-1.6L7 13z" fill="currentColor" />
+            </svg>
+            <span class="nav-label">Việc cần tôi duyệt</span>
+          </button>
           <button
             class="nav-item admin-only"
             type="button"
@@ -278,6 +303,80 @@
               <div class="card">
                 <div class="card-head">
                   <div>
+                    <h2>Tạo thảo luận cho bài của tôi</h2>
+                    <p>Chọn bài, copy gợi ý sang ChatGPT/Gemini, dán JSON và lưu bản nháp để xem trước</p>
+                  </div>
+                </div>
+                <div class="field-list">
+                  <div class="field">
+                    <div class="field-text">
+                      <label for="myDiscussionPostId">Bài cần tạo thảo luận</label>
+                      <span>Số chuỗi và nhịp chạy do admin quy định; hệ thống tự chọn user khác đang online</span>
+                    </div>
+                    <div class="inline-inputs">
+                      <select id="myDiscussionPostId">
+                        <option value="">Chọn một bài…</option>
+                      </select>
+                      <button id="copyMyDiscussionPromptBtn" class="btn btn-secondary" type="button">Copy prompt</button>
+                    </div>
+                    <div id="myDiscussionPostHint" class="msg muted">Chỉ bài đã xác minh mới có thể lưu draft thảo luận.</div>
+                    <button id="syncMyDiscussionPostsBtn" class="btn btn-secondary" type="button">Đồng bộ bài để kiểm tra lại</button>
+                  </div>
+                  <textarea
+                    id="myDiscussionJsonInput"
+                    class="code-input"
+                    rows="6"
+                    spellcheck="false"
+                    placeholder='Dán JSON từ ChatGPT/Gemini tại đây. Mỗi chuỗi gồm 2 hoặc 3 lượt A/B.'
+                  ></textarea>
+                  <div class="card-actions">
+                    <button id="previewMyDiscussionBtn" class="btn btn-secondary" type="button">Xem trước hội thoại</button>
+                  </div>
+                  <div id="myDiscussionPreview" class="thread-preview-list" aria-live="polite"></div>
+                  <div class="card-actions">
+                    <button id="submitMyDiscussionBtn" class="btn btn-primary" type="button">Lưu bản nháp</button>
+                    <button id="sendMyDiscussionApprovalBtn" class="btn btn-secondary" type="button">Ghép thành viên &amp; gửi duyệt</button>
+                  </div>
+                  <div id="myDiscussionMessage" class="msg hidden"></div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2>Danh sách bài</h2>
+                    <p>Click tiêu đề để mở TechHub · các tác vụ AI chọn bài ngay trong menu riêng</p>
+                  </div>
+                  <div class="card-actions">
+                    <label class="search" for="postsSearch">
+                      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                        <path
+                          d="M10 4a6 6 0 014.47 10l4.27 4.26-1.42 1.42-4.26-4.27A6 6 0 1110 4zm0 2a4 4 0 100 8 4 4 0 000-8z"
+                          fill="currentColor"
+                        />
+                      </svg>
+                      <input
+                        id="postsSearch"
+                        type="search"
+                        placeholder="Tìm tiêu đề hoặc ID…"
+                        autocomplete="off"
+                      />
+                    </label>
+                    <button id="syncMyPostsBtn" class="btn btn-primary" type="button">
+                      Đồng bộ bài
+                    </button>
+                  </div>
+                </div>
+                <div id="postsUltraNotice" class="msg ok hidden"></div>
+                <div id="myPostsList" class="table-wrap"></div>
+                <div id="postsMessage" class="msg hidden"></div>
+              </div>
+            </section>
+
+            <section class="panel hidden" data-panel="account-access">
+              <div class="card">
+                <div class="card-head">
+                  <div>
                     <h2>Quyền tham gia và thiết bị</h2>
                     <p>Bạn quyết định tài khoản này có tham gia mạng lưới hay không</p>
                   </div>
@@ -320,55 +419,15 @@
                   <div id="identityConsentMessage" class="msg hidden"></div>
                 </div>
               </div>
+            </section>
 
-              <div class="card">
-                <div class="card-head">
-                  <div>
-                    <h2>Tạo thảo luận cho bài của tôi</h2>
-                    <p>Chọn bài, copy gợi ý sang ChatGPT/Gemini, dán JSON và lưu bản nháp để xem trước</p>
-                  </div>
-                </div>
-                <div class="field-list">
-                  <div class="field">
-                    <div class="field-text">
-                      <label for="myDiscussionPostId">Bài cần tạo thảo luận</label>
-                      <span>Số chuỗi và nhịp chạy do admin quy định; hệ thống tự chọn user khác đang online</span>
-                    </div>
-                    <div class="inline-inputs">
-                      <select id="myDiscussionPostId">
-                        <option value="">Chọn một bài…</option>
-                      </select>
-                      <button id="copyMyDiscussionPromptBtn" class="btn btn-secondary" type="button">Copy prompt</button>
-                    </div>
-                    <div id="myDiscussionPostHint" class="msg muted">Chỉ bài đã xác minh mới có thể lưu draft thảo luận.</div>
-                    <button id="syncMyDiscussionPostsBtn" class="btn btn-secondary" type="button">Đồng bộ bài để kiểm tra lại</button>
-                  </div>
-                  <textarea
-                    id="myDiscussionJsonInput"
-                    class="code-input"
-                    rows="6"
-                    spellcheck="false"
-                    placeholder='Dán JSON từ ChatGPT/Gemini tại đây. Mỗi chuỗi gồm 2 hoặc 3 lượt A/B.'
-                  ></textarea>
-                  <div class="card-actions">
-                    <button id="previewMyDiscussionBtn" class="btn btn-secondary" type="button">Xem trước hội thoại</button>
-                  </div>
-                  <div id="myDiscussionPreview" class="thread-preview-list" aria-live="polite"></div>
-                  <div class="card-actions">
-                    <button id="submitMyDiscussionBtn" class="btn btn-primary" type="button">Lưu bản nháp</button>
-                    <button id="sendMyDiscussionApprovalBtn" class="btn btn-secondary" type="button">Ghép thành viên &amp; gửi duyệt</button>
-                  </div>
-                  <div id="myDiscussionMessage" class="msg hidden"></div>
-                </div>
-              </div>
-
+            <section class="panel hidden" data-panel="my-approvals">
               <div class="card">
                 <div class="card-head"><div><h2>Việc cần tôi duyệt</h2><p>Duyệt đúng revision trước khi nội dung dùng tài khoản của bạn</p></div></div>
                 <div id="myDiscussionApprovalsList" class="thread-preview-list">
                   <div class="empty">Chưa có yêu cầu duyệt.</div>
                 </div>
               </div>
-
 
               <div class="card">
                 <div class="card-head">
@@ -385,37 +444,6 @@
                   <div class="empty">Chưa có bài nào được phân cho bạn.</div>
                 </div>
                 <div id="myPublishingMessage" class="msg hidden"></div>
-              </div>
-
-              <div class="card">
-                <div class="card-head">
-                  <div>
-                    <h2>Danh sách bài</h2>
-                    <p>Click tiêu đề để mở TechHub · các tác vụ AI chọn bài ngay trong menu riêng</p>
-                  </div>
-                  <div class="card-actions">
-                    <label class="search" for="postsSearch">
-                      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-                        <path
-                          d="M10 4a6 6 0 014.47 10l4.27 4.26-1.42 1.42-4.26-4.27A6 6 0 1110 4zm0 2a4 4 0 100 8 4 4 0 000-8z"
-                          fill="currentColor"
-                        />
-                      </svg>
-                      <input
-                        id="postsSearch"
-                        type="search"
-                        placeholder="Tìm tiêu đề hoặc ID…"
-                        autocomplete="off"
-                      />
-                    </label>
-                    <button id="syncMyPostsBtn" class="btn btn-primary" type="button">
-                      Đồng bộ bài
-                    </button>
-                  </div>
-                </div>
-                <div id="postsUltraNotice" class="msg ok hidden"></div>
-                <div id="myPostsList" class="table-wrap"></div>
-                <div id="postsMessage" class="msg hidden"></div>
               </div>
             </section>
 
