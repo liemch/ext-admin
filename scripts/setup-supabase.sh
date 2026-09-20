@@ -146,6 +146,8 @@ step "Áp migration chiến dịch nhanh + hoàn Ultra (R4)"
 apply_migration "supabase/migrations/20260918120000_quick_campaign_presets_ultra_refund.sql"
 step "Áp migration R5 (kho bài + lịch)"
 apply_migration "supabase/migrations/20260918130000_content_library_scheduling.sql"
+step "Sửa kiểu trả về RPC hoàn Ultra (R4)"
+apply_migration "supabase/migrations/20260920025941_fix_ultra_refund_result_types.sql"
 
 # ---------- 8. Test ----------
 BASE="https://${PROJECT_REF}.supabase.co/functions/v1"

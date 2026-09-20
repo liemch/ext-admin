@@ -4,6 +4,15 @@
 > Đây là đặc tả mục tiêu triển khai; không phải thông báo các tính năng đã chạy
 > trên production. Trạng thái migration/function remote chưa được xác minh.
 
+> Cập nhật triển khai 20/09/2026 trên Supabase **local-dev**
+> (`vpriomitldkkwtpcwdkw`): R1–R5 đã có code; migration R2–R5 và bản sửa lỗi
+> kiểu trả về RPC hoàn Ultra đã áp, `engagement-api` v13 và `publishing-api` v1
+> đã deploy. Test offline engagement/post-sync/publishing và DB contract R1–R5
+> đã qua. Các mô tả "chưa có" và "chờ deploy" bên dưới là trạng thái lịch sử
+> khi viết plan, không phải trạng thái hiện tại. Chưa chạy demo hai browser
+> profile, quy trình tạo chiến dịch dưới 2 phút, kho 5 bài/5 ngày, hoặc xác minh
+> API tạo bài TechHub (R0). R6–R9 chưa triển khai; chưa nghiệm thu production.
+
 ## 0. Cách đọc và khác biệt cần nhìn thấy
 
 ### 0.1 Hiện trạng đã kiểm tra trong source

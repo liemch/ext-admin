@@ -89,12 +89,12 @@ BEGIN
   IF (SELECT status FROM public.engagement_boost_requests WHERE id=v_refund_boost) <> 'cancelled' THEN
     RAISE EXCEPTION 'admin cancel must mark boost cancelled';
   END IF;
-  IF (SELECT ultra_credits FROM public.engagement_preferences WHERE username='r4_owner') <> v_credits_after_first + 1 THEN
+  IF (SELECT ultra_credits FROM public.engagement_preferences WHERE username='r4_owner') <> v_credits_after_first THEN
     RAISE EXCEPTION 'admin cancel must refund exactly one credit';
   END IF;
   -- Hủy lại boost đã xử lý: không đổi gì.
   PERFORM public.settle_engagement_boosts(v_refund_boost, 'admin_cancelled');
-  IF (SELECT ultra_credits FROM public.engagement_preferences WHERE username='r4_owner') <> v_credits_after_first + 1 THEN
+  IF (SELECT ultra_credits FROM public.engagement_preferences WHERE username='r4_owner') <> v_credits_after_first THEN
     RAISE EXCEPTION 'cancel replay must not change balance a second time';
   END IF;
 

@@ -161,7 +161,7 @@ DECLARE
   v_revision BIGINT;
 BEGIN
   SELECT current_revision_id INTO v_revision FROM public.content_items
-  WHERE content_hash = repeat('a', 64);
+  WHERE content_hash = repeat('b', 64);
 
   INSERT INTO public.content_revision_approvals (revision_id, target_username, decision, decided_at, device_id)
   VALUES (v_revision, 'r5_user', 'approved', NOW(), 'r5-device');
