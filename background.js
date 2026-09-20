@@ -2343,9 +2343,7 @@ async function scheduleAutoCommentStart(techhubId, targetCount, startAt, options
   );
 
   const isExternalTarget = options.isExternalTarget === true;
-  if (isExternalTarget) {
-    await resolveExternalDiscussionPost(parsedTechhubId);
-  } else {
+  if (!isExternalTarget) {
     const post = await supabase.getPostByTechhubId(parsedTechhubId);
     if (!post) {
       throw new Error(`Không tìm thấy bài #${parsedTechhubId} trong DB. Hãy Quét bài trước.`);
@@ -2558,9 +2556,9 @@ async function startAutoComment(
     restoredState && restoredState.techhubId === parsedTechhubId
       ? restoredState.isExternalTarget === true
       : options.isExternalTarget === true;
-  if (isExternalTarget) {
-    await resolveExternalDiscussionPost(parsedTechhubId);
-  }
+  // Auto comment chỉ cần article ID dạng số cho POST /comments/. Không chặn bài
+  // thành viên khác bằng articles/?id=... vì TechHub có thể bỏ qua filter này,
+  // trả về trang đầu của feed và khiến ID hợp lệ bị báo là không tìm thấy.
 
   const result = await chrome.storage.local.get(["techhubCredentials", "userProfile"]);
   const liveUserProfile = await readCurrentUserProfileFromTechHub();

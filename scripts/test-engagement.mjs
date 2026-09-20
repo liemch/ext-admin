@@ -310,6 +310,17 @@ assert(background.includes("autoCommentStartAlarmName(scheduleId)"),
   "mỗi lịch auto comment có alarm riêng");
 assert(background.includes("queueScheduledAutoCommentStart(scheduleId)"),
   "các lịch cùng giờ được kích hoạt an toàn, không ghi đè state");
+const scheduleAutoCommentSource = background.slice(
+  background.indexOf("async function scheduleAutoCommentStart("),
+  background.indexOf("async function cancelAutoCommentSchedule(")
+);
+const startAutoCommentSource = background.slice(
+  background.indexOf("async function startAutoComment("),
+  background.indexOf("async function stopAutoCommentJob(")
+);
+assert(!scheduleAutoCommentSource.includes("resolveExternalDiscussionPost(") &&
+  !startAutoCommentSource.includes("resolveExternalDiscussionPost("),
+  "auto comment bài thành viên khác không phụ thuộc API tra metadata theo ID");
 assert(background.includes("rescheduleDeleteAfterAutoComment(job)"),
   "xóa bài chờ ít nhất một phút sau khi auto comment hoàn tất");
 assert(/id="autoCommentOwnPostId"[^>]*multiple/.test(html),
