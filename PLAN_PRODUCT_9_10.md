@@ -13,6 +13,29 @@
 > profile, quy trình tạo chiến dịch dưới 2 phút, kho 5 bài/5 ngày, hoặc xác minh
 > API tạo bài TechHub (R0). R6–R9 chưa triển khai; chưa nghiệm thu production.
 
+> Kiểm kê lại 20/09/2026: Supabase `local-dev` đang ACTIVE; migration
+> `identity_consent_enrollment`, `discussion_script_drafts_r2`,
+> `engagement_task_receipts_r3`, `quick_campaign_presets_ultra_refund_r4`,
+> `content_library_scheduling_r5` và `fix_ultra_refund_result_types` có trong
+> migration history remote. Năm Edge Functions đều ACTIVE:
+> `nvidia-proxy` v4, `admin-api` v5, `engagement-api` v13,
+> `post-sync-api` v8, `publishing-api` v1. Năm bảng nội dung/lịch R5 đã bật RLS
+> và không cấp SELECT/INSERT cho anon; bảng `publishing_schedules` có 0 lịch.
+> Chưa có `publishing_jobs`/`publishing_runs`. R0 đã tạo thủ công một bài nội dung
+> thật trên TechHub bằng tài khoản `liemch2` trong community “Cải tiến mỗi ngày”:
+> [Cải tiến nhỏ mỗi ngày: bắt đầu từ một điểm nghẽn có thể đo được](https://techhub.fpt.net/c/cai-tien-moi-ngay/xew37zm5/cai-tien-nho-moi-ngay-bat-dau-tu-mot-diem-nghen-co-the-do-du).
+> Bài vẫn hiển thị sau reload, tác giả đúng `liemch2`, URL chứa mã `xew37zm5`.
+> Đã chọn tag `skills`, `work flow`, `mình làm - mình chia sẻ` và chèn một ảnh
+> bằng nút **Insert image** trong editor nội dung; ảnh vẫn hiện trong thân bài
+> sau khi lưu. Trước đó đã tải cùng ảnh vào ô **Main image**; editor không hiện
+> thao tác bỏ ảnh tải riêng, nên lần này chưa chứng minh TechHub tự suy ra main
+> image chỉ từ ảnh trong body. Luồng R6 phải xác minh điều này trước khi dùng.
+> UI lại hiện “Published 57 years ago”, cần kiểm tra trường thời gian trước R6.
+> Chưa thu được raw response fixture, header CSRF, article ID/UUID, ý nghĩa terms,
+> hành vi duplicate/timeout và giới hạn request. R6 chỉ được mở POST tự động sau
+> khi xác minh các điểm này và cách đối soát ambiguous. Đây là kiểm kê project dev,
+> không phải nghiệm thu production.
+
 ## 0. Cách đọc và khác biệt cần nhìn thấy
 
 ### 0.1 Hiện trạng đã kiểm tra trong source
@@ -401,6 +424,13 @@ Payload tham chiếu:
 
 `community = 35` và `terms = [178, 368, 274]` được lưu thành preset “Cải tiến
 mỗi ngày”, không hardcode trực tiếp trong worker.
+
+Mỗi bài mới phải chọn ít nhất một tag phù hợp và chèn một ảnh vào **nội dung
+bài viết** bằng luồng Insert image. Mong muốn sản phẩm là TechHub lấy ảnh trong
+body làm ảnh main; không dùng thao tác tải riêng trong tab Main image làm đường
+chính. R0 còn phải xác minh API upload ảnh, định dạng ảnh được chèn vào body và
+quy tắc suy ra main image khi không gửi `main_image` riêng. Payload tham chiếu
+`main_image: null` ở trên chưa đủ bằng chứng cho R6.
 
 Trước khi triển khai cần thực hiện một spike thủ công trên tài khoản kiểm thử để
 xác nhận:
@@ -1426,7 +1456,9 @@ deploy. Không đánh dấu xong chỉ vì đã có UI hoặc test kiểm tra ch
   ambiguous review và late policies.
 - Nghiệm thu: một request POST tối đa trong các test crash đã mô phỏng; crash sau
   begin không tự requeue POST; đổi tài khoản trước giờ chạy thì chặn; máy offline
-  quá hạn hiển thị đúng reason. Không hứa exactly-once ngoài khả năng API.
+  quá hạn hiển thị đúng reason. Job thiếu tag hoặc ảnh trong body bị chặn trước
+  begin; bài sau đăng hiện đúng tag và ảnh trong nội dung. Không hứa exactly-once
+  ngoài khả năng API.
 
 ### R7 — Publish → sync → discussion
 
@@ -1510,10 +1542,11 @@ không được bù bằng nhiều tính năng hay số comment cao.
 
 Checklist bàn giao mỗi release: commit/branch, file/contract thay đổi, test và
 demo đã chạy, migration/function cần deploy theo đúng thứ tự, feature flag,
-metric theo dõi, rollback và phần chưa kiểm chứng. Trong lần rà soát plan này
-R1–R4 đã có implementation và test local trên branch `product-9-10`; R0 create
-API được hoãn đến lúc chạy extension. R5–R9 chưa triển khai và chưa có ticket nào
-được xác minh production. Trước demo R3 phải áp lần lượt migration
-`20260917020158`, `20260917025828`, `20260918043557`, deploy `engagement-api`
-và `post-sync-api`, sau đó reload extension trên hai browser profile. Trước demo
-R4 áp thêm migration `20260918120000` và deploy lại `engagement-api`.
+metric theo dõi, rollback và phần chưa kiểm chứng. Tính đến kiểm kê remote
+20/09/2026, R1–R5 có implementation và migration/function đã áp trên
+`local-dev`; chưa demo hai browser profile và chưa nghiệm thu production. R0
+đã xác minh đường tạo bài thủ công cùng tài khoản tác giả, nhưng contract API
+và tình huống lỗi còn thiếu bằng chứng; R6–R9 chưa triển khai.
+Trước demo R3/R4/R5 phải reload extension trên các browser profile thử nghiệm,
+chạy kịch bản thực tế và đối chiếu receipt/quyền. Không áp lại migration R1–R5
+đã có trong history dev; khi lên môi trường khác cần kiểm kê riêng trước deploy.
