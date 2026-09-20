@@ -1808,7 +1808,7 @@
                   <div class="field">
                     <div class="field-text">
                       <label for="autoCommentCompletionMinutes">Hoàn thành trong (phút)</label>
-                      <span>Ví dụ: 20 comment trong khoảng 1 phút</span>
+                      <span>Mỗi bài có cùng thời hạn; ví dụ 3 bài × 60 comment trong 1 phút</span>
                     </div>
                     <input
                       id="autoCommentCompletionMinutes"
@@ -1844,8 +1844,10 @@
                   <div class="empty">Chưa có comment nào trong hàng đợi tự xóa.</div>
                 </div>
                 <p class="hint">
-                  Có thể chọn tối đa 5 bài ngay tại đây. Lịch hẹn vẫn chạy sau khi đóng side panel; nếu máy
-                  tắt qua giờ hẹn, job sẽ chạy ngay khi Chrome mở lại.
+                  Các bài chạy đồng thời, mỗi bài có tiến độ riêng. Nếu hẹn xóa bài ở mục Hẹn xóa bài,
+                  bài chỉ được xóa khi đủ comment và đã qua ít nhất 1 phút; bài không đủ mục tiêu sẽ được giữ lại.
+                  Thời hạn phụ thuộc tốc độ TechHub; nếu quá hạn, job dừng và báo tiến độ thực tế.
+                  Lịch hẹn cần Chrome và phiên TechHub hoạt động đúng giờ.
                 </p>
               </div>
             </section>

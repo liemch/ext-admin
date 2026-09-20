@@ -1722,6 +1722,8 @@ function renderAutoCommentJobsLog(jobs) {
         ? "Đang chạy"
         : job.lastError
           ? "Lỗi"
+          : completed && job.deadlineMissed
+            ? "Hoàn tất trễ"
           : completed
             ? "Hoàn tất"
             : "Đã dừng";
@@ -1729,6 +1731,8 @@ function renderAutoCommentJobsLog(jobs) {
         ? "pending"
         : job.lastError
           ? "error"
+          : completed && job.deadlineMissed
+            ? "error"
           : completed
             ? "done"
             : "error";

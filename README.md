@@ -17,7 +17,7 @@ Chrome Extension (MV3) hỗ trợ quản lý bài viết trên [TechHub](https:/
 - **AI trả lời comment**: đọc nội dung bài + chuỗi hội thoại → NVIDIA gen → lưu `reply_drafts` → reply
 - **AI tự thảo luận**: gen comment gốc trên chính bài viết, đếm mục tiêu từng bài,
   chạy ngẫu nhiên mỗi 1–5 phút → lưu `discussion_drafts`
-- **Auto comment** chọn cùng lúc tối đa 5 bài của mình (hoặc nhập một ID bài thành viên khác), tạo job riêng cho từng bài và chạy luân phiên để hoàn thành đủ số lượng trong thời gian đã chọn; hỗ trợ chạy ngay/hẹn giờ, tự xóa cuốn chiếu và nhật ký xóa từng comment
+- **Auto comment** chọn cùng lúc tối đa 5 bài của mình (hoặc nhập một ID bài thành viên khác), tạo timer và request riêng cho từng bài để các bài chạy đồng thời theo cùng thời hạn; hỗ trợ chạy ngay/hẹn giờ, tự xóa cuốn chiếu và nhật ký xóa từng comment. Khi hẹn xóa bài cùng bài auto comment, bài chỉ được xóa sau khi đủ mục tiêu và qua ít nhất 1 phút; job lỗi hoặc quá hạn sẽ giữ bài để đối soát
 - **Quản lý người dùng**: xem danh sách user dùng extension, cấp/thu quyền admin,
   khóa/mở khóa (user bị khóa không mở được panel), xem số bài đã lưu và comment hôm nay
 - **Hẹn xóa bài**: chọn cùng lúc tối đa 5 bài, mỗi bài có lịch và trạng thái riêng;
@@ -210,6 +210,8 @@ ext-admin/
 - **Máy báo "thiết bị đã bị thu hồi"** → admin mở Tương tác → Vận hành → bỏ thu hồi máy đó
 - **Kiểm thử offline** → `node scripts/test-engagement.mjs` (validate kịch bản JSON,
   logic worker thuần, đối chiếu UI/background/edge/migration)
+- **Kiểm thử auto comment nhiều bài** → `node scripts/test-auto-comment-parallel.mjs`
+  (timer/POST đồng thời, nhịp 60 giây, điều kiện xóa bài)
 - **Không lấy comment / reply** → mở TechHub đã đăng nhập, reload extension
 - **Thiếu bảng draft** → chạy migration `004` và `005`
 

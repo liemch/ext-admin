@@ -285,8 +285,11 @@ assert(background.includes("previous.csrfToken"),
   "request GET sau service worker restart không ghi đè mất CSRF đã lưu");
 assert(background.includes("const MAX_AUTO_COMMENT_JOBS = 5"),
   "auto comment giới hạn tối đa năm job");
-assert(background.includes("async function rotateAutoCommentJob"),
-  "các job auto comment chạy luân phiên");
+assert(background.includes("const autoCommentTimers = new Map()") &&
+  background.includes("const autoCommentRunningJobs = new Set()"),
+  "mỗi bài auto comment có timer và trạng thái gửi riêng");
+assert(!background.includes("rotateAutoCommentJob"),
+  "không luân phiên một request chung giữa các bài");
 assert(background.includes("autoCommentJobs"),
   "danh sách job auto comment được lưu để phục hồi sau reload");
 assert(background.includes("function appendAutoCommentJob(nextJob)"),
@@ -306,7 +309,9 @@ assert(background.includes("const MAX_AUTO_COMMENT_SCHEDULES = 5"),
 assert(background.includes("autoCommentStartAlarmName(scheduleId)"),
   "mỗi lịch auto comment có alarm riêng");
 assert(background.includes("queueScheduledAutoCommentStart(scheduleId)"),
-  "các lịch cùng giờ được kích hoạt tuần tự, không ghi đè state");
+  "các lịch cùng giờ được kích hoạt an toàn, không ghi đè state");
+assert(background.includes("rescheduleDeleteAfterAutoComment(job)"),
+  "xóa bài chờ ít nhất một phút sau khi auto comment hoàn tất");
 assert(/id="autoCommentOwnPostId"[^>]*multiple/.test(html),
   "Auto comment cho phép chọn nhiều bài trong một lần");
 assert(html.includes('class="post-picker-source"'),

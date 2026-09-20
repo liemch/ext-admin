@@ -10,11 +10,15 @@ const MY_POSTS_SYNC_INTERVAL_MINUTES = 20;
 let myPostsSyncPromise = null;
 const AUTO_COMMENT_MIN_INTERVAL_MS = 2000;
 const AUTO_COMMENT_MAX_INTERVAL_MS = 5000;
-let autoCommentTimerId = null;
-let autoCommentTickRunning = false;
+const autoCommentTimers = new Map();
+const autoCommentRunningJobs = new Set();
 let autoCommentGeneration = 0;
 let autoCommentTemplates = [];
-let autoCommentAbortController = null;
+const autoCommentAbortControllers = new Map();
+let autoCommentStateMutation = Promise.resolve();
+let autoCommentLiveProfilePromise = null;
+let autoCommentLiveProfileAt = 0;
+let autoCommentLiveUsername = null;
 let autoCommentState = {
   active: false,
   techhubId: null,
@@ -1900,7 +1904,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
         console.error("[Background] External discussion alarm failed:", err);
       });
   } else if (alarm.name === "scheduledDeleteSweep" || alarm.name.startsWith("deletePost-")) {
-    processDueScheduledDeletes().catch((err) => {
+    autoCommentRestorePromise.then(() => processDueScheduledDeletes()).catch((err) => {
       console.error("[Background] Scheduled delete failed:", err);
     });
   } else if (alarm.name === MY_POSTS_SYNC_ALARM) {
@@ -2198,11 +2202,15 @@ function broadcastAutoCommentProgress(message, type = "info") {
 }
 
 async function saveAutoCommentState() {
-  if (autoCommentState.techhubId) {
-    const index = autoCommentJobs.findIndex((job) => job.jobId === autoCommentState.jobId);
-    if (index >= 0) autoCommentJobs[index] = { ...autoCommentState };
-  }
-  await chrome.storage.local.set({ autoCommentState, autoCommentJobs });
+  autoCommentStateMutation = autoCommentStateMutation.catch(() => {}).then(() => {
+    const active = autoCommentJobs.find((job) => job.active);
+    autoCommentState = active || autoCommentJobs[autoCommentJobs.length - 1] || autoCommentState;
+    return chrome.storage.local.set({
+      autoCommentState: { ...autoCommentState },
+      autoCommentJobs: autoCommentJobs.map((job) => ({ ...job })),
+    });
+  });
+  return autoCommentStateMutation;
 }
 
 function appendAutoCommentJob(nextJob) {
@@ -2259,6 +2267,22 @@ async function getFreshTechHubSession() {
     userProfile,
     username: userProfile?.username || null,
   };
+}
+
+async function getAutoCommentLiveUsername() {
+  if (Date.now() - autoCommentLiveProfileAt < 10_000) {
+    return autoCommentLiveUsername;
+  }
+  if (!autoCommentLiveProfilePromise) {
+    autoCommentLiveProfilePromise = readCurrentUserProfileFromTechHub()
+      .then((profile) => {
+        autoCommentLiveUsername = profile?.username || null;
+        autoCommentLiveProfileAt = Date.now();
+        return autoCommentLiveUsername;
+      })
+      .finally(() => { autoCommentLiveProfilePromise = null; });
+  }
+  return autoCommentLiveProfilePromise;
 }
 
 function normalizeAutoCommentCompletionMinutes(value, targetCount) {
@@ -2453,23 +2477,27 @@ function getRandomAutoCommentDelay() {
   ) + AUTO_COMMENT_MIN_INTERVAL_MS;
 }
 
-function getNextAutoCommentDelay() {
-  const startedAt = new Date(autoCommentState.startedAt || 0).getTime();
-  const completionMinutes = Number(autoCommentState.completionMinutes);
-  const remainingCount = autoCommentState.targetCount - autoCommentState.commentCount;
-  if (!Number.isFinite(startedAt) || startedAt <= 0 || !completionMinutes || remainingCount <= 0) {
+function getNextAutoCommentDelay(job, now = Date.now()) {
+  const startedAt = new Date(job.startedAt || 0).getTime();
+  const durationMs = Number(job.completionMinutes) * 60 * 1000;
+  if (!Number.isFinite(startedAt) || !Number.isFinite(durationMs) || durationMs <= 0) {
     return getRandomAutoCommentDelay();
   }
-  const deadline = startedAt + completionMinutes * 60 * 1000;
-  const remainingMs = Math.max(0, deadline - Date.now());
-  return Math.max(500, Math.floor(remainingMs / remainingCount));
+  const nextIndex = Number(job.commentCount) || 0;
+  if (nextIndex === 0) return 0;
+  const interval = durationMs / Math.max(1, Number(job.targetCount));
+  return Math.max(0, Math.floor(startedAt + nextIndex * interval - now));
 }
 
-function scheduleAutoCommentTick(generation, delayMs = null) {
-  if (!autoCommentState.active || generation !== autoCommentGeneration) return;
-  if (autoCommentTimerId) clearTimeout(autoCommentTimerId);
-  const actualDelay = delayMs == null ? getNextAutoCommentDelay() : delayMs;
-  autoCommentTimerId = setTimeout(() => runAutoCommentTick(generation), actualDelay);
+function scheduleAutoCommentTick(job, generation, delayMs = null) {
+  if (!job.active || generation !== autoCommentGeneration) return;
+  const previousTimer = autoCommentTimers.get(job.jobId);
+  if (previousTimer) clearTimeout(previousTimer);
+  const actualDelay = delayMs == null ? getNextAutoCommentDelay(job) : delayMs;
+  autoCommentTimers.set(job.jobId, setTimeout(() => {
+    autoCommentTimers.delete(job.jobId);
+    runAutoCommentTick(job.jobId, generation);
+  }, actualDelay));
 }
 
 async function startAutoComment(
@@ -2521,6 +2549,8 @@ async function startAutoComment(
   }
   if (liveUserProfile) {
     await chrome.storage.local.set({ userProfile: liveUserProfile });
+    autoCommentLiveUsername = liveUserProfile.username;
+    autoCommentLiveProfileAt = Date.now();
   }
 
   const freshCsrf = await refreshCSRFToken();
@@ -2547,6 +2577,9 @@ async function startAutoComment(
   }
 
   const isRestoring = !!restoredState;
+  if (isRestoring && restoredState.inFlight) {
+    throw new Error("Lần gửi comment trước bị gián đoạn; cần đối soát trước khi chạy lại.");
+  }
   const activeJobs = autoCommentJobs.filter((job) => job.active);
   if (!isRestoring && activeJobs.length >= MAX_AUTO_COMMENT_JOBS) {
     throw new Error(`Chỉ được chạy tối đa ${MAX_AUTO_COMMENT_JOBS} job auto comment.`);
@@ -2558,6 +2591,13 @@ async function startAutoComment(
     throw new Error(`Bài #${parsedTechhubId} đã có job auto comment đang chạy.`);
   }
 
+  const startedAt = restoredState?.startedAt || options.startAt || new Date().toISOString();
+  const deadlineAt = new Date(
+    new Date(startedAt).getTime() + completionMinutes * 60 * 1000
+  ).toISOString();
+  if (Date.now() >= new Date(deadlineAt).getTime()) {
+    throw new Error(`Đã quá hạn hoàn thành auto comment bài #${parsedTechhubId}.`);
+  }
   const nextJob = {
     jobId:
       restoredState?.jobId ||
@@ -2572,83 +2612,54 @@ async function startAutoComment(
         ? restoredState.lastCommentAt || null
         : null,
     lastError: null,
+    inFlight: false,
+    completedAt: null,
     ...deleteOptions,
     completionMinutes,
-    startedAt:
-      restoredState && restoredState.techhubId === parsedTechhubId
-        ? restoredState.startedAt || new Date().toISOString()
-        : new Date().toISOString(),
+    startedAt,
+    deadlineAt,
     isExternalTarget,
   };
 
-  if (!isRestoring && autoCommentState.active) {
-    appendAutoCommentJob(nextJob);
-    await saveAutoCommentState();
-    broadcastAutoCommentProgress(
-      `Đã thêm job ${activeJobs.length + 1}/${MAX_AUTO_COMMENT_JOBS} cho bài #${parsedTechhubId} · mục tiêu ${parsedTarget} cmt.`,
-      "success"
-    );
-    return getAutoCommentStatus();
-  }
-
-  autoCommentGeneration++;
-  if (autoCommentTimerId) clearTimeout(autoCommentTimerId);
-  if (autoCommentAbortController) autoCommentAbortController.abort();
-  autoCommentTimerId = null;
-  autoCommentAbortController = null;
-  autoCommentTickRunning = false;
-  autoCommentState = nextJob;
   if (!isRestoring) {
     appendAutoCommentJob(nextJob);
-  } else if (!autoCommentJobs.length) {
-    autoCommentJobs = [nextJob];
+  } else {
+    const index = autoCommentJobs.findIndex((job) => job.jobId === nextJob.jobId);
+    if (index >= 0) autoCommentJobs[index] = nextJob;
+    else appendAutoCommentJob(nextJob);
   }
   await saveAutoCommentState();
 
   const generation = autoCommentGeneration;
   broadcastAutoCommentProgress(
-    `Đã bắt đầu auto comment bài #${parsedTechhubId} · mục tiêu ${parsedTarget} cmt · @${autoCommentState.username}.`,
+    `Đã bắt đầu auto comment bài #${parsedTechhubId} · mục tiêu ${parsedTarget} cmt · @${nextJob.username}.`,
     "success"
   );
-  scheduleAutoCommentTick(generation, 0);
+  scheduleAutoCommentTick(nextJob, generation, 0);
   return getAutoCommentStatus();
 }
 
-function stopAutoComment(reason = "Đã dừng auto comment.", type = "info") {
-  const stoppedJobId = autoCommentState.jobId;
-  autoCommentGeneration++;
-  if (autoCommentTimerId) clearTimeout(autoCommentTimerId);
-  if (autoCommentAbortController) autoCommentAbortController.abort();
-  autoCommentTimerId = null;
-  autoCommentAbortController = null;
-  autoCommentState.active = false;
-  autoCommentState.lastError = type === "error" ? reason : null;
-  const stoppedIndex = autoCommentJobs.findIndex((job) => job.jobId === stoppedJobId);
-  if (stoppedIndex >= 0) autoCommentJobs[stoppedIndex] = { ...autoCommentState };
-  const nextJob = autoCommentJobs.find((job) => job.active);
-  if (nextJob) {
-    autoCommentState = nextJob;
-    const generation = autoCommentGeneration;
-    saveAutoCommentState().then(() => scheduleAutoCommentTick(generation, 0));
-    broadcastAutoCommentProgress(`${reason} Chuyển sang bài #${nextJob.techhubId}.`, type);
-  } else {
-    saveAutoCommentState();
-    broadcastAutoCommentProgress(reason, type);
-  }
-}
-
-async function rotateAutoCommentJob(generation) {
-  if (generation !== autoCommentGeneration) return false;
-  const activeJobs = autoCommentJobs.filter((job) => job.active);
-  if (activeJobs.length < 2) return false;
-  const currentIndex = activeJobs.findIndex((job) => job.jobId === autoCommentState.jobId);
-  const nextJob = activeJobs[(currentIndex + 1) % activeJobs.length];
-  if (!nextJob || nextJob.jobId === autoCommentState.jobId) return false;
-  autoCommentGeneration++;
-  autoCommentState = nextJob;
+async function stopAutoCommentJob(job, reason, type = "info") {
+  const timer = autoCommentTimers.get(job.jobId);
+  if (timer) clearTimeout(timer);
+  autoCommentTimers.delete(job.jobId);
+  autoCommentAbortControllers.get(job.jobId)?.abort();
+  autoCommentAbortControllers.delete(job.jobId);
+  job.active = false;
+  job.inFlight = false;
+  job.completedAt = job.commentCount >= job.targetCount
+    ? new Date().toISOString()
+    : null;
+  job.deadlineMissed = !!job.completedAt &&
+    new Date(job.completedAt).getTime() > new Date(job.deadlineAt).getTime();
+  job.lastError = type === "error" ? reason : null;
   await saveAutoCommentState();
-  scheduleAutoCommentTick(autoCommentGeneration);
-  return true;
+  if (job.completedAt) {
+    await rescheduleDeleteAfterAutoComment(job).catch((error) => {
+      console.error("[Background] Could not update post delete time:", error);
+    });
+  }
+  broadcastAutoCommentProgress(reason, type);
 }
 
 /**
@@ -2657,10 +2668,11 @@ async function rotateAutoCommentJob(generation) {
  */
 async function cancelAutoCommentCompletely() {
   autoCommentGeneration++;
-  if (autoCommentTimerId) clearTimeout(autoCommentTimerId);
-  if (autoCommentAbortController) autoCommentAbortController.abort();
-  autoCommentTimerId = null;
-  autoCommentAbortController = null;
+  for (const timer of autoCommentTimers.values()) clearTimeout(timer);
+  for (const controller of autoCommentAbortControllers.values()) controller.abort();
+  autoCommentTimers.clear();
+  autoCommentAbortControllers.clear();
+  autoCommentRunningJobs.clear();
   autoCommentTemplates = [];
   autoCommentJobs = [];
   autoCommentState = {
@@ -2704,81 +2716,90 @@ async function cancelAutoCommentCompletely() {
   return getAutoCommentStatus();
 }
 
-async function runAutoCommentTick(generation) {
-  if (
-    !autoCommentState.active ||
-    generation !== autoCommentGeneration ||
-    autoCommentTickRunning
-  ) {
+async function runAutoCommentTick(jobId, generation) {
+  const job = autoCommentJobs.find((item) => item.jobId === jobId);
+  if (!job?.active || generation !== autoCommentGeneration ||
+      autoCommentRunningJobs.has(jobId)) return;
+
+  const deadline = new Date(job.deadlineAt || 0).getTime();
+  if (Number.isFinite(deadline) && Date.now() >= deadline) {
+    await stopAutoCommentJob(
+      job,
+      `Quá hạn: bài #${job.techhubId} mới đạt ${job.commentCount}/${job.targetCount} comment.`,
+      "error"
+    );
     return;
   }
 
-  autoCommentTickRunning = true;
+  autoCommentRunningJobs.add(jobId);
   const controller = new AbortController();
-  autoCommentAbortController = controller;
+  autoCommentAbortControllers.set(jobId, controller);
   try {
-    const result = await chrome.storage.local.get(["techhubCredentials", "userProfile"]);
-    const credentials = result.techhubCredentials;
-    const liveUserProfile = await readCurrentUserProfileFromTechHub();
-    const userProfile = liveUserProfile || result.userProfile;
-    const username = userProfile?.username;
-    if (!credentials?.csrfToken || !username) {
-      stopAutoComment(
-        "Đã dừng: thiếu phiên đăng nhập hoặc profile TechHub.",
+    const stored = await chrome.storage.local.get(["techhubCredentials", "userProfile"]);
+    const credentials = stored.techhubCredentials;
+    const username = stored.userProfile?.username;
+    const liveUsername = await getAutoCommentLiveUsername();
+    if (!credentials?.csrfToken || !username || username !== job.username ||
+        (liveUsername && liveUsername !== job.username)) {
+      await stopAutoCommentJob(
+        job,
+        `Đã dừng bài #${job.techhubId}: thiếu phiên hoặc tài khoản TechHub đã đổi.`,
         "error"
       );
       return;
-    }
-    if (liveUserProfile && liveUserProfile.username !== result.userProfile?.username) {
-      await chrome.storage.local.set({ userProfile: liveUserProfile });
     }
 
     if (!autoCommentTemplates.length) {
       autoCommentTemplates = await supabase.getCommentTemplates({ kind: "comment" });
     }
     if (!autoCommentTemplates.length) {
-      stopAutoComment("Đã dừng: không có mẫu bình luận đang hoạt động.", "error");
+      await stopAutoCommentJob(job, `Bài #${job.techhubId}: không có mẫu bình luận.`, "error");
       return;
     }
 
-    const template =
-      autoCommentTemplates[Math.floor(Math.random() * autoCommentTemplates.length)];
+    const template = autoCommentTemplates[
+      Math.floor(Math.random() * autoCommentTemplates.length)
+    ];
+    job.inFlight = true;
+    await saveAutoCommentState();
     const response = await interactWithTechHub(
-      { techhub_id: autoCommentState.techhubId },
+      { techhub_id: job.techhubId },
       "comment",
       template.content,
       credentials,
       controller.signal
     );
-
-    if (!autoCommentState.active || generation !== autoCommentGeneration) return;
+    if (!job.active || generation !== autoCommentGeneration) return;
 
     if (!response?.ok) {
       const status = response?.status || "không xác định";
-      if (status === 401 || status === 403 || status === 429) {
-        stopAutoComment(
-          `Đã dừng: TechHub trả về HTTP ${status}. Hãy kiểm tra đăng nhập/rate limit.`,
-          "error"
+      const reason = `Đã dừng bài #${job.techhubId}: TechHub trả HTTP ${status}.`;
+      if (status === 401 || status === 403) {
+        await Promise.all(
+          autoCommentJobs.filter((item) => item.active)
+            .map((item) => stopAutoCommentJob(item, reason, "error"))
         );
-        return;
+      } else {
+        await stopAutoCommentJob(job, reason, "error");
       }
-      throw new Error(`TechHub trả về HTTP ${status}`);
+      return;
     }
 
     let autoDeleteWarning = null;
-    if (autoCommentState.autoDeleteEnabled) {
+    if (job.autoDeleteEnabled) {
       const commentId = await getCreatedCommentId(response);
       if (commentId) {
         try {
           await enqueueAutoCommentDelete({
             commentId,
-            techhubId: autoCommentState.techhubId,
+            techhubId: job.techhubId,
             username,
             createdAt: new Date().toISOString(),
-            deleteAfterMinutes: autoCommentState.deleteAfterMinutes,
+            deleteAfterMinutes: job.deleteAfterMinutes,
           });
         } catch (error) {
-          autoDeleteWarning = `Không lưu được lịch xóa comment #${commentId}: ${error.message}`;
+          autoDeleteWarning =
+            `Không lưu được lịch xóa comment #${commentId}: ${error.message}`;
         }
       } else {
         autoDeleteWarning =
@@ -2786,60 +2807,58 @@ async function runAutoCommentTick(generation) {
       }
     }
 
-    autoCommentState.username = username;
-    autoCommentState.commentCount += 1;
-    autoCommentState.lastCommentAt = new Date().toISOString();
-    autoCommentState.lastError = null;
+    job.inFlight = false;
+    job.commentCount += 1;
+    job.lastCommentAt = new Date().toISOString();
+    job.lastError = null;
     await saveAutoCommentState();
-    try {
-      await supabase.recordInteraction(
-        username,
-        autoCommentState.techhubId,
-        "comment"
-      );
-    } catch (error) {
-      // Đã đăng thành công nhưng chưa lưu lịch sử → báo rõ để xử lý, không nuốt lỗi.
+    supabase.recordInteraction(username, job.techhubId, "comment").catch((error) => {
       broadcastAutoCommentProgress(
-        `Đã comment nhưng chưa lưu được lịch sử: ${error.message}`,
+        `Bài #${job.techhubId} đã comment nhưng chưa lưu lịch sử: ${error.message}`,
+        "error"
+      );
+    });
+
+    const reached = job.commentCount >= job.targetCount;
+    broadcastAutoCommentProgress(
+      reached
+        ? `Đủ ${job.commentCount}/${job.targetCount} comment vào bài #${job.techhubId}.`
+        : `Bài #${job.techhubId}: ${job.commentCount}/${job.targetCount} comment.`,
+      "success"
+    );
+    if (autoDeleteWarning) broadcastAutoCommentProgress(autoDeleteWarning, "error");
+
+    if (reached) {
+      await stopAutoCommentJob(
+        job,
+        `${Date.now() > deadline ? "Hoàn tất trễ" : "Hoàn tất"} bài #${job.techhubId}: ` +
+          `${job.commentCount}/${job.targetCount} comment.`,
+        "success"
+      );
+    } else if (Date.now() >= deadline) {
+      await stopAutoCommentJob(
+        job,
+        `Quá hạn: bài #${job.techhubId} mới đạt ${job.commentCount}/${job.targetCount} comment.`,
         "error"
       );
     }
-
-    const reached =
-      autoCommentState.targetCount > 0 &&
-      autoCommentState.commentCount >= autoCommentState.targetCount;
-
-    broadcastAutoCommentProgress(
-      reached
-        ? `Đủ ${autoCommentState.commentCount}/${autoCommentState.targetCount} comment vào bài #${autoCommentState.techhubId}. Dừng.`
-        : `Đã comment ${autoCommentState.commentCount}/${autoCommentState.targetCount || "?"} vào bài #${autoCommentState.techhubId}.`,
-      "success"
-    );
-    if (autoDeleteWarning) {
-      broadcastAutoCommentProgress(autoDeleteWarning, "error");
-    }
-
-    if (reached) {
-      stopAutoComment(
-        `Hoàn tất: đủ ${autoCommentState.commentCount}/${autoCommentState.targetCount} comment.`,
-        "success"
-      );
-      return;
-    }
-    if (await rotateAutoCommentJob(generation)) return;
   } catch (error) {
-    if (error.name === "AbortError") return;
-    if (generation !== autoCommentGeneration) return;
+    if (error.name === "AbortError" || generation !== autoCommentGeneration ||
+        !job.active) return;
     console.error("[Background] Auto comment tick failed:", error);
-    autoCommentState.lastError = error.message;
-    await saveAutoCommentState();
-    broadcastAutoCommentProgress(`Lỗi auto comment: ${error.message}`, "error");
+    await stopAutoCommentJob(
+      job,
+      `Bài #${job.techhubId} dừng để tránh gửi trùng: ${error.message}`,
+      "error"
+    );
   } finally {
-    if (autoCommentAbortController === controller) {
-      autoCommentAbortController = null;
+    if (autoCommentAbortControllers.get(jobId) === controller) {
+      autoCommentAbortControllers.delete(jobId);
     }
-    autoCommentTickRunning = false;
-    scheduleAutoCommentTick(generation);
+    autoCommentRunningJobs.delete(jobId);
+    if (job.active && generation === autoCommentGeneration) {
+      scheduleAutoCommentTick(job, generation);
+    }
   }
 }
 
@@ -3043,18 +3062,24 @@ async function restoreAutoComment() {
     autoCommentJobs = Array.isArray(result.autoCommentJobs)
       ? result.autoCommentJobs.filter((job) => job?.jobId).slice(-MAX_AUTO_COMMENT_JOBS)
       : [];
-    const restoredActive = autoCommentJobs[0] ||
-      (result.autoCommentState?.active ? result.autoCommentState : null);
-    if (restoredActive) {
-      if (!autoCommentJobs.length) autoCommentJobs = [restoredActive];
-      await startAutoComment(
-        restoredActive.techhubId,
-        restoredActive,
-        restoredActive.targetCount
-      );
-    } else if (result.autoCommentState) {
+    if (result.autoCommentState?.active && !autoCommentJobs.some(
+      (job) => job.jobId === result.autoCommentState.jobId
+    )) {
+      autoCommentJobs.push(result.autoCommentState);
+    }
+    for (const job of autoCommentJobs.filter((item) => item.active)) {
+      try {
+        await startAutoComment(job.techhubId, job, job.targetCount);
+      } catch (error) {
+        job.active = false;
+        job.inFlight = false;
+        job.lastError = error.message;
+      }
+    }
+    if (!autoCommentJobs.length && result.autoCommentState) {
       autoCommentState = { ...autoCommentState, ...result.autoCommentState };
     }
+    await saveAutoCommentState();
   } catch (error) {
     console.error("[Background] Failed to restore auto comment:", error);
     autoCommentState = {
@@ -3319,6 +3344,7 @@ async function getScheduledDeletes() {
 }
 
 async function restoreScheduledDeletes() {
+  await autoCommentRestorePromise;
   const items = await loadScheduledDeleteList();
   for (const item of items) {
     if (item.status === "pending" && item.deleteAt) {
@@ -3336,6 +3362,24 @@ async function ensureDeleteAlarm(item) {
   if (when <= Date.now()) return;
   await chrome.alarms.clear(name);
   chrome.alarms.create(name, { when });
+}
+
+async function rescheduleDeleteAfterAutoComment(job) {
+  const completedAt = new Date(job.completedAt).getTime();
+  if (!Number.isFinite(completedAt)) return;
+  const items = await loadScheduledDeleteList();
+  let changed = false;
+  for (const item of items) {
+    if (item.status !== "pending" || !item.waitForAutoComment ||
+        Number(item.techhubId) !== Number(job.techhubId)) continue;
+    const safeAt = Math.max(new Date(item.deleteAt).getTime(), completedAt + 60 * 1000);
+    if (safeAt > new Date(item.deleteAt).getTime()) {
+      item.deleteAt = new Date(safeAt).toISOString();
+      changed = true;
+    }
+    await ensureDeleteAlarm(item);
+  }
+  if (changed) await saveScheduledDeleteList(items);
 }
 
 async function scheduleDeletePost(techhubId, deleteAt) {
@@ -3366,12 +3410,26 @@ async function scheduleDeletePost(techhubId, deleteAt) {
 
   let items = await loadScheduledDeleteList();
   items = items.filter((i) => Number(i.techhubId) !== parsedId);
+  const relatedJob = autoCommentJobs.find((job) =>
+    Number(job.techhubId) === parsedId && job.active
+  ) || [...autoCommentJobs].reverse().find((job) => Number(job.techhubId) === parsedId);
+  const relatedSchedule = autoCommentSchedules.some((schedule) =>
+    Number(schedule.techhubId) === parsedId && schedule.status === "waiting"
+  );
+  const waitForAutoComment = !!relatedJob || relatedSchedule;
+  const completedAt = relatedJob?.completedAt
+    ? new Date(relatedJob.completedAt).getTime()
+    : null;
+  const safeAt = waitForAutoComment && Number.isFinite(completedAt)
+    ? Math.max(when.getTime(), completedAt + 60 * 1000)
+    : when.getTime();
   const entry = {
     techhubId: parsedId,
     techhubUuid: post.techhub_uuid,
     title: post.title || "",
     username: post.username || username || null,
-    deleteAt: when.toISOString(),
+    deleteAt: new Date(safeAt).toISOString(),
+    waitForAutoComment,
     status: "pending",
     createdAt: new Date().toISOString(),
     lastError: null,
@@ -3380,7 +3438,8 @@ async function scheduleDeletePost(techhubId, deleteAt) {
   await saveScheduledDeleteList(items);
   await ensureDeleteAlarm(entry);
 
-  const message = `Đã hẹn xóa bài #${parsedId} lúc ${when.toLocaleString()}`;
+  const message = `Đã hẹn xóa bài #${parsedId} lúc ${new Date(entry.deleteAt).toLocaleString()}` +
+    (waitForAutoComment ? "; chỉ xóa sau khi đủ comment và qua 1 phút" : "");
   broadcastDeleteProgress(message, "success", items);
   return { item: entry, items: await getScheduledDeletes(), message };
 }
@@ -3440,6 +3499,35 @@ async function processDueScheduledDeletes() {
   for (const item of items) {
     if (item.status !== "pending") continue;
     if (new Date(item.deleteAt).getTime() > now) continue;
+
+    const relatedJob = autoCommentJobs.find((job) =>
+      Number(job.techhubId) === Number(item.techhubId) && job.active
+    ) || [...autoCommentJobs].reverse().find((job) =>
+      Number(job.techhubId) === Number(item.techhubId)
+    );
+    const waitingSchedule = autoCommentSchedules.some((schedule) =>
+      Number(schedule.techhubId) === Number(item.techhubId) &&
+      schedule.status === "waiting"
+    );
+    if (relatedJob || waitingSchedule) item.waitForAutoComment = true;
+    if (item.waitForAutoComment) {
+      if (relatedJob?.active || waitingSchedule) continue;
+      if (!relatedJob?.completedAt || relatedJob.commentCount < relatedJob.targetCount) {
+        item.status = "error";
+        item.lastError = "Auto comment chưa hoàn tất; giữ bài để đối soát thủ công.";
+        item.completedAt = new Date().toISOString();
+        changed = true;
+        broadcastDeleteProgress(`Chưa xóa bài #${item.techhubId}: auto comment chưa đủ mục tiêu.`, "error");
+        continue;
+      }
+      const safeAt = new Date(relatedJob.completedAt).getTime() + 60 * 1000;
+      if (safeAt > now) {
+        item.deleteAt = new Date(safeAt).toISOString();
+        changed = true;
+        await ensureDeleteAlarm(item);
+        continue;
+      }
+    }
 
     try {
       await executeDeletePost(item);
