@@ -612,7 +612,7 @@ async function handleRequestPostSync(rest: Rest, auth: Auth, body: Record<string
 async function handleSaveScannedPosts(rest: Rest, auth: Auth, body: Record<string, unknown>) {
   requireAdmin(auth);
   const username = String(body.username || "").trim();
-  if (!/^[A-Za-z0-9_.-]{1,100}$/.test(username)) {
+  if (username && !/^[A-Za-z0-9_.-]{1,100}$/.test(username)) {
     throw new HttpError("username không hợp lệ.", 400);
   }
   const articles = Array.isArray(body.articles) ? body.articles : [];
@@ -624,18 +624,20 @@ async function handleSaveScannedPosts(rest: Rest, auth: Auth, body: Record<strin
     const techhubId = Number(article.techhubId ?? article.techhub_id);
     const techhubUuid = String(article.techhubUuid ?? article.techhub_uuid ?? "").trim();
     const author = String(article.username || "").trim();
+    const effectiveUsername = username || author;
     if (
       !Number.isInteger(techhubId) ||
       techhubId <= 0 ||
       !techhubUuid ||
-      author.toLowerCase() !== username.toLowerCase()
+      !/^[A-Za-z0-9_.-]{1,100}$/.test(author) ||
+      (username && author.toLowerCase() !== username.toLowerCase())
     ) {
       return [];
     }
     return [{
       techhub_id: techhubId,
       techhub_uuid: techhubUuid,
-      username,
+      username: effectiveUsername,
       title: article.title ? String(article.title).slice(0, 500) : null,
       status: String(article.status || "open"),
       url: article.url ? String(article.url) : null,
@@ -643,13 +645,14 @@ async function handleSaveScannedPosts(rest: Rest, auth: Auth, body: Record<strin
       comments_count: Number(article.commentsCount ?? article.comments_count ?? 0),
       medals_count: Number(article.medalsCount ?? article.medals_count ?? 0),
       feed_score: Number(article.feedScore ?? article.feed_score ?? 0),
+      created_at: toIso(article.createdAt ?? article.created_at) || now,
       published_at: toIso(article.publishedAt ?? article.published_at),
       community_slug: article.communitySlug ?? article.community_slug ?? null,
       community_name: article.communityName ?? article.community_name ?? null,
       last_seen_at: now,
       last_verified_at: now,
       verification_status: "verified",
-      discovered_by: "user_reconcile",
+      discovered_by: username ? "user_reconcile" : "feed_discovery",
       sync_error: null,
     }];
   });

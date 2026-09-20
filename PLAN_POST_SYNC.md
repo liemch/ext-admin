@@ -152,6 +152,9 @@ Riêng nút **Quét bài** trên máy admin là thao tác đồng bộ trực ti
 đã tải đủ danh sách từ TechHub sẽ gửi các lô bài qua action admin
 `saveScannedPosts` để upsert `posts` ngay. Luồng này không đi qua cooldown hoặc
 hàng đợi leader; hàng đợi `user_reconcile` chỉ dùng cho đồng bộ nền.
+Nút **Quét chuyên mục** cũng dùng action này nhưng không truyền `username`, cho
+phép một batch có nhiều tác giả; kết quả vừa quét luôn được trộn với cache để
+cache cũ hoặc lỗi ghi tạm thời không che mất bài mới.
 Popup không render toàn bộ payload quét: danh sách chính chỉ đọc tối đa 100 bài
 có `published_at IS NULL`; bài đã publish vẫn có thể được lưu phục vụ cache và
 nghiệp vụ đồng bộ khác nhưng không xuất hiện trong danh sách này.

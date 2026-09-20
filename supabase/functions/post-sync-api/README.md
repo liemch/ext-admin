@@ -62,7 +62,9 @@ dễ vận hành).
   - `{ "scope": "user", "username": "user01" }`
   - `{ "scope": "due_users" }`
 - `saveScannedPosts` — Admin quét tay và upsert ngay kết quả vào `posts`; không
-  đi qua cooldown/hàng đợi leader.
+  đi qua cooldown/hàng đợi leader. Khi truyền `username`, server chỉ nhận bài
+  đúng tác giả đó. Khi bỏ `username`, server nhận một batch quét chuyên mục có
+  nhiều tác giả và lấy username đã validate từ từng bài.
 
 ### Leader
 

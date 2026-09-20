@@ -972,8 +972,11 @@ class SupabaseClient {
         const id = Number(article?.id);
         if (!Number.isInteger(id) || seenIds.has(id)) continue;
         if (slugOf(article) !== slug) continue;
+        // Feed `sort=new` reflects the publish timeline. A draft may have been
+        // created months before it is published, so created_at must only be a
+        // fallback or recently published posts can be filtered out as "old".
         const articleTime = new Date(
-          article?.created_at || article?.published_at || 0
+          article?.published_at || article?.created_at || 0
         ).getTime();
         if (Number.isFinite(articleTime)) {
           // sort=new: bài mới hơn khoảng chọn thì bỏ qua và tiếp tục lật trang.

@@ -89,7 +89,7 @@ const clientSandbox = { POST_SYNC_API_CONFIG: { url: "https://x.supabase.co/func
   assert(client, "PostSyncClient được export");
   for (const name of [
     "getPostSyncApiConfig", "isPostSyncConfigured", "isPostSyncLeader",
-    "submitPostHint", "postSyncAdmin", "requestPostSync", "saveScannedPosts", "saveMyScannedPosts",
+    "submitPostHint", "postSyncAdmin", "requestPostSync", "saveScannedPosts", "saveCommunityScannedPosts", "saveMyScannedPosts",
     "reconcileMyScannedPosts",
     "claimPostSyncJob", "startPostSyncRun", "extendPostSyncLease",
     "completePostSyncJob", "failPostSyncJob", "getPostSyncStatus",
@@ -161,6 +161,12 @@ assert(background.includes("periodInMinutes: MY_POSTS_SYNC_INTERVAL_MINUTES"),
   "đồng bộ bài cá nhân định kỳ 20 phút");
 assert(background.includes("PostSyncClient.saveMyScannedPosts(posts)"),
   "user lưu chính danh sách vừa tải qua API bảo vệ theo device");
+assert(background.includes("PostSyncClient.saveCommunityScannedPosts(payloads)"),
+  "admin lưu kết quả quét chuyên mục qua Edge Function thay vì ghi posts trực tiếp");
+assert(background.includes("mergeCommunityPosts(cachedPosts, freshPosts)"),
+  "kết quả vừa quét được trộn với cache để bài mới không bị cache cũ che mất");
+assert(read("supabase-client.js").includes("article?.published_at || article?.created_at || 0"),
+  "lọc tháng chuyên mục ưu tiên ngày publish trước ngày tạo nháp");
 assert(background.includes("PostSyncClient.reconcileMyScannedPosts(liveTechhubIds)"),
   "sau khi lưu đủ, user đối soát bài đã xóa qua API bảo vệ theo device");
 assert(background.includes("!Array.isArray(data?.results)"),
@@ -236,6 +242,8 @@ for (const a of requiredActions) {
 assert(edge.includes("requireAdmin"), "edge có helper requireAdmin");
 assert(edge.includes("isRateLimited"), "edge có rate limit");
 assert(edge.includes("const device = requireDevice(auth)"), "saveMyScannedPosts yêu cầu device token");
+assert(edge.includes('const effectiveUsername = username || author'),
+  "saveScannedPosts hỗ trợ batch chuyên mục nhiều tác giả khi admin không truyền username");
 assert(
   edge.includes('(device.enrollment_status || "approved") !== "approved"'),
   "post-sync từ chối device pending/revoked"

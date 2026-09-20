@@ -2930,7 +2930,10 @@ function renderCommunityPosts(posts = []) {
       const isOpen = String(post.status || "").toLowerCase() === "open";
       const canDiscuss = !isOwn && isOpen;
       const selected = id === selectedId;
-      const statusLabel = isOwn ? "Bài của bạn" : isOpen ? "Đang mở" : post.status || "Đã đóng";
+      const publishLabel = post.published_at ? "Đã publish" : "Chưa publish";
+      const statusLabel = isOwn
+        ? `Bài của bạn · ${publishLabel}`
+        : `${publishLabel} · ${isOpen ? "đang mở" : "đã đóng"}`;
       const statusClass = isOpen && !isOwn ? "open" : "other";
       return (
         `<tr class="${selected ? "selected" : ""}">` +
@@ -2956,7 +2959,7 @@ function renderCommunityPosts(posts = []) {
           statusLabel
         )}</span></td>` +
         `<td class="cell-date" data-label="Ngày">${escapeHtml(
-          formatRelativeDate(post.created_at || post.published_at)
+          formatRelativeDate(post.published_at || post.created_at)
         )}${post.published_at ? "" : " · chưa publish"}</td>` +
         `<td class="cell-action"><button type="button" class="mini-btn${
           selected ? " is-selected" : ""

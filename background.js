@@ -259,9 +259,28 @@ function toCommunityPostView(post, actorUsername, fallbackSlug) {
 function sortCommunityPosts(posts) {
   return posts.sort(
     (a, b) =>
-      new Date(b.created_at || b.published_at || 0).getTime() -
-      new Date(a.created_at || a.published_at || 0).getTime()
+      new Date(b.published_at || b.created_at || 0).getTime() -
+      new Date(a.published_at || a.created_at || 0).getTime()
   );
+}
+
+function mergeCommunityPosts(cachedPosts, freshPosts) {
+  const postsById = new Map();
+  for (const post of Array.isArray(cachedPosts) ? cachedPosts : []) {
+    postsById.set(Number(post.techhub_id), post);
+  }
+  for (const post of Array.isArray(freshPosts) ? freshPosts : []) {
+    const id = Number(post.techhub_id);
+    const cached = postsById.get(id);
+    const merged = cached ? { ...cached, ...post } : post;
+    // Some TechHub list responses omit published_at. Do not erase a value
+    // already verified and cached from an earlier detail/reconcile request.
+    if (!post.published_at && cached?.published_at) {
+      merged.published_at = cached.published_at;
+    }
+    postsById.set(id, merged);
+  }
+  return sortCommunityPosts([...postsById.values()]);
 }
 
 /**
@@ -302,9 +321,14 @@ async function scanCommunityArticles(communitySlug, fromMonth, toMonth) {
   let saveError = null;
   let communityColumnsMissing = false;
   try {
-    const stats = await supabase.upsertScannedPosts(result.articles);
+    const payloads = result.articles
+      .map((article) => supabase.buildTechHubPostPayload(article))
+      .filter(Boolean);
+    const stats = PostSyncClient?.isPostSyncLeader?.()
+      ? await PostSyncClient.saveCommunityScannedPosts(payloads)
+      : await supabase.upsertScannedPosts(result.articles);
     saved = stats.saved;
-    communityColumnsMissing = stats.communityColumnsMissing;
+    communityColumnsMissing = !!stats.communityColumnsMissing;
   } catch (error) {
     // Client key intentionally has no INSERT/UPDATE privilege after the
     // post-sync hardening migration. Keep the freshly scanned list usable;
@@ -318,34 +342,31 @@ async function scanCommunityArticles(communitySlug, fromMonth, toMonth) {
     }
   }
 
-  // Danh sách sau khi làm mới vẫn lấy toàn bộ cache, không thu hẹp theo tháng vừa quét.
-  let posts = null;
+  const freshPosts = result.articles.map((article) =>
+    toCommunityPostView(
+      {
+        ...supabase.buildTechHubPostPayload(article),
+        techhub_id: Number(article?.id),
+        created_at: article?.created_at,
+        published_at: article?.published_at,
+      },
+      actorUsername,
+      result.communitySlug
+    )
+  );
+
+  // Danh sách sau khi làm mới vẫn lấy toàn bộ cache, nhưng luôn trộn kết quả
+  // vừa quét vào để cache cũ/ghi lỗi không thể làm biến mất bài mới.
+  let cachedPosts = [];
   if (!communityColumnsMissing) {
     try {
       const cached = await getCachedCommunityPosts(result.communitySlug);
-      if (cached.posts.length) posts = cached.posts;
+      cachedPosts = cached.posts;
     } catch (error) {
       console.warn("[Background] Không đọc lại được cache chuyên mục:", error);
     }
   }
-  if (!posts) {
-    // Feed danh sách đôi khi không kèm published_at; giữ lại bài và để bước tải bài
-    // xác thực trạng thái thật thay vì loại nhầm ở đây.
-    posts = sortCommunityPosts(
-      result.articles.map((article) =>
-        toCommunityPostView(
-          {
-            ...supabase.buildTechHubPostPayload(article),
-            techhub_id: Number(article?.id),
-            created_at: article?.created_at,
-            published_at: article?.published_at,
-          },
-          actorUsername,
-          result.communitySlug
-        )
-      )
-    );
-  }
+  const posts = mergeCommunityPosts(cachedPosts, freshPosts);
 
   return {
     posts,

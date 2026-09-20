@@ -111,6 +111,20 @@
     }
     return { ok: true, saved, skipped };
   }
+  async function saveCommunityScannedPosts(articles) {
+    const rows = Array.isArray(articles) ? articles : [];
+    let saved = 0;
+    let skipped = 0;
+    const CHUNK_SIZE = 200;
+    for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+      const result = await postSyncAdmin("saveScannedPosts", {
+        articles: rows.slice(i, i + CHUNK_SIZE),
+      });
+      saved += Number(result?.saved) || 0;
+      skipped += Number(result?.skipped) || 0;
+    }
+    return { ok: true, saved, skipped };
+  }
   async function saveMyScannedPosts(articles) {
     const rows = Array.isArray(articles) ? articles : [];
     let saved = 0;
@@ -203,6 +217,7 @@
     postSyncAdmin,
     requestPostSync,
     saveScannedPosts,
+    saveCommunityScannedPosts,
     saveMyScannedPosts,
     reconcileMyScannedPosts,
     claimPostSyncJob,
