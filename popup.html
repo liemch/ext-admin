@@ -422,6 +422,21 @@
             </section>
 
             <section class="panel hidden" data-panel="my-approvals">
+              <div class="card admin-only">
+                <div class="card-head">
+                  <div>
+                    <h2>Yêu cầu duyệt thiết bị</h2>
+                    <p>Duyệt các thiết bị đã gửi yêu cầu tham gia hệ thống</p>
+                  </div>
+                  <div class="card-actions">
+                    <button id="myEnrollmentRefreshBtn" class="btn btn-secondary" type="button">Làm mới</button>
+                  </div>
+                </div>
+                <div id="myEnrollmentApprovalsList" class="schedule-list">
+                  <div class="empty">Chưa có yêu cầu chờ duyệt.</div>
+                </div>
+              </div>
+
               <div class="card">
                 <div class="card-head"><div><h2>Việc cần tôi duyệt</h2><p>Duyệt đúng revision trước khi nội dung dùng tài khoản của bạn</p></div></div>
                 <div id="myDiscussionApprovalsList" class="thread-preview-list">

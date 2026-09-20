@@ -381,6 +381,8 @@ function showPanel(name, persist = true) {
     loadUsers();
   }
 
+  window.dispatchEvent(new CustomEvent("panelchange", { detail: { name } }));
+
 }
 
 async function restoreActivePanel() {

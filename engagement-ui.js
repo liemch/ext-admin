@@ -171,6 +171,7 @@
       if (!response?.success) throw new Error(response?.error || "Không gửi được yêu cầu.");
       showAdminMsg($("identityConsentMessage"), "Đã gửi yêu cầu. Admin cần duyệt thiết bị này.", "success");
       await loadIdentityState();
+      if (isAdminView()) await refreshEnrollmentRequests();
     } catch (error) {
       showAdminMsg($("identityConsentMessage"), `Lỗi: ${error.message}`, "error");
     }
@@ -1406,13 +1407,13 @@
   }
 
   async function refreshEnrollmentRequests() {
-    const list = $("pendingEnrollmentList");
-    if (!list) return;
+    const lists = [$("pendingEnrollmentList"), $("myEnrollmentApprovalsList")].filter(Boolean);
+    if (!lists.length) return;
     try {
       const response = await sendMessage({ action: "engagementListEnrollmentRequests" });
       if (!response?.success) throw new Error(response?.error || "Không tải được yêu cầu.");
       const devices = response.devices || [];
-      list.innerHTML = devices.length
+      const html = devices.length
         ? devices.map((device) => `
           <div class="schedule-item">
             <div class="schedule-main">
@@ -1425,8 +1426,11 @@
           </div>
         `).join("")
         : '<div class="empty">Chưa có yêu cầu chờ duyệt.</div>';
+      lists.forEach((list) => { list.innerHTML = html; });
     } catch (error) {
-      list.innerHTML = `<div class="empty">Lỗi: ${esc(error.message)}</div>`;
+      lists.forEach((list) => {
+        list.innerHTML = `<div class="empty">Lỗi: ${esc(error.message)}</div>`;
+      });
     }
   }
 
@@ -1729,14 +1733,22 @@
     if ($("createEnrollmentInviteBtn")) {
       $("createEnrollmentInviteBtn").addEventListener("click", createEnrollmentInvitation);
     }
-    if ($("pendingEnrollmentList")) {
-      $("pendingEnrollmentList").addEventListener("click", (event) => {
+    if ($("myEnrollmentRefreshBtn")) {
+      $("myEnrollmentRefreshBtn").addEventListener("click", refreshEnrollmentRequests);
+    }
+    for (const list of [$("pendingEnrollmentList"), $("myEnrollmentApprovalsList")].filter(Boolean)) {
+      list.addEventListener("click", (event) => {
         const button = event.target.closest("[data-enrollment-approve]");
         if (!button) return;
         const [deviceId, username] = String(button.dataset.enrollmentApprove).split("|");
         approveEnrollment(deviceId, username);
       });
     }
+    window.addEventListener("panelchange", (event) => {
+      if (event.detail?.name !== "my-approvals") return;
+      loadMyDiscussionApprovals().catch(() => {});
+      if (isAdminView()) refreshEnrollmentRequests().catch(() => {});
+    });
     // Cập nhật trạng thái khi background broadcast tiến trình tương tác.
     try {
       chrome.runtime.onMessage.addListener((message) => {

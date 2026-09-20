@@ -304,6 +304,13 @@ assert(popup.includes("function renderAutoCommentJobsLog"),
   "UI hiển thị log riêng cho các job auto comment");
 assert(read("popup.html").includes('id="autoCommentJobsLog"'),
   "popup có vùng log job auto comment");
+assert(read("popup.html").includes('id="myEnrollmentApprovalsList"') &&
+  read("popup.html").includes('id="myEnrollmentRefreshBtn"'),
+  "menu Việc cần tôi duyệt có danh sách yêu cầu duyệt thiết bị cho admin");
+assert(popup.includes('new CustomEvent("panelchange"') &&
+  ui.includes('event.detail?.name !== "my-approvals"') &&
+  ui.includes('refreshEnrollmentRequests().catch(() => {})'),
+  "mở menu Việc cần tôi duyệt sẽ tải lại yêu cầu thiết bị mới");
 assert(background.includes("const MAX_AUTO_COMMENT_SCHEDULES = 5"),
   "hỗ trợ tối đa năm lịch auto comment độc lập");
 assert(background.includes("autoCommentStartAlarmName(scheduleId)"),
