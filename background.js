@@ -77,6 +77,11 @@ const CROSS_INTERACTION_ALARM = "crossInteractAlarm";
 const CROSS_INTERACTION_ENABLED_KEY = "crossInteractionEnabled";
 const DEFAULT_DISCUSSION_MIN_INTERVAL_MINUTES = 1;
 const DEFAULT_DISCUSSION_MAX_INTERVAL_MINUTES = 5;
+const AI_DRAFT_CONCURRENCY = 3;
+const AI_SESSION_CACHE_MS = 30_000;
+let aiSessionCache = null;
+let aiSessionCacheAt = 0;
+let aiSessionRefreshPromise = null;
 let autoReplyRunning = false;
 let autoReplyState = {
   enabled: false,
@@ -2290,6 +2295,45 @@ async function getFreshTechHubSession() {
   };
 }
 
+async function getCachedAiTechHubSession(cacheMs = AI_SESSION_CACHE_MS) {
+  cacheMs = Math.max(0, Number(cacheMs) || 0);
+  if (cacheMs && aiSessionCache && Date.now() - aiSessionCacheAt < cacheMs) {
+    return aiSessionCache;
+  }
+  if (cacheMs && aiSessionRefreshPromise) return aiSessionRefreshPromise;
+
+  const refresh = getFreshTechHubSession();
+  if (!cacheMs) return refresh;
+
+  aiSessionRefreshPromise = refresh
+    .then((session) => {
+      aiSessionCache = session;
+      aiSessionCacheAt = Date.now();
+      return session;
+    })
+    .finally(() => {
+      aiSessionRefreshPromise = null;
+    });
+  return aiSessionRefreshPromise;
+}
+
+async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const runners = Array.from(
+    { length: Math.min(Math.max(1, limit), items.length) },
+    async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await worker(items[index], index);
+      }
+    }
+  );
+  await Promise.all(runners);
+  return results;
+}
+
 async function getAutoCommentLiveUsername() {
   if (Date.now() - autoCommentLiveProfileAt < 10_000) {
     return autoCommentLiveUsername;
@@ -3805,7 +3849,7 @@ async function generateReplyDrafts(techhubId, count, maxConsecutiveSelfReplies) 
 
   autoReplyRunning = true;
   try {
-    const { credentials, username } = await getFreshTechHubSession();
+    const { credentials, username } = await getCachedAiTechHubSession();
     if (!credentials?.csrfToken || !username) {
       throw new Error("Thiếu phiên đăng nhập hoặc profile TechHub.");
     }
@@ -3858,15 +3902,16 @@ async function generateReplyDrafts(techhubId, count, maxConsecutiveSelfReplies) 
     }
 
     const toGenerate = openCandidates.slice(0, requestedCount);
-    const created = [];
     const templates = await supabase.getCommentTemplates({ kind: "reply" });
-
-    for (let index = 0; index < toGenerate.length; index += 1) {
-      const comment = toGenerate[index];
+    let completed = 0;
+    const created = await mapWithConcurrency(
+      toGenerate,
+      AI_DRAFT_CONCURRENCY,
+      async (comment, index) => {
       chrome.runtime
         .sendMessage({
           action: "replyDraftProgress",
-          message: `Đang tạo mẫu reply ${index + 1}/${toGenerate.length} cho comment #${comment.id}...`,
+          message: `Đang tạo song song tối đa ${AI_DRAFT_CONCURRENCY} mẫu reply (${completed}/${toGenerate.length} đã xong)...`,
           type: "info",
         })
         .catch(() => {});
@@ -3908,11 +3953,20 @@ async function generateReplyDrafts(techhubId, count, maxConsecutiveSelfReplies) 
         if (!draft) {
           throw new Error("Supabase không trả về dữ liệu.");
         }
-        created.push(draft);
+        completed += 1;
+        chrome.runtime
+          .sendMessage({
+            action: "replyDraftProgress",
+            message: `Đã tạo ${completed}/${toGenerate.length} mẫu reply...`,
+            type: "info",
+          })
+          .catch(() => {});
+        return draft;
       } catch (error) {
         throw new Error(`Không lưu được mẫu ${index + 1}: ${error.message}`);
       }
-    }
+      }
+    );
 
     autoReplyState.maxConsecutiveSelfReplies = selfReplyLimit;
     await saveAutoReplyState();
@@ -4403,7 +4457,7 @@ async function generateDiscussionDrafts(techhubId, count) {
 
   autoDiscussionRunning = true;
   try {
-    const { credentials, username } = await getFreshTechHubSession();
+    const { credentials, username } = await getCachedAiTechHubSession();
     if (!credentials?.csrfToken || !username) {
       throw new Error("Thiếu phiên đăng nhập hoặc profile TechHub.");
     }
@@ -4428,42 +4482,57 @@ async function generateDiscussionDrafts(techhubId, count) {
     previousTexts.push(...existingDrafts.map((draft) => draft.discussion_body).filter(Boolean));
 
     const created = [];
-    for (let index = 0; index < requestedCount; index += 1) {
+    for (let start = 0; start < requestedCount; start += AI_DRAFT_CONCURRENCY) {
+      const indexes = Array.from(
+        { length: Math.min(AI_DRAFT_CONCURRENCY, requestedCount - start) },
+        (_, offset) => start + offset
+      );
+      const previousSnapshot = [...previousTexts];
       chrome.runtime
         .sendMessage({
           action: "discussionDraftProgress",
-          message: `Đang tạo mẫu ${index + 1}/${requestedCount} cho bài #${targetId}...`,
+          message: `Đang tạo song song mẫu ${start + 1}-${start + indexes.length}/${requestedCount} cho bài #${targetId}...`,
           type: "info",
         })
         .catch(() => {});
-      const discussionBody = await nvidiaGenerateDiscussion({
-        postTitle: post.title,
-        articleBody: articleDetail.body,
-        previousBodies: previousTexts,
-        discussionNumber: existingDrafts.length + index + 1,
-        discussionTarget: existingDrafts.length + requestedCount,
-        username,
-        isOwnPost: true,
-      });
-      let draft;
-      try {
-        draft = await supabase.saveDiscussionDraft({
-          username,
-          techhubId: targetId,
-          sourceCommentId: null,
-          sourceCommentBody: previousTexts.join("\n") || null,
-          discussionBody,
-          model: cfg.model,
-          status: "pending",
-        });
-      } catch (error) {
-        throw new Error(`Không lưu được mẫu ${index + 1}: ${error.message}`);
-      }
-      if (!draft) {
-        throw new Error(`Không lưu được mẫu ${index + 1}: Supabase không trả về dữ liệu.`);
-      }
-      created.push(draft);
-      previousTexts.push(discussionBody);
+
+      const batch = await mapWithConcurrency(
+        indexes,
+        AI_DRAFT_CONCURRENCY,
+        async (index) => {
+          const discussionBody = await nvidiaGenerateDiscussion({
+            postTitle: post.title,
+            articleBody: articleDetail.body,
+            previousBodies: previousSnapshot,
+            discussionNumber: existingDrafts.length + index + 1,
+            discussionTarget: existingDrafts.length + requestedCount,
+            username,
+            isOwnPost: true,
+          });
+          let draft;
+          try {
+            draft = await supabase.saveDiscussionDraft({
+              username,
+              techhubId: targetId,
+              sourceCommentId: null,
+              sourceCommentBody: previousSnapshot.join("\n") || null,
+              discussionBody,
+              model: cfg.model,
+              status: "pending",
+            });
+          } catch (error) {
+            throw new Error(`Không lưu được mẫu ${index + 1}: ${error.message}`);
+          }
+          if (!draft) {
+            throw new Error(
+              `Không lưu được mẫu ${index + 1}: Supabase không trả về dữ liệu.`
+            );
+          }
+          return { draft, discussionBody };
+        }
+      );
+      created.push(...batch.map((item) => item.draft));
+      previousTexts.push(...batch.map((item) => item.discussionBody));
     }
 
     const result = await getDiscussionDraftsForUi(targetId);

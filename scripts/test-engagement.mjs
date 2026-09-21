@@ -277,8 +277,14 @@ assert(!background.includes('throw new Error("Chưa cấu hình NVIDIA_CONFIG.ap
   "background không còn kiểm tra cứng NVIDIA apiKey");
 assert(background.includes("async function getFreshTechHubSession()"),
   "có helper tự phục hồi profile và CSRF trước khi tạo mẫu");
-assert((background.match(/await getFreshTechHubSession\(\)/g) || []).length >= 6,
-  "luồng tạo mẫu và hẹn xóa đều làm mới phiên TechHub");
+assert((background.match(/await getFreshTechHubSession\(\)/g) || []).length >= 4,
+  "các tác vụ nhạy cảm ngoài tạo mẫu vẫn làm mới phiên TechHub");
+assert(background.includes("const AI_DRAFT_CONCURRENCY = 3"),
+  "tạo mẫu AI dùng mức song song có giới hạn");
+assert((background.match(/await getCachedAiTechHubSession\(\)/g) || []).length === 2,
+  "AI trả lời và AI thảo luận dùng lại phiên TechHub trong thời gian ngắn");
+assert((background.match(/await mapWithConcurrency\(/g) || []).length === 2,
+  "hai luồng tạo mẫu không còn chờ tuần tự từng request AI");
 assert(background.includes("async function executeDeletePost(item)"),
   "hẹn xóa bài dùng chung cơ chế phục hồi phiên");
 assert(background.includes("previous.csrfToken"),
