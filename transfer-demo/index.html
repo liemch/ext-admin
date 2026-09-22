@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f6f9ff" />
+    <title>Lumi — Chuyển tiền</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="page-shell">
+      <section class="transfer-app" aria-labelledby="app-title">
+        <header class="app-header">
+          <a class="brand" href="#" aria-label="Lumi Pay trang chủ">
+            <span class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 32 32" fill="none">
+                <path d="M9 7.5v17M9 24.5h11.2a2.8 2.8 0 0 0 2.8-2.8v-5.5a2.8 2.8 0 0 0-2.8-2.8H12.5" stroke="currentColor" stroke-width="3.25" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="m15.5 12.2-3.2 3.2 3.2 3.2" stroke="currentColor" stroke-width="3.25" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </span>
+            <span>Lumi</span>
+          </a>
+          <div class="demo-badge"><span></span> Bản demo</div>
+        </header>
+
+        <div class="app-intro">
+          <p class="eyebrow">CHUYỂN TIỀN NHANH</p>
+          <h1 id="app-title">Gửi tiền đến bất kỳ ai</h1>
+          <p>Thông tin rõ ràng, hoàn tất chỉ trong vài giây.</p>
+        </div>
+
+        <div class="layout">
+          <section class="transfer-card" aria-label="Biểu mẫu chuyển tiền">
+            <form id="transferForm" novalidate>
+              <div class="form-heading">
+                <h2>Thông tin chuyển tiền</h2>
+                <p>Điền người nhận và số tiền bạn muốn gửi.</p>
+              </div>
+
+              <div class="field-group">
+                <label for="recipient">Người nhận</label>
+                <div class="input-wrap recipient-wrap">
+                  <svg class="input-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M20 21a8 8 0 0 0-16 0M12 13a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                  </svg>
+                  <input id="recipient" name="recipient" type="text" autocomplete="name" placeholder="Nhập tên người nhận" maxlength="60" required />
+                  <button class="clear-button" id="clearRecipient" type="button" aria-label="Xóa tên người nhận" hidden>
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+                  </button>
+                </div>
+                <p class="field-error" id="recipientError" aria-live="polite"></p>
+              </div>
+
+              <div class="field-group amount-group">
+                <div class="field-label-row">
+                  <label for="amount">Số tiền</label>
+                  <span class="balance">Số dư khả dụng: <strong>12.500.000 ₫</strong></span>
+                </div>
+                <div class="amount-input-wrap">
+                  <input id="amount" name="amount" type="text" inputmode="numeric" autocomplete="off" placeholder="0" aria-describedby="amountHelp" required />
+                  <span class="currency">₫</span>
+                </div>
+                <div class="quick-amounts" aria-label="Chọn số tiền nhanh">
+                  <button type="button" data-amount="100000">100K</button>
+                  <button type="button" data-amount="200000">200K</button>
+                  <button type="button" data-amount="500000">500K</button>
+                  <button type="button" data-amount="1000000">1 triệu</button>
+                </div>
+                <p class="field-error" id="amountError" aria-live="polite"></p>
+                <p class="amount-help" id="amountHelp">Hạn mức mỗi giao dịch: 10.000.000 ₫</p>
+              </div>
+
+              <div class="secure-note">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2" stroke="currentColor" stroke-width="1.75" /><path d="M8 10V7a4 4 0 0 1 8 0v3" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" /><path d="M12 14.2v2.6" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" /></svg>
+                <span>Giao dịch của bạn được bảo vệ an toàn.</span>
+              </div>
+
+              <button id="sendButton" class="send-button" type="submit">
+                <span>Chuyển tiền</span>
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              </button>
+            </form>
+          </section>
+
+          <aside class="summary-card" aria-label="Tóm tắt giao dịch">
+            <div class="summary-head">
+              <span class="summary-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none"><path d="M4 7.5h16M7 4v7M17 4v7M5.5 20h13a1.5 1.5 0 0 0 1.5-1.5v-11A1.5 1.5 0 0 0 18.5 6h-13A1.5 1.5 0 0 0 4 7.5v11A1.5 1.5 0 0 0 5.5 20Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+              </span>
+              <span>GIAO DỊCH MỚI</span>
+            </div>
+            <div class="summary-amount" id="summaryAmount">0 ₫</div>
+            <p class="summary-recipient" id="summaryRecipient">Chưa chọn người nhận</p>
+            <div class="summary-line"></div>
+            <dl class="summary-details">
+              <div><dt>Phí giao dịch</dt><dd>Miễn phí</dd></div>
+              <div><dt>Thời gian nhận</dt><dd>Ngay lập tức</dd></div>
+            </dl>
+            <p class="summary-footer">Bạn có thể kiểm tra lại thông tin trước khi gửi.</p>
+          </aside>
+        </div>
+
+        <footer class="app-footer">
+          <span>© 2026 Lumi Pay</span>
+          <span class="footer-dot" aria-hidden="true"></span>
+          <span>Thanh toán đơn giản hơn mỗi ngày</span>
+        </footer>
+      </section>
+    </main>
+
+    <div class="modal-backdrop" id="modalBackdrop" hidden>
+      <section class="success-modal" id="successModal" role="dialog" aria-modal="true" aria-labelledby="successTitle" tabindex="-1">
+        <div class="success-orbit orbit-one" aria-hidden="true"></div>
+        <div class="success-orbit orbit-two" aria-hidden="true"></div>
+        <div class="success-mark" aria-hidden="true">
+          <svg viewBox="0 0 56 56" fill="none"><path class="success-circle" d="M28 52a24 24 0 1 0 0-48 24 24 0 0 0 0 48Z" stroke="currentColor" stroke-width="2.5" /><path class="success-check" d="m17 28.5 7.1 7.1L39.5 20" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        </div>
+        <p class="success-kicker">GIAO DỊCH HOÀN TẤT</p>
+        <h2 id="successTitle">Đã chuyển tiền thành công!</h2>
+        <p class="success-message">Bạn đã gửi <strong id="successAmount">0 ₫</strong> đến <strong id="successRecipient">người nhận</strong>.</p>
+        <div class="receipt">
+          <div><span>Mã giao dịch</span><strong id="transactionId">—</strong></div>
+          <div><span>Thời gian</span><strong id="transactionTime">—</strong></div>
+        </div>
+        <button class="done-button" id="doneButton" type="button">Hoàn tất</button>
+        <button class="again-button" id="againButton" type="button">Tạo giao dịch mới</button>
+      </section>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
